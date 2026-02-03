@@ -79,14 +79,13 @@ type DragData = {
 };
 
 function PaletteButton() {
-  const { attributes, listeners, setNodeRef, transform, isDragging } =
+  const { attributes, listeners, setNodeRef, isDragging } =
     useDraggable({
       id: "palette-button",
       data: { type: "palette", assetKind: "text" } satisfies DragData,
     });
 
   const style: React.CSSProperties = {
-    transform: CSS.Translate.toString(transform),
     opacity: isDragging ? 0 : 1,
   };
 
@@ -95,7 +94,7 @@ function PaletteButton() {
       ref={setNodeRef}
       style={style}
       variant="outline"
-      className="h-12 w-28"
+      className="h-12 w-28 transition-opacity duration-150"
       {...attributes}
       {...listeners}
       type="button"
@@ -106,14 +105,13 @@ function PaletteButton() {
 }
 
 function PaletteIconButton() {
-  const { attributes, listeners, setNodeRef, transform, isDragging } =
+  const { attributes, listeners, setNodeRef, isDragging } =
     useDraggable({
       id: "palette-icon-button",
       data: { type: "palette", assetKind: "icon" } satisfies DragData,
     });
 
   const style: React.CSSProperties = {
-    transform: CSS.Translate.toString(transform),
     opacity: isDragging ? 0 : 1,
   };
 
@@ -123,6 +121,7 @@ function PaletteIconButton() {
       style={style}
       variant="outline"
       size="icon"
+      className="transition-opacity duration-150"
       {...attributes}
       {...listeners}
       type="button"
@@ -149,12 +148,12 @@ function CanvasButton({
     });
 
   const style: React.CSSProperties = {
-    transform: CSS.Translate.toString(transform),
+    transform: isDragging ? CSS.Translate.toString(transform) : undefined,
     left: item.x,
     top: item.y,
     width: item.width,
     height: item.height,
-    opacity: isDragging ? 0 : 1,
+    opacity: 1,
   };
 
   return (
@@ -163,7 +162,7 @@ function CanvasButton({
       style={style}
       variant="outline"
       size={item.kind === "icon" ? "icon" : "default"}
-      className="group absolute hover:bg-transparent hover:text-inherit hover:border-border"
+      className="group absolute transition-opacity duration-150 hover:bg-transparent hover:text-inherit hover:border-border"
       onContextMenu={(event) => {
         event.preventDefault();
         onEditLabel(item);
@@ -681,8 +680,8 @@ export default function EditorPage() {
           </aside>
         </main>
 
-        <DragOverlay>
-          {activeType ? (
+        <DragOverlay dropAnimation={null}>
+          {activeType === "palette" ? (
             <div style={{ width: activeSize.width, height: activeSize.height }}>
               <Button
                 variant="outline"
@@ -723,10 +722,7 @@ export default function EditorPage() {
         >
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>Edit button text</DialogTitle>
-              <DialogDescription>
-                Update the label shown on the button.
-              </DialogDescription>
+              <DialogTitle>Button Settings</DialogTitle>
             </DialogHeader>
             <div className="grid gap-2">
               <Label htmlFor="button-label">Button text</Label>
@@ -797,141 +793,140 @@ export default function EditorPage() {
             }
           }}
         >
-          <DialogContent>
+          <DialogContent className="max-h-[90vh] overflow-hidden">
             <DialogHeader>
-              <DialogTitle>Select an icon</DialogTitle>
-              <DialogDescription>
-                Choose a lucide icon for this button.
-              </DialogDescription>
+              <DialogTitle>Icon Button Settings</DialogTitle>
             </DialogHeader>
-            <div className="grid gap-4">
-              <div className="grid gap-2">
-                <Label>Button colors</Label>
-                <div className="grid gap-2 sm:grid-cols-2">
-                  <div className="grid gap-2">
-                    <Label htmlFor="icon-outline">Outline</Label>
-                    <div className="flex items-center gap-2">
-                      <Input
-                        id="icon-outline"
-                        type="color"
-                        value={outlineDraft === "transparent" ? "#000000" : outlineDraft}
-                        onInput={(event) => {
-                          const next = event.target.value;
-                          setOutlineDraft(next);
-                        }}
-                        onPointerUp={() => commitOutlineColor(outlineDraft)}
-                        onBlur={() => commitOutlineColor(outlineDraft)}
-                      />
-                      <Button
-                        variant="outline"
-                        onClick={() => {
-                          const next = "transparent";
-                          setOutlineDraft(next);
-                          commitOutlineColor(next);
-                        }}
-                      >
-                        Transparent
-                      </Button>
+            <ScrollArea className="max-h-[70vh] pr-2">
+              <div className="grid gap-4">
+                <div className="grid gap-2">
+                  <Label>Button colors</Label>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <div className="grid gap-2">
+                      <Label htmlFor="icon-outline">Outline</Label>
+                      <div className="flex items-center gap-2">
+                        <Input
+                          id="icon-outline"
+                          type="color"
+                          value={outlineDraft === "transparent" ? "#000000" : outlineDraft}
+                          onInput={(event) => {
+                            const next = event.target.value;
+                            setOutlineDraft(next);
+                          }}
+                          onPointerUp={() => commitOutlineColor(outlineDraft)}
+                          onBlur={() => commitOutlineColor(outlineDraft)}
+                        />
+                        <Button
+                          variant="outline"
+                          onClick={() => {
+                            const next = "transparent";
+                            setOutlineDraft(next);
+                            commitOutlineColor(next);
+                          }}
+                        >
+                          Transparent
+                        </Button>
+                      </div>
+                    </div>
+                    <div className="grid gap-2">
+                      <Label htmlFor="icon-fill">Fill</Label>
+                      <div className="flex items-center gap-2">
+                        <Input
+                          id="icon-fill"
+                          type="color"
+                          value={fillDraft === "transparent" ? "#000000" : fillDraft}
+                          onInput={(event) => {
+                            const next = event.target.value;
+                            setFillDraft(next);
+                          }}
+                          onPointerUp={() => commitFillColor(fillDraft)}
+                          onBlur={() => commitFillColor(fillDraft)}
+                        />
+                        <Button
+                          variant="outline"
+                          onClick={() => {
+                            const next = "transparent";
+                            setFillDraft(next);
+                            commitFillColor(next);
+                          }}
+                        >
+                          Transparent
+                        </Button>
+                      </div>
                     </div>
                   </div>
-                  <div className="grid gap-2">
-                    <Label htmlFor="icon-fill">Fill</Label>
-                    <div className="flex items-center gap-2">
-                      <Input
-                        id="icon-fill"
-                        type="color"
-                        value={fillDraft === "transparent" ? "#000000" : fillDraft}
-                        onInput={(event) => {
-                          const next = event.target.value;
-                          setFillDraft(next);
-                        }}
-                        onPointerUp={() => commitFillColor(fillDraft)}
-                        onBlur={() => commitFillColor(fillDraft)}
-                      />
-                      <Button
-                        variant="outline"
-                        onClick={() => {
-                          const next = "transparent";
-                          setFillDraft(next);
-                          commitFillColor(next);
-                        }}
-                      >
-                        Transparent
-                      </Button>
-                    </div>
-                  </div>
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="icon-search">Search icons</Label>
+                  <Input
+                    id="icon-search"
+                    value={iconSearch}
+                    onChange={(event) => setIconSearch(event.target.value)}
+                    placeholder="Search by name"
+                  />
                 </div>
               </div>
-              <div className="grid gap-2">
-                <Label htmlFor="icon-search">Search icons</Label>
-                <Input
-                  id="icon-search"
-                  value={iconSearch}
-                  onChange={(event) => setIconSearch(event.target.value)}
-                  placeholder="Search by name"
-                />
-              </div>
-            </div>
-            <ScrollArea
-              className="h-72"
-              viewportRef={iconViewportRef}
-              onViewportScroll={(event) =>
-                setIconScrollTop(event.currentTarget.scrollTop)
-              }
-            >
-              {showIconGrid ? (
-                <div className="relative" style={{ height: totalIconHeight }}>
-                  {visibleIcons.map((name, index) => {
-                    const IconComponent = ICON_COMPONENTS[name] ?? Bot;
-                    const absoluteIndex = startIndex + index;
-                    const row = Math.floor(absoluteIndex / iconGridColumns);
-                    const col = absoluteIndex % iconGridColumns;
-                    return (
-                      <Button
-                        key={name}
-                        variant="outline"
-                        size="icon"
-                        className="absolute h-10 w-10"
-                        aria-label={name}
-                        style={{
-                          top: row * ICON_CELL_SIZE + ICON_CELL_OFFSET,
-                          left: col * ICON_CELL_SIZE + ICON_CELL_OFFSET,
-                        }}
-                        onClick={() => {
-                          if (!iconEditingId) return;
-                          setItems((prev) =>
-                            prev.map((item) =>
-                              item.id === iconEditingId
-                                ? {
-                                    ...item,
-                                    iconName: name,
-                                    label: name,
-                                  }
-                                : item
-                            )
-                          );
-                          setIsIconDialogOpen(false);
-                        }}
-                      >
-                        <IconComponent className="h-5 w-5" />
-                      </Button>
-                    );
-                  })}
-                </div>
-              ) : (
-                <div className="flex h-72 items-center justify-center text-sm text-muted-foreground">
-                  Loading icons...
-                </div>
-              )}
-            </ScrollArea>
-            <DialogFooter>
-              <Button
-                variant="outline"
-                onClick={() => setIsIconDialogOpen(false)}
+              <ScrollArea
+                className="h-48"
+                viewportRef={iconViewportRef}
+                onViewportScroll={(event) =>
+                  setIconScrollTop(event.currentTarget.scrollTop)
+                }
               >
-                Close
-              </Button>
-            </DialogFooter>
+                {showIconGrid ? (
+                  <div className="relative" style={{ height: totalIconHeight }}>
+                    {visibleIcons.map((name, index) => {
+                      const IconComponent = ICON_COMPONENTS[name] ?? Bot;
+                      const absoluteIndex = startIndex + index;
+                      const row = Math.floor(absoluteIndex / iconGridColumns);
+                      const col = absoluteIndex % iconGridColumns;
+                      return (
+                        <Button
+                          key={name}
+                          variant="outline"
+                          size="icon"
+                          className="absolute h-10 w-10"
+                          aria-label={name}
+                          style={{
+                            top: row * ICON_CELL_SIZE + ICON_CELL_OFFSET,
+                            left: col * ICON_CELL_SIZE + ICON_CELL_OFFSET,
+                          }}
+                          onClick={() => {
+                            if (!iconEditingId) return;
+                            setItems((prev) =>
+                              prev.map((item) =>
+                                item.id === iconEditingId
+                                  ? {
+                                      ...item,
+                                      iconName: name,
+                                      label: name,
+                                    }
+                                  : item
+                              )
+                            );
+                            setIsIconDialogOpen(false);
+                          }}
+                        >
+                          <IconComponent className="h-5 w-5" />
+                        </Button>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="flex h-72 items-center justify-center text-sm text-muted-foreground">
+                    Loading icons...
+                  </div>
+                )}
+              </ScrollArea>
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  onClick={() => setIsIconDialogOpen(false)}
+                >
+                  Close
+                </Button>
+              </DialogFooter>
+            </ScrollArea>
           </DialogContent>
         </Dialog>
       </div>
