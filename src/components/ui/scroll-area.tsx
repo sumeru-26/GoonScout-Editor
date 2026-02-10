@@ -10,12 +10,26 @@ type ScrollAreaProps = React.ComponentPropsWithoutRef<
 > & {
   viewportRef?: React.Ref<HTMLDivElement>;
   onViewportScroll?: React.UIEventHandler<HTMLDivElement>;
+  scrollbarClassName?: string;
+  thumbClassName?: string;
 };
 
 const ScrollArea = React.forwardRef<
   React.ElementRef<typeof ScrollAreaPrimitive.Root>,
   ScrollAreaProps
->(({ className, children, viewportRef, onViewportScroll, ...props }, ref) => (
+>(
+  (
+    {
+      className,
+      children,
+      viewportRef,
+      onViewportScroll,
+      scrollbarClassName,
+      thumbClassName,
+      ...props
+    },
+    ref
+  ) => (
   <ScrollAreaPrimitive.Root
     ref={ref}
     className={cn("relative overflow-hidden", className)}
@@ -28,7 +42,7 @@ const ScrollArea = React.forwardRef<
     >
       {children}
     </ScrollAreaPrimitive.Viewport>
-    <ScrollBar />
+    <ScrollBar className={scrollbarClassName} thumbClassName={thumbClassName} />
     <ScrollAreaPrimitive.Corner />
   </ScrollAreaPrimitive.Root>
 ));
@@ -36,8 +50,10 @@ ScrollArea.displayName = ScrollAreaPrimitive.Root.displayName;
 
 const ScrollBar = React.forwardRef<
   React.ElementRef<typeof ScrollAreaPrimitive.Scrollbar>,
-  React.ComponentPropsWithoutRef<typeof ScrollAreaPrimitive.Scrollbar>
->(({ className, orientation = "vertical", ...props }, ref) => (
+  React.ComponentPropsWithoutRef<typeof ScrollAreaPrimitive.Scrollbar> & {
+    thumbClassName?: string;
+  }
+>(({ className, orientation = "vertical", thumbClassName, ...props }, ref) => (
   <ScrollAreaPrimitive.Scrollbar
     ref={ref}
     orientation={orientation}
@@ -51,7 +67,9 @@ const ScrollBar = React.forwardRef<
     )}
     {...props}
   >
-    <ScrollAreaPrimitive.Thumb className="relative flex-1 rounded-full bg-border" />
+    <ScrollAreaPrimitive.Thumb
+      className={cn("relative flex-1 rounded-full bg-border", thumbClassName)}
+    />
   </ScrollAreaPrimitive.Scrollbar>
 ));
 ScrollBar.displayName = ScrollAreaPrimitive.Scrollbar.displayName;
