@@ -16,7 +16,8 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { Button } from "@/components/ui/button";
 import * as LucideIcons from "lucide-react";
-import { Bot, Settings } from "lucide-react";
+import { Bot, Download, Settings, Upload } from "lucide-react";
+import { toast } from "sonner";
 import {
   Dialog,
   DialogContent,
@@ -71,6 +72,7 @@ type CanvasItem = {
   height: number;
   label: string;
   kind: AssetKind;
+  tag?: string;
   iconName?: string;
   outlineColor?: string;
   fillColor?: string;
@@ -503,12 +505,14 @@ export default function EditorPage() {
   const [isAspectDialogOpen, setIsAspectDialogOpen] = React.useState(false);
   const [editingId, setEditingId] = React.useState<string | null>(null);
   const [labelDraft, setLabelDraft] = React.useState("");
+  const [tagDraft, setTagDraft] = React.useState("");
   const [isIconDialogOpen, setIsIconDialogOpen] = React.useState(false);
   const [iconEditingId, setIconEditingId] = React.useState<string | null>(null);
   const [iconSearch, setIconSearch] = React.useState("");
   const [showIconGrid, setShowIconGrid] = React.useState(false);
   const [outlineDraft, setOutlineDraft] = React.useState("#ffffff");
   const [fillDraft, setFillDraft] = React.useState("transparent");
+  const [iconTagDraft, setIconTagDraft] = React.useState("");
   const [aspectWidth, setAspectWidth] = React.useState("16");
   const [aspectHeight, setAspectHeight] = React.useState("9");
   const [aspectWidthDraft, setAspectWidthDraft] = React.useState("16");
@@ -519,6 +523,14 @@ export default function EditorPage() {
   const [inputEditingId, setInputEditingId] = React.useState<string | null>(null);
   const [inputLabelDraft, setInputLabelDraft] = React.useState("");
   const [inputPlaceholderDraft, setInputPlaceholderDraft] = React.useState("");
+  const [inputTagDraft, setInputTagDraft] = React.useState("");
+  const [isExportDialogOpen, setIsExportDialogOpen] = React.useState(false);
+  const [exportJson, setExportJson] = React.useState("");
+  const [isUploadDialogOpen, setIsUploadDialogOpen] = React.useState(false);
+  const [uploadJson, setUploadJson] = React.useState("");
+  const [uploadPayload, setUploadPayload] = React.useState<
+    Array<Record<string, unknown>>
+  >([]);
   const deferredIconSearch = React.useDeferredValue(iconSearch);
   const iconViewportRef = React.useRef<HTMLDivElement | null>(null);
   const [iconViewportHeight, setIconViewportHeight] = React.useState(288);
@@ -822,6 +834,7 @@ export default function EditorPage() {
       setIconSearch("");
       setOutlineDraft(item.outlineColor ?? "#ffffff");
       setFillDraft(item.fillColor ?? "transparent");
+      setIconTagDraft(item.tag ?? "");
       setIsIconDialogOpen(true);
       return;
     }
@@ -830,41 +843,209 @@ export default function EditorPage() {
       setInputEditingId(item.id);
       setInputLabelDraft(item.label);
       setInputPlaceholderDraft(item.placeholder ?? "");
+      setInputTagDraft(item.tag ?? "");
       setIsInputDialogOpen(true);
       return;
     }
 
     setEditingId(item.id);
     setLabelDraft(item.label);
+    setTagDraft(item.tag ?? "");
     setIsDialogOpen(true);
   }, []);
 
   const handleSaveLabel = React.useCallback(() => {
     if (!editingId) return;
     const trimmed = labelDraft.trim();
+    const tag = tagDraft.trim();
     if (!trimmed) return;
     setItems((prev) =>
       prev.map((entry) =>
-        entry.id === editingId ? { ...entry, label: trimmed } : entry
+        entry.id === editingId ? { ...entry, label: trimmed, tag } : entry
       )
     );
     setIsDialogOpen(false);
-  }, [editingId, labelDraft]);
+  }, [editingId, labelDraft, tagDraft]);
 
   const handleSaveInput = React.useCallback(() => {
     if (!inputEditingId) return;
     const label = inputLabelDraft.trim();
     const placeholder = inputPlaceholderDraft.trim();
+    const tag = inputTagDraft.trim();
     if (!label) return;
     setItems((prev) =>
       prev.map((entry) =>
         entry.id === inputEditingId
-          ? { ...entry, label, placeholder }
+          ? { ...entry, label, placeholder, tag }
           : entry
       )
     );
     setIsInputDialogOpen(false);
-  }, [inputEditingId, inputLabelDraft, inputPlaceholderDraft]);
+  }, [inputEditingId, inputLabelDraft, inputPlaceholderDraft, inputTagDraft]);
+
+  const buildExportPayload = React.useCallback(() => {
+    const canvasRect = canvasRef.current?.getBoundingClientRect();
+    if (!canvasRect) return null;
+
+    const taggedItems = items.filter((item) =>
+      ["text", "icon", "input"].includes(item.kind)
+    );
+    const tags = taggedItems.map((item) => (item.tag ?? "").trim());
+
+    if (tags.some((tag) => tag.length === 0)) {
+      toast.error("Make sure to set all tags!");
+      return null;
+    }
+
+    const seenTags = new Set<string>();
+    const hasDuplicate = tags.some((tag) => {
+      if (seenTags.has(tag)) return true;
+      seenTags.add(tag);
+      return false;
+    });
+
+    if (hasDuplicate) {
+      toast.error("Make sure you have no duplicate tags!");
+      return null;
+    }
+
+    const centerX = canvasRect.width / 2;
+    const centerY = canvasRect.height / 2;
+    const normalize = (value: number) => Number(value.toFixed(2));
+    const relative = (value: number, center: number) =>
+      normalize(value - center);
+
+    const payload = items.map((item) => {
+      const centerItemX = item.x + item.width / 2;
+      const centerItemY = item.y + item.height / 2;
+
+      switch (item.kind) {
+        case "text":
+          return {
+            button: {
+              tag: item.tag ?? "",
+              x: relative(centerItemX, centerX),
+              y: relative(centerItemY, centerY),
+              text: item.label,
+            },
+          };
+        case "icon":
+          return {
+            "icon-button": {
+              tag: item.tag ?? "",
+              x: relative(centerItemX, centerX),
+              y: relative(centerItemY, centerY),
+              icon: item.iconName ?? "",
+              outline: item.outlineColor ?? "#ffffff",
+              fill: item.fillColor ?? "transparent",
+            },
+          };
+        case "input":
+          return {
+            "text-input": {
+              tag: item.tag ?? "",
+              x: relative(centerItemX, centerX),
+              y: relative(centerItemY, centerY),
+              label: item.label,
+              placeholder: item.placeholder ?? "",
+            },
+          };
+        case "mirror": {
+          const startX = item.startX ?? item.x;
+          const startY = item.startY ?? item.y;
+          const endX = item.endX ?? item.x + item.width;
+          const endY = item.endY ?? item.y + item.height;
+          return {
+            "mirror-line": {
+              x1: relative(startX, centerX),
+              y1: relative(startY, centerY),
+              x2: relative(endX, centerX),
+              y2: relative(endY, centerY),
+            },
+          };
+        }
+        case "swap":
+          return {
+            "swap-sides": {
+              x: relative(centerItemX, centerX),
+              y: relative(centerItemY, centerY),
+            },
+          };
+        case "cover": {
+          const x1 = item.x;
+          const y1 = item.y;
+          const x2 = item.x + item.width;
+          const y2 = item.y + item.height;
+          return {
+            cover: {
+              x1: relative(x1, centerX),
+              y1: relative(y1, centerY),
+              x2: relative(x2, centerX),
+              y2: relative(y2, centerY),
+            },
+          };
+        }
+        default:
+          return null;
+      }
+    });
+
+    const filteredPayload = payload.filter(
+      (entry): entry is NonNullable<typeof entry> => Boolean(entry)
+    );
+
+    return {
+      payload: filteredPayload,
+      json: JSON.stringify(filteredPayload, null, 2),
+    };
+  }, [items]);
+
+  const handleExport = React.useCallback(() => {
+    const result = buildExportPayload();
+    if (!result) return;
+    setExportJson(result.json);
+    setIsExportDialogOpen(true);
+  }, [buildExportPayload]);
+
+  const handleUploadPreview = React.useCallback(() => {
+    const result = buildExportPayload();
+    if (!result) return;
+    setUploadPayload(result.payload);
+    setUploadJson(result.json);
+    setIsUploadDialogOpen(true);
+  }, [buildExportPayload]);
+
+  const handleUploadConfig = React.useCallback(async () => {
+    if (uploadPayload.length === 0) return;
+    try {
+      const response = await fetch("/api/field-configs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: "test", payload: uploadPayload }),
+      });
+
+      if (!response.ok) {
+        toast.error("Upload failed. Please try again.");
+        return;
+      }
+
+      toast.success("Config uploaded.");
+      setIsUploadDialogOpen(false);
+    } catch (error) {
+      toast.error("Upload failed. Please try again.");
+    }
+  }, [uploadPayload]);
+
+  const handleDownloadExport = React.useCallback(() => {
+    if (!exportJson) return;
+    const blob = new Blob([exportJson], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "field-layout.json";
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }, [exportJson]);
 
   const aspectRatio = React.useMemo(() => {
     const width = Number(aspectWidth);
@@ -985,6 +1166,18 @@ export default function EditorPage() {
         prev.map((item) =>
           item.id === id ? { ...item, fillColor: value } : item
         )
+      );
+    },
+    [setItems]
+  );
+
+  const handleIconTagChange = React.useCallback(
+    (value: string) => {
+      setIconTagDraft(value);
+      const id = iconEditingIdRef.current;
+      if (!id) return;
+      setItems((prev) =>
+        prev.map((item) => (item.id === id ? { ...item, tag: value } : item))
       );
     },
     [setItems]
@@ -1319,6 +1512,7 @@ export default function EditorPage() {
                     ? "Swap sides"
                     : "Button",
             kind,
+            tag: "",
             iconName: kind === "icon" ? "Bot" : undefined,
             outlineColor: kind === "icon" ? "#ffffff" : undefined,
             fillColor: kind === "icon" ? "transparent" : undefined,
@@ -1344,20 +1538,39 @@ export default function EditorPage() {
       onDragEnd={handleDragEnd}
     >
       <div className="min-h-screen bg-black text-white">
-        <Button
-          variant="outline"
-          size="icon"
-          className="fixed right-6 top-6 z-50"
-          aria-label="Settings"
-          type="button"
-          onClick={() => {
-            setAspectWidthDraft(aspectWidth);
-            setAspectHeightDraft(aspectHeight);
-            setIsAspectDialogOpen(true);
-          }}
-        >
-          <Settings className="h-5 w-5" />
-        </Button>
+        <div className="fixed right-6 top-6 z-50 flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="icon"
+            aria-label="Upload layout"
+            type="button"
+            onClick={handleUploadPreview}
+          >
+            <Upload className="h-5 w-5" />
+          </Button>
+          <Button
+            variant="outline"
+            size="icon"
+            aria-label="Download layout"
+            type="button"
+            onClick={handleExport}
+          >
+            <Download className="h-5 w-5" />
+          </Button>
+          <Button
+            variant="outline"
+            size="icon"
+            aria-label="Settings"
+            type="button"
+            onClick={() => {
+              setAspectWidthDraft(aspectWidth);
+              setAspectHeightDraft(aspectHeight);
+              setIsAspectDialogOpen(true);
+            }}
+          >
+            <Settings className="h-5 w-5" />
+          </Button>
+        </div>
         <main className="mx-auto flex w-full max-w-6xl flex-col gap-8 px-6 py-16 md:flex-row">
           <div className="w-full flex-1">
             <AspectRatio
@@ -1528,14 +1741,25 @@ export default function EditorPage() {
             <DialogHeader>
               <DialogTitle>Button Settings</DialogTitle>
             </DialogHeader>
-            <div className="grid gap-2">
-              <Label htmlFor="button-label">Button text</Label>
-              <Input
-                id="button-label"
-                value={labelDraft}
-                onChange={(event) => setLabelDraft(event.target.value)}
-                placeholder="Button"
-              />
+            <div className="grid gap-4">
+              <div className="grid gap-2">
+                <Label htmlFor="button-tag">Tag</Label>
+                <Input
+                  id="button-tag"
+                  value={tagDraft}
+                  onChange={(event) => setTagDraft(event.target.value)}
+                  placeholder="Tag for data"
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="button-label">Button text</Label>
+                <Input
+                  id="button-label"
+                  value={labelDraft}
+                  onChange={(event) => setLabelDraft(event.target.value)}
+                  placeholder="Button"
+                />
+              </div>
             </div>
             <DialogFooter>
               <Button variant="outline" onClick={() => setIsDialogOpen(false)}>
@@ -1560,6 +1784,15 @@ export default function EditorPage() {
               <DialogTitle>Input Settings</DialogTitle>
             </DialogHeader>
             <div className="grid gap-4">
+              <div className="grid gap-2">
+                <Label htmlFor="input-tag">Tag</Label>
+                <Input
+                  id="input-tag"
+                  value={inputTagDraft}
+                  onChange={(event) => setInputTagDraft(event.target.value)}
+                  placeholder="Optional tag"
+                />
+              </div>
               <div className="grid gap-2">
                 <Label htmlFor="input-label">Label</Label>
                 <Input
@@ -1671,6 +1904,15 @@ export default function EditorPage() {
             </DialogHeader>
             <ScrollArea className="max-h-[70vh] pr-2">
               <div className="grid gap-4">
+                <div className="grid gap-2">
+                  <Label htmlFor="icon-tag">Tag</Label>
+                  <Input
+                    id="icon-tag"
+                    value={iconTagDraft}
+                    onChange={(event) => handleIconTagChange(event.target.value)}
+                    placeholder="Optional tag"
+                  />
+                </div>
                 <div className="grid gap-2">
                   <Label>Button colors</Label>
                   <div className="grid gap-2 sm:grid-cols-2">
@@ -1799,6 +2041,50 @@ export default function EditorPage() {
                 </Button>
               </DialogFooter>
             </ScrollArea>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={isExportDialogOpen} onOpenChange={setIsExportDialogOpen}>
+          <DialogContent className="max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>Export layout</DialogTitle>
+              <DialogDescription>
+                Copy the JSON or download it as a file.
+              </DialogDescription>
+            </DialogHeader>
+            <ScrollArea className="max-h-[60vh] rounded-md bg-black/80 p-4 text-sm text-white">
+              <pre className="whitespace-pre-wrap">{exportJson}</pre>
+            </ScrollArea>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setIsExportDialogOpen(false)}>
+                Close
+              </Button>
+              <Button onClick={handleDownloadExport} disabled={!exportJson}>
+                Download .json
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={isUploadDialogOpen} onOpenChange={setIsUploadDialogOpen}>
+          <DialogContent className="max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>Upload layout</DialogTitle>
+              <DialogDescription>
+                Review the JSON before uploading it to Supabase.
+              </DialogDescription>
+            </DialogHeader>
+            <ScrollArea className="max-h-[60vh] rounded-md bg-black/80 p-4 text-sm text-white">
+              <pre className="whitespace-pre-wrap">{uploadJson}</pre>
+            </ScrollArea>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setIsUploadDialogOpen(false)}>
+                Close
+              </Button>
+              <Button onClick={handleUploadConfig} disabled={uploadPayload.length === 0}>
+                Upload config
+              </Button>
+            </DialogFooter>
           </DialogContent>
         </Dialog>
       </div>
