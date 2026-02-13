@@ -12,30 +12,23 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { authClient } from "@/lib/auth-client";
 
 export default function SignupPage() {
-  const [name, setName] = React.useState("");
-  const [email, setEmail] = React.useState("");
-  const [password, setPassword] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = React.useState(false);
 
-  const handleEmailSignUp = async () => {
+  const handleSocialSignIn = async (provider: "google" | "github") => {
     setIsSubmitting(true);
     setError(null);
-    const { error: signUpError } = await authClient.signUp.email({
-      name,
-      email,
-      password,
+    const { error: signInError } = await authClient.signIn.social({
+      provider,
       callbackURL: "/editor",
     });
-    if (signUpError) {
-      setError(signUpError.message);
+    if (signInError) {
+      setError(signInError.message);
+      setIsSubmitting(false);
     }
-    setIsSubmitting(false);
   };
 
   return (
@@ -53,65 +46,20 @@ export default function SignupPage() {
               <Button
                 variant="outline"
                 className="w-full"
-                onClick={() =>
-                  authClient.signIn.social({
-                    provider: "google",
-                    callbackURL: "/editor",
-                  })
-                }
+                onClick={() => handleSocialSignIn("google")}
+                disabled={isSubmitting}
               >
                 <Chrome className="h-4 w-4" />
                 Continue with Google
               </Button>
-              <Button variant="outline" className="w-full" disabled>
-                <Github className="h-4 w-4" />
-                Continue with GitHub (coming soon)
-              </Button>
-            </div>
-
-            <div className="grid gap-4">
-              <div className="grid gap-2">
-                <Label htmlFor="name">Full name</Label>
-                <Input
-                  id="name"
-                  type="text"
-                  placeholder="Alex Driver"
-                  autoComplete="name"
-                  required
-                  value={name}
-                  onChange={(event) => setName(event.target.value)}
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="email">Email</Label>
-                <Input
-                  id="email"
-                  type="email"
-                  placeholder="name@goonscout.io"
-                  autoComplete="email"
-                  required
-                  value={email}
-                  onChange={(event) => setEmail(event.target.value)}
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="password">Password</Label>
-                <Input
-                  id="password"
-                  type="password"
-                  autoComplete="new-password"
-                  required
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                />
-              </div>
               <Button
+                variant="outline"
                 className="w-full"
-                onClick={handleEmailSignUp}
+                onClick={() => handleSocialSignIn("github")}
                 disabled={isSubmitting}
-                type="button"
               >
-                {isSubmitting ? "Creating account..." : "Create account"}
+                <Github className="h-4 w-4" />
+                Continue with GitHub
               </Button>
             </div>
 
