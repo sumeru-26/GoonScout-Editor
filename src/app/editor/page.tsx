@@ -911,9 +911,15 @@ export default function EditorPage() {
 
     const centerX = canvasRect.width / 2;
     const centerY = canvasRect.height / 2;
+    const halfWidth = canvasRect.width / 2;
+    const halfHeight = canvasRect.height / 2;
     const normalize = (value: number) => Number(value.toFixed(2));
-    const relative = (value: number, center: number) =>
-      normalize(value - center);
+    const scaleX = (value: number) =>
+      normalize(((value - centerX) / halfWidth) * 100);
+    const scaleY = (value: number) =>
+      normalize(((centerY - value) / halfHeight) * 100);
+    const scaleWidth = (value: number) => normalize((value / halfWidth) * 100);
+    const scaleHeight = (value: number) => normalize((value / halfHeight) * 100);
 
     const payload = items.map((item) => {
       const centerItemX = item.x + item.width / 2;
@@ -924,30 +930,36 @@ export default function EditorPage() {
           return {
             button: {
               tag: item.tag ?? "",
-              x: relative(centerItemX, centerX),
-              y: relative(centerItemY, centerY),
+              x: scaleX(centerItemX),
+              y: scaleY(centerItemY),
               text: item.label,
+              width: scaleWidth(item.width),
+              height: scaleHeight(item.height),
             },
           };
         case "icon":
           return {
             "icon-button": {
               tag: item.tag ?? "",
-              x: relative(centerItemX, centerX),
-              y: relative(centerItemY, centerY),
+              x: scaleX(centerItemX),
+              y: scaleY(centerItemY),
               icon: item.iconName ?? "",
               outline: item.outlineColor ?? "#ffffff",
               fill: item.fillColor ?? "transparent",
+              width: scaleWidth(item.width),
+              height: scaleHeight(item.height),
             },
           };
         case "input":
           return {
             "text-input": {
               tag: item.tag ?? "",
-              x: relative(centerItemX, centerX),
-              y: relative(centerItemY, centerY),
+              x: scaleX(centerItemX),
+              y: scaleY(centerItemY),
               label: item.label,
               placeholder: item.placeholder ?? "",
+              width: scaleWidth(item.width),
+              height: scaleHeight(item.height),
             },
           };
         case "mirror": {
@@ -957,18 +969,20 @@ export default function EditorPage() {
           const endY = item.endY ?? item.y + item.height;
           return {
             "mirror-line": {
-              x1: relative(startX, centerX),
-              y1: relative(startY, centerY),
-              x2: relative(endX, centerX),
-              y2: relative(endY, centerY),
+              x1: scaleX(startX),
+              y1: scaleY(startY),
+              x2: scaleX(endX),
+              y2: scaleY(endY),
             },
           };
         }
         case "swap":
           return {
             "swap-sides": {
-              x: relative(centerItemX, centerX),
-              y: relative(centerItemY, centerY),
+              x: scaleX(centerItemX),
+              y: scaleY(centerItemY),
+              width: scaleWidth(item.width),
+              height: scaleHeight(item.height),
             },
           };
         case "cover": {
@@ -978,10 +992,10 @@ export default function EditorPage() {
           const y2 = item.y + item.height;
           return {
             cover: {
-              x1: relative(x1, centerX),
-              y1: relative(y1, centerY),
-              x2: relative(x2, centerX),
-              y2: relative(y2, centerY),
+              x1: scaleX(x1),
+              y1: scaleY(y1),
+              x2: scaleX(x2),
+              y2: scaleY(y2),
             },
           };
         }
