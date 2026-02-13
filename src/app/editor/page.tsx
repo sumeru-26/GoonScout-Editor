@@ -16,7 +16,7 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { Button } from "@/components/ui/button";
 import * as LucideIcons from "lucide-react";
-import { Bot, Download, Settings, Upload } from "lucide-react";
+import { Bot, CircleUser, Download, Settings, Upload } from "lucide-react";
 import { toast } from "sonner";
 import {
   Dialog,
@@ -30,13 +30,15 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { AspectRatio } from "@/components/ui/aspect-ratio";
+import { authClient } from "@/lib/auth-client";
+import { useRouter } from "next/navigation";
 
 const BUTTON_SIZE = { width: 104, height: 44 } as const;
 const ICON_BUTTON_SIZE = { width: 40, height: 40 } as const;
 const MIRROR_LINE_SIZE = { width: 160, height: 80 } as const;
 const COVER_SIZE = { width: 220, height: 120 } as const;
 const INPUT_SIZE = { width: 220, height: 56 } as const;
-const FIELD_HEIGHT = 420;
+const FIELD_HEIGHT = 560;
 const ICON_GRID_COLUMNS = 6;
 const ICON_CELL_SIZE = 48;
 const ICON_CELL_OFFSET = 4;
@@ -160,12 +162,12 @@ function PaletteMirrorButton() {
       ref={setNodeRef}
       style={style}
       variant="outline"
-      className="h-12 w-28 transition-opacity duration-150"
+      className="relative h-12 w-28 overflow-hidden transition-opacity duration-150"
       {...attributes}
       {...listeners}
       type="button"
     >
-      Mirror line
+      <span className="absolute left-1/2 top-2 h-8 w-0.5 -translate-x-1/2 rounded-full bg-red-500" />
     </Button>
   );
 }
@@ -489,6 +491,16 @@ function CanvasInput({
 }
 
 export default function EditorPage() {
+  const router = useRouter();
+  const { data: sessionData } = authClient.useSession();
+  const userName = sessionData?.user?.name ?? "Scout";
+  const userImage = sessionData?.user?.image ?? null;
+  const userInitials = userName
+    .split(" ")
+    .map((part) => part[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
   const [items, setItems] = React.useState<CanvasItem[]>([]);
   const [activeType, setActiveType] = React.useState<DragType | null>(null);
   const [activeSize, setActiveSize] = React.useState(BUTTON_SIZE);
@@ -519,6 +531,8 @@ export default function EditorPage() {
   const [aspectHeightDraft, setAspectHeightDraft] = React.useState("9");
   const [backgroundImage, setBackgroundImage] = React.useState<string | null>(null);
   const backgroundInputRef = React.useRef<HTMLInputElement | null>(null);
+  const [isUserMenuOpen, setIsUserMenuOpen] = React.useState(false);
+  const userMenuRef = React.useRef<HTMLDivElement | null>(null);
   const [isInputDialogOpen, setIsInputDialogOpen] = React.useState(false);
   const [inputEditingId, setInputEditingId] = React.useState<string | null>(null);
   const [inputLabelDraft, setInputLabelDraft] = React.useState("");
@@ -1071,6 +1085,29 @@ export default function EditorPage() {
   }, [aspectHeight, aspectWidth]);
 
   const fieldWidth = React.useMemo(() => FIELD_HEIGHT * aspectRatio, [aspectRatio]);
+  const stageWrapRef = React.useRef<HTMLDivElement | null>(null);
+  const [stageSize, setStageSize] = React.useState({
+    width: fieldWidth,
+    height: FIELD_HEIGHT,
+  });
+
+  React.useEffect(() => {
+    const node = stageWrapRef.current;
+    if (!node) return;
+
+    const updateSize = () => {
+      const rect = node.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      const fitWidth = Math.min(rect.width, rect.height * aspectRatio);
+      const fitHeight = fitWidth / aspectRatio;
+      setStageSize({ width: fitWidth, height: fitHeight });
+    };
+
+    updateSize();
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [aspectRatio]);
 
   const handleSaveAspectRatio = React.useCallback(() => {
     const width = Number(aspectWidthDraft);
@@ -1100,6 +1137,20 @@ export default function EditorPage() {
   React.useEffect(() => {
     iconEditingIdRef.current = iconEditingId;
   }, [iconEditingId]);
+
+  React.useEffect(() => {
+    if (!isUserMenuOpen) return;
+
+    const handleClick = (event: MouseEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (userMenuRef.current?.contains(target)) return;
+      setIsUserMenuOpen(false);
+    };
+
+    window.addEventListener("mousedown", handleClick);
+    return () => window.removeEventListener("mousedown", handleClick);
+  }, [isUserMenuOpen]);
 
   const filteredIconNames = React.useMemo(() => {
     if (!showIconGrid) return [];
@@ -1532,7 +1583,7 @@ export default function EditorPage() {
             fillColor: kind === "icon" ? "transparent" : undefined,
             startX: kind === "mirror" ? x : undefined,
             startY: kind === "mirror" ? y : undefined,
-            endX: kind === "mirror" ? x + size.width : undefined,
+            endX: kind === "mirror" ? x : undefined,
             endY: kind === "mirror" ? y + size.height : undefined,
             placeholder: kind === "input" ? "Enter text" : undefined,
           },
@@ -1590,24 +1641,21 @@ export default function EditorPage() {
             <AspectRatio
               ratio={aspectRatio}
               className="mx-auto"
-              style={{ width: fieldWidth, height: FIELD_HEIGHT }}
+              style={{ width: stageSize.width, height: stageSize.height }}
             >
               <section
                 ref={setCanvasRef}
                 className={`relative flex h-full w-full items-center justify-center rounded-md bg-black shadow-2xl transition-colors ${
                   isOver ? "ring-2 ring-white/40" : "ring-1 ring-white/10"
                 }`}
-                style={
-                  backgroundImage
-                    ? {
-                        backgroundImage: `url(${backgroundImage})`,
-                        backgroundSize: "cover",
-                        backgroundPosition: "center",
-                        backgroundRepeat: "no-repeat",
-                      }
-                    : undefined
-                }
               >
+                {backgroundImage ? (
+                  <img
+                    src={backgroundImage}
+                    alt=""
+                    className="pointer-events-none absolute inset-0 h-full w-full object-cover"
+                  />
+                ) : null}
                 {(alignmentGuides.vertical.length > 0 ||
                   alignmentGuides.horizontal.length > 0) && (
                   <div className="pointer-events-none absolute inset-0">
@@ -1668,6 +1716,25 @@ export default function EditorPage() {
             ref={setAssetsRef}
             className="flex h-[420px] w-full max-w-55 flex-col rounded-md bg-black px-6 py-8 text-white shadow-2xl ring-1 ring-white/10"
           >
+            <div className="mb-4 flex items-center justify-between">
+              <span className="text-sm font-semibold uppercase tracking-wide text-white/70">
+                Assets
+              </span>
+              <Button
+                variant="outline"
+                size="icon"
+                className="h-9 w-9"
+                aria-label="Settings"
+                type="button"
+                onClick={() => {
+                  setAspectWidthDraft(aspectWidth);
+                  setAspectHeightDraft(aspectHeight);
+                  setIsAspectDialogOpen(true);
+                }}
+              >
+                <Settings className="h-4 w-4" />
+              </Button>
+            </div>
             <ScrollArea
               className="h-full w-full"
               scrollbarClassName="bg-black/40"
@@ -1695,9 +1762,9 @@ export default function EditorPage() {
                   className="block"
                 >
                   <line
-                    x1={0}
+                    x1={activeSize.width / 2}
                     y1={0}
-                    x2={activeSize.width}
+                    x2={activeSize.width / 2}
                     y2={activeSize.height}
                     stroke="#ef4444"
                     strokeWidth={3}
