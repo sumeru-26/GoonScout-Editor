@@ -16,7 +16,7 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { Button } from "@/components/ui/button";
 import * as LucideIcons from "lucide-react";
-import { Bot, CircleUser, Download, Settings, Upload } from "lucide-react";
+import { Bot, Download, Settings, Upload } from "lucide-react";
 import { toast } from "sonner";
 import {
   Dialog,
@@ -532,6 +532,7 @@ export default function EditorPage() {
   const [backgroundImage, setBackgroundImage] = React.useState<string | null>(null);
   const backgroundInputRef = React.useRef<HTMLInputElement | null>(null);
   const [isUserMenuOpen, setIsUserMenuOpen] = React.useState(false);
+  const [avatarLoadFailed, setAvatarLoadFailed] = React.useState(false);
   const userMenuRef = React.useRef<HTMLDivElement | null>(null);
   const [isInputDialogOpen, setIsInputDialogOpen] = React.useState(false);
   const [inputEditingId, setInputEditingId] = React.useState<string | null>(null);
@@ -545,6 +546,15 @@ export default function EditorPage() {
   const [uploadPayload, setUploadPayload] = React.useState<
     Array<Record<string, unknown>>
   >([]);
+
+  const resolvedUserImage = React.useMemo(() => {
+    const image = userImage?.trim();
+    if (!image) return null;
+    if (/^(https?:\/\/|data:image\/|blob:|\/)/i.test(image)) {
+      return image;
+    }
+    return `/${image.replace(/^\/+/, "")}`;
+  }, [userImage]);
   const deferredIconSearch = React.useDeferredValue(iconSearch);
   const iconViewportRef = React.useRef<HTMLDivElement | null>(null);
   const [iconViewportHeight, setIconViewportHeight] = React.useState(288);
@@ -1152,6 +1162,21 @@ export default function EditorPage() {
     return () => window.removeEventListener("mousedown", handleClick);
   }, [isUserMenuOpen]);
 
+  React.useEffect(() => {
+    setAvatarLoadFailed(false);
+  }, [resolvedUserImage]);
+
+  const handleLogout = React.useCallback(async () => {
+    setIsUserMenuOpen(false);
+    const { error } = await authClient.signOut();
+    if (error) {
+      toast.error("Failed to log out.");
+      return;
+    }
+    router.push("/login");
+    router.refresh();
+  }, [router]);
+
   const filteredIconNames = React.useMemo(() => {
     if (!showIconGrid) return [];
     const query = deferredIconSearch.trim().toLowerCase();
@@ -1603,41 +1628,69 @@ export default function EditorPage() {
       onDragEnd={handleDragEnd}
     >
       <div className="min-h-screen bg-black text-white">
-        <div className="fixed right-6 top-6 z-50 flex items-center gap-2">
-          <Button
-            variant="outline"
-            size="icon"
-            aria-label="Upload layout"
-            type="button"
-            onClick={handleUploadPreview}
-          >
-            <Upload className="h-5 w-5" />
-          </Button>
-          <Button
-            variant="outline"
-            size="icon"
-            aria-label="Download layout"
-            type="button"
-            onClick={handleExport}
-          >
-            <Download className="h-5 w-5" />
-          </Button>
-          <Button
-            variant="outline"
-            size="icon"
-            aria-label="Settings"
-            type="button"
-            onClick={() => {
-              setAspectWidthDraft(aspectWidth);
-              setAspectHeightDraft(aspectHeight);
-              setIsAspectDialogOpen(true);
-            }}
-          >
-            <Settings className="h-5 w-5" />
-          </Button>
-        </div>
-        <main className="mx-auto flex w-full max-w-6xl flex-col gap-8 px-6 py-16 md:flex-row">
-          <div className="w-full flex-1">
+        <header className="sticky top-0 z-50 border-b border-white/10 bg-black/95 backdrop-blur">
+          <div className="mx-auto flex w-full max-w-6xl items-center justify-between px-6 py-4">
+            <h1 className="text-xl font-bold tracking-tight">GoonScout</h1>
+            <div className="ml-6 flex items-center gap-3 sm:gap-4">
+              <Button
+                variant="outline"
+                aria-label="Upload layout"
+                className="h-10 gap-2 px-3"
+                type="button"
+                onClick={handleUploadPreview}
+              >
+                <Upload className="h-5 w-5" />
+                <span>Upload</span>
+              </Button>
+              <Button
+                variant="outline"
+                aria-label="Download layout"
+                className="h-10 gap-2 px-3"
+                type="button"
+                onClick={handleExport}
+              >
+                <Download className="h-5 w-5" />
+                <span>Download</span>
+              </Button>
+              <div ref={userMenuRef} className="relative">
+                <button
+                  type="button"
+                  aria-label="User menu"
+                  aria-haspopup="menu"
+                  aria-expanded={isUserMenuOpen}
+                  onClick={() => setIsUserMenuOpen((prev) => !prev)}
+                  className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-full border border-white/20 bg-white/10 text-xs font-semibold uppercase text-white transition-colors hover:bg-white/20"
+                >
+                  {resolvedUserImage && !avatarLoadFailed ? (
+                    <img
+                      src={resolvedUserImage}
+                      alt=""
+                      onError={() => setAvatarLoadFailed(true)}
+                      className="h-full w-full object-cover"
+                    />
+                  ) : (
+                    <span>{userInitials || "GS"}</span>
+                  )}
+                </button>
+                {isUserMenuOpen ? (
+                  <div className="absolute right-0 mt-2 w-44 rounded-md border border-white/10 bg-neutral-900 p-1 shadow-2xl">
+                    <div className="px-2 py-2 text-xs text-white/70">{userName}</div>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={handleLogout}
+                      className="w-full rounded-sm px-2 py-2 text-left text-sm text-white transition-colors hover:bg-white/10"
+                    >
+                      Log out
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        </header>
+        <main className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-6 py-10 lg:flex-row lg:items-start lg:gap-8">
+          <div ref={stageWrapRef} className="min-w-0 flex-1">
             <AspectRatio
               ratio={aspectRatio}
               className="mx-auto"
@@ -1714,7 +1767,7 @@ export default function EditorPage() {
 
           <aside
             ref={setAssetsRef}
-            className="flex h-[420px] w-full max-w-55 flex-col rounded-md bg-black px-6 py-8 text-white shadow-2xl ring-1 ring-white/10"
+            className="flex h-[420px] w-full flex-none flex-col rounded-md bg-black px-6 py-8 text-white shadow-2xl ring-1 ring-white/10 lg:w-55"
           >
             <div className="mb-4 flex items-center justify-between">
               <span className="text-sm font-semibold uppercase tracking-wide text-white/70">
