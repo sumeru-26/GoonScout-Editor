@@ -16,7 +16,7 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { Button } from "@/components/ui/button";
 import * as LucideIcons from "lucide-react";
-import { Bot, Download, Settings, Upload } from "lucide-react";
+import { Bot, Download, Redo2, Settings, Undo2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import {
   Dialog,
@@ -94,7 +94,20 @@ type DragData = {
   assetKind?: AssetKind;
 };
 
+type DragSnapOffset = {
+  itemId: string | null;
+  x: number;
+  y: number;
+};
+
 type PersistedEditorState = {
+  items: CanvasItem[];
+  aspectWidth: string;
+  aspectHeight: string;
+  backgroundImage: string | null;
+};
+
+type EditorSnapshot = {
   items: CanvasItem[];
   aspectWidth: string;
   aspectHeight: string;
@@ -131,6 +144,19 @@ const parsePersistedEditorState = (
     aspectHeight,
     backgroundImage,
   };
+};
+
+const toDragTransform = (
+  isDragging: boolean,
+  transform: { x: number; y: number; scaleX: number; scaleY: number } | null,
+  snapOffset?: { x: number; y: number }
+) => {
+  if (!isDragging || !transform) return undefined;
+  return CSS.Translate.toString({
+    ...transform,
+    x: transform.x + (snapOffset?.x ?? 0),
+    y: transform.y + (snapOffset?.y ?? 0),
+  });
 };
 
 function PaletteButton() {
@@ -292,20 +318,25 @@ function CanvasButton({
   onResizeStart,
   onEditLabel,
   onSwapSides,
+  snapOffset,
+  isPreviewMode,
 }: {
   item: CanvasItem;
   onResizeStart: (event: React.PointerEvent, item: CanvasItem) => void;
   onEditLabel: (item: CanvasItem) => void;
   onSwapSides: () => void;
+  snapOffset?: { x: number; y: number };
+  isPreviewMode?: boolean;
 }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } =
     useDraggable({
       id: item.id,
+      disabled: Boolean(isPreviewMode),
       data: { type: "canvas", itemId: item.id } satisfies DragData,
     });
 
   const style: React.CSSProperties = {
-    transform: isDragging ? CSS.Translate.toString(transform) : undefined,
+    transform: toDragTransform(isDragging, transform, snapOffset),
     left: item.x,
     top: item.y,
     width: item.width,
@@ -320,7 +351,13 @@ function CanvasButton({
       variant="outline"
       size={item.kind === "icon" ? "icon" : "default"}
       className="group absolute !bg-black !text-white transition-opacity duration-150 hover:!bg-black"
+      onClick={() => {
+        if (item.kind === "swap" && isPreviewMode) {
+          onSwapSides();
+        }
+      }}
       onContextMenu={(event) => {
+        if (isPreviewMode) return;
         event.preventDefault();
         if (item.kind === "swap") {
           onSwapSides();
@@ -350,11 +387,13 @@ function CanvasButton({
       ) : (
         item.label
       )}
-      <span
-        role="presentation"
-        onPointerDown={(event) => onResizeStart(event, item)}
-        className="absolute bottom-1 right-1 hidden h-3 w-3 cursor-se-resize rounded-sm border border-white/60 bg-white/80 group-hover:block"
-      />
+      {!isPreviewMode ? (
+        <span
+          role="presentation"
+          onPointerDown={(event) => onResizeStart(event, item)}
+          className="absolute bottom-1 right-1 hidden h-3 w-3 cursor-se-resize rounded-sm border border-white/60 bg-white/80 group-hover:block"
+        />
+      ) : null}
     </Button>
   );
 }
@@ -362,6 +401,8 @@ function CanvasButton({
 function CanvasMirrorLine({
   item,
   onHandleStart,
+  snapOffset,
+  isPreviewMode,
 }: {
   item: CanvasItem;
   onHandleStart: (
@@ -369,9 +410,12 @@ function CanvasMirrorLine({
     item: CanvasItem,
     handle: "start" | "end"
   ) => void;
+  snapOffset?: { x: number; y: number };
+  isPreviewMode?: boolean;
 }) {
   const { attributes, listeners, setNodeRef, transform } = useDraggable({
     id: item.id,
+    disabled: Boolean(isPreviewMode),
     data: { type: "canvas", itemId: item.id } satisfies DragData,
   });
 
@@ -392,7 +436,7 @@ function CanvasMirrorLine({
     Math.abs(startY - endY) <= MIRROR_SNAP_PX;
 
   const style: React.CSSProperties = {
-    transform: transform ? CSS.Translate.toString(transform) : undefined,
+    transform: toDragTransform(true, transform, snapOffset),
     left,
     top,
     width,
@@ -422,20 +466,24 @@ function CanvasMirrorLine({
           strokeLinecap="round"
         />
       </svg>
-      <button
-        type="button"
-        aria-label="Mirror line start"
-        onPointerDown={(event) => onHandleStart(event, item, "start")}
-        className="absolute h-4 w-4 -translate-x-2 -translate-y-2 rounded-full bg-red-500"
-        style={{ left: relativeStartX, top: relativeStartY }}
-      />
-      <button
-        type="button"
-        aria-label="Mirror line end"
-        onPointerDown={(event) => onHandleStart(event, item, "end")}
-        className="absolute h-4 w-4 -translate-x-2 -translate-y-2 rounded-full bg-red-500"
-        style={{ left: relativeEndX, top: relativeEndY }}
-      />
+      {!isPreviewMode ? (
+        <>
+          <button
+            type="button"
+            aria-label="Mirror line start"
+            onPointerDown={(event) => onHandleStart(event, item, "start")}
+            className="absolute h-4 w-4 -translate-x-2 -translate-y-2 rounded-full bg-red-500"
+            style={{ left: relativeStartX, top: relativeStartY }}
+          />
+          <button
+            type="button"
+            aria-label="Mirror line end"
+            onPointerDown={(event) => onHandleStart(event, item, "end")}
+            className="absolute h-4 w-4 -translate-x-2 -translate-y-2 rounded-full bg-red-500"
+            style={{ left: relativeEndX, top: relativeEndY }}
+          />
+        </>
+      ) : null}
     </div>
   );
 }
@@ -443,17 +491,22 @@ function CanvasMirrorLine({
 function CanvasCover({
   item,
   onResizeStart,
+  snapOffset,
+  isPreviewMode,
 }: {
   item: CanvasItem;
   onResizeStart: (event: React.PointerEvent, item: CanvasItem) => void;
+  snapOffset?: { x: number; y: number };
+  isPreviewMode?: boolean;
 }) {
   const { attributes, listeners, setNodeRef, transform } = useDraggable({
     id: item.id,
+    disabled: Boolean(isPreviewMode),
     data: { type: "canvas", itemId: item.id } satisfies DragData,
   });
 
   const style: React.CSSProperties = {
-    transform: transform ? CSS.Translate.toString(transform) : undefined,
+    transform: toDragTransform(true, transform, snapOffset),
     left: item.x,
     top: item.y,
     width: item.width,
@@ -464,18 +517,26 @@ function CanvasCover({
     <div
       ref={setNodeRef}
       style={style}
-      className="group absolute rounded-md border border-dashed border-white/50 bg-white/5"
+      className={`group absolute rounded-md ${
+        isPreviewMode
+          ? "border border-white/20 bg-neutral-900"
+          : "border border-dashed border-white/50 bg-white/5"
+      }`}
       {...attributes}
       {...listeners}
     >
-      <div className="pointer-events-none flex h-full w-full items-center justify-center text-xs uppercase tracking-wide text-white/60">
-        Cover
-      </div>
-      <span
-        role="presentation"
-        onPointerDown={(event) => onResizeStart(event, item)}
-        className="absolute bottom-1 right-1 hidden h-3 w-3 cursor-se-resize rounded-sm border border-white/60 bg-white/80 group-hover:block"
-      />
+      {!isPreviewMode ? (
+        <>
+          <div className="pointer-events-none flex h-full w-full items-center justify-center text-xs uppercase tracking-wide text-white/60">
+            Cover
+          </div>
+          <span
+            role="presentation"
+            onPointerDown={(event) => onResizeStart(event, item)}
+            className="absolute bottom-1 right-1 hidden h-3 w-3 cursor-se-resize rounded-sm border border-white/60 bg-white/80 group-hover:block"
+          />
+        </>
+      ) : null}
     </div>
   );
 }
@@ -484,18 +545,23 @@ function CanvasInput({
   item,
   onResizeStart,
   onEditInput,
+  snapOffset,
+  isPreviewMode,
 }: {
   item: CanvasItem;
   onResizeStart: (event: React.PointerEvent, item: CanvasItem) => void;
   onEditInput: (item: CanvasItem) => void;
+  snapOffset?: { x: number; y: number };
+  isPreviewMode?: boolean;
 }) {
   const { attributes, listeners, setNodeRef, transform } = useDraggable({
     id: item.id,
+    disabled: Boolean(isPreviewMode),
     data: { type: "canvas", itemId: item.id } satisfies DragData,
   });
 
   const style: React.CSSProperties = {
-    transform: transform ? CSS.Translate.toString(transform) : undefined,
+    transform: toDragTransform(true, transform, snapOffset),
     left: item.x,
     top: item.y,
     width: item.width,
@@ -508,6 +574,7 @@ function CanvasInput({
       style={style}
       className="group absolute flex flex-col gap-2"
       onContextMenu={(event) => {
+        if (isPreviewMode) return;
         event.preventDefault();
         onEditInput(item);
       }}
@@ -521,11 +588,13 @@ function CanvasInput({
         className="h-full"
         readOnly
       />
-      <span
-        role="presentation"
-        onPointerDown={(event) => onResizeStart(event, item)}
-        className="absolute bottom-1 right-1 hidden h-3 w-3 cursor-se-resize rounded-sm border border-white/60 bg-white/80 group-hover:block"
-      />
+      {!isPreviewMode ? (
+        <span
+          role="presentation"
+          onPointerDown={(event) => onResizeStart(event, item)}
+          className="absolute bottom-1 right-1 hidden h-3 w-3 cursor-se-resize rounded-sm border border-white/60 bg-white/80 group-hover:block"
+        />
+      ) : null}
     </div>
   );
 }
@@ -569,6 +638,9 @@ export default function EditorPage() {
   const [aspectHeight, setAspectHeight] = React.useState("9");
   const [aspectWidthDraft, setAspectWidthDraft] = React.useState("16");
   const [aspectHeightDraft, setAspectHeightDraft] = React.useState("9");
+  const [isAlignmentAssistEnabled, setIsAlignmentAssistEnabled] =
+    React.useState(true);
+  const [isPreviewMode, setIsPreviewMode] = React.useState(false);
   const [backgroundImage, setBackgroundImage] = React.useState<string | null>(null);
   const backgroundInputRef = React.useRef<HTMLInputElement | null>(null);
   const [isUserMenuOpen, setIsUserMenuOpen] = React.useState(false);
@@ -582,6 +654,7 @@ export default function EditorPage() {
   const [isExportDialogOpen, setIsExportDialogOpen] = React.useState(false);
   const [exportJson, setExportJson] = React.useState("");
   const [isUploadDialogOpen, setIsUploadDialogOpen] = React.useState(false);
+  const [isResetDialogOpen, setIsResetDialogOpen] = React.useState(false);
   const [uploadJson, setUploadJson] = React.useState("");
   const [uploadPayload, setUploadPayload] = React.useState<
     Array<Record<string, unknown>>
@@ -614,6 +687,15 @@ export default function EditorPage() {
     vertical: number[];
     horizontal: number[];
   }>({ vertical: [], horizontal: [] });
+  const [dragSnapOffset, setDragSnapOffset] = React.useState<DragSnapOffset>({
+    itemId: null,
+    x: 0,
+    y: 0,
+  });
+  const [paletteSnapOffset, setPaletteSnapOffset] = React.useState({
+    x: 0,
+    y: 0,
+  });
   const resizingRef = React.useRef<{
     id: string;
     startX: number;
@@ -633,6 +715,61 @@ export default function EditorPage() {
     originEndX: number;
     originEndY: number;
   } | null>(null);
+  const historyRef = React.useRef<EditorSnapshot[]>([]);
+  const historyIndexRef = React.useRef(-1);
+  const isApplyingHistoryRef = React.useRef(false);
+  const lastSnapshotKeyRef = React.useRef("");
+  const [canUndo, setCanUndo] = React.useState(false);
+  const [canRedo, setCanRedo] = React.useState(false);
+
+  const updateHistoryAvailability = React.useCallback(() => {
+    const index = historyIndexRef.current;
+    const length = historyRef.current.length;
+    setCanUndo(index > 0);
+    setCanRedo(index >= 0 && index < length - 1);
+  }, []);
+
+  const buildEditorSnapshot = React.useCallback((): EditorSnapshot => {
+    return {
+      items,
+      aspectWidth,
+      aspectHeight,
+      backgroundImage,
+    };
+  }, [aspectHeight, aspectWidth, backgroundImage, items]);
+
+  const applyEditorSnapshot = React.useCallback(
+    (snapshot: EditorSnapshot) => {
+      isApplyingHistoryRef.current = true;
+      setItems(snapshot.items);
+      setAspectWidth(snapshot.aspectWidth);
+      setAspectHeight(snapshot.aspectHeight);
+      setBackgroundImage(snapshot.backgroundImage);
+      lastSnapshotKeyRef.current = JSON.stringify(snapshot);
+      window.setTimeout(() => {
+        isApplyingHistoryRef.current = false;
+      }, 0);
+    },
+    []
+  );
+
+  const handleUndo = React.useCallback(() => {
+    if (historyIndexRef.current <= 0) return;
+    historyIndexRef.current -= 1;
+    const snapshot = historyRef.current[historyIndexRef.current];
+    if (!snapshot) return;
+    applyEditorSnapshot(snapshot);
+    updateHistoryAvailability();
+  }, [applyEditorSnapshot, updateHistoryAvailability]);
+
+  const handleRedo = React.useCallback(() => {
+    if (historyIndexRef.current >= historyRef.current.length - 1) return;
+    historyIndexRef.current += 1;
+    const snapshot = historyRef.current[historyIndexRef.current];
+    if (!snapshot) return;
+    applyEditorSnapshot(snapshot);
+    updateHistoryAvailability();
+  }, [applyEditorSnapshot, updateHistoryAvailability]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } })
@@ -665,8 +802,11 @@ export default function EditorPage() {
 
   const handleDragStart = React.useCallback(
     (event: DragStartEvent) => {
+      if (isPreviewMode) return;
       const data = event.active.data.current as DragData | undefined;
       setActiveType(data?.type ?? null);
+      setDragSnapOffset({ itemId: data?.itemId ?? null, x: 0, y: 0 });
+      setPaletteSnapOffset({ x: 0, y: 0 });
 
       if (data?.type === "canvas" && data.itemId) {
         const currentItem = items.find((item) => item.id === data.itemId);
@@ -721,11 +861,25 @@ export default function EditorPage() {
         setActiveFillColor(undefined);
       }
     },
-    [items]
+    [isPreviewMode, items]
   );
 
   const handleDragMove = React.useCallback(
     (event: DragMoveEvent) => {
+      if (isPreviewMode) {
+        setAlignmentGuides({ vertical: [], horizontal: [] });
+        setDragSnapOffset({ itemId: null, x: 0, y: 0 });
+        setPaletteSnapOffset({ x: 0, y: 0 });
+        return;
+      }
+
+      if (!isAlignmentAssistEnabled) {
+        setAlignmentGuides({ vertical: [], horizontal: [] });
+        setDragSnapOffset({ itemId: null, x: 0, y: 0 });
+        setPaletteSnapOffset({ x: 0, y: 0 });
+        return;
+      }
+
       const canvasRect = canvasRef.current?.getBoundingClientRect();
       if (!canvasRect) return;
 
@@ -751,6 +905,8 @@ export default function EditorPage() {
             ? MIRROR_LINE_SIZE
             : paletteKind === "cover"
               ? COVER_SIZE
+              : paletteKind === "input"
+                ? INPUT_SIZE
               : paletteKind === "swap"
                 ? BUTTON_SIZE
                 : BUTTON_SIZE;
@@ -765,6 +921,8 @@ export default function EditorPage() {
 
       if (!isInsideCanvas) {
         setAlignmentGuides({ vertical: [], horizontal: [] });
+        setDragSnapOffset({ itemId: null, x: 0, y: 0 });
+        setPaletteSnapOffset({ x: 0, y: 0 });
         return;
       }
 
@@ -794,12 +952,18 @@ export default function EditorPage() {
 
           if (Math.abs(activeLeft - left) <= GUIDE_SNAP_PX) vertical.add(left);
           if (Math.abs(activeRight - right) <= GUIDE_SNAP_PX) vertical.add(right);
+          if (Math.abs(activeLeft - right) <= GUIDE_SNAP_PX) vertical.add(right);
+          if (Math.abs(activeRight - left) <= GUIDE_SNAP_PX) vertical.add(left);
           if (Math.abs(activeCenterX - centerX) <= GUIDE_SNAP_PX)
             vertical.add(centerX);
 
           if (Math.abs(activeTop - top) <= GUIDE_SNAP_PX) horizontal.add(top);
           if (Math.abs(activeBottom - bottom) <= GUIDE_SNAP_PX)
             horizontal.add(bottom);
+          if (Math.abs(activeTop - bottom) <= GUIDE_SNAP_PX)
+            horizontal.add(bottom);
+          if (Math.abs(activeBottom - top) <= GUIDE_SNAP_PX)
+            horizontal.add(top);
           if (Math.abs(activeCenterY - centerY) <= GUIDE_SNAP_PX)
             horizontal.add(centerY);
         });
@@ -808,8 +972,115 @@ export default function EditorPage() {
         vertical: Array.from(vertical),
         horizontal: Array.from(horizontal),
       });
+
+      if (data?.type === "canvas" && data.itemId && activeItem) {
+        let snappedX = x;
+        let snappedY = y;
+        let bestXDiff = GUIDE_SNAP_PX + 1;
+        let bestYDiff = GUIDE_SNAP_PX + 1;
+
+        items
+          .filter((item) => item.kind !== "mirror" && item.id !== data.itemId)
+          .forEach((item) => {
+            const left = item.x;
+            const right = item.x + item.width;
+            const centerX = item.x + item.width / 2;
+            const top = item.y;
+            const bottom = item.y + item.height;
+            const centerY = item.y + item.height / 2;
+
+            const candidatesX = [
+              { diff: Math.abs(activeLeft - left), value: left },
+              { diff: Math.abs(activeRight - right), value: right - activeWidth },
+              { diff: Math.abs(activeLeft - right), value: right },
+              { diff: Math.abs(activeRight - left), value: left - activeWidth },
+              { diff: Math.abs(activeCenterX - centerX), value: centerX - activeWidth / 2 },
+            ];
+
+            candidatesX.forEach((candidate) => {
+              if (candidate.diff <= GUIDE_SNAP_PX && candidate.diff < bestXDiff) {
+                bestXDiff = candidate.diff;
+                snappedX = candidate.value;
+              }
+            });
+
+            const candidatesY = [
+              { diff: Math.abs(activeTop - top), value: top },
+              { diff: Math.abs(activeBottom - bottom), value: bottom - activeHeight },
+              { diff: Math.abs(activeTop - bottom), value: bottom },
+              { diff: Math.abs(activeBottom - top), value: top - activeHeight },
+              { diff: Math.abs(activeCenterY - centerY), value: centerY - activeHeight / 2 },
+            ];
+
+            candidatesY.forEach((candidate) => {
+              if (candidate.diff <= GUIDE_SNAP_PX && candidate.diff < bestYDiff) {
+                bestYDiff = candidate.diff;
+                snappedY = candidate.value;
+              }
+            });
+          });
+
+        setDragSnapOffset({
+          itemId: data.itemId,
+          x: snappedX - x,
+          y: snappedY - y,
+        });
+        setPaletteSnapOffset({ x: 0, y: 0 });
+      } else if (data?.type === "palette") {
+        let snappedX = x;
+        let snappedY = y;
+        let bestXDiff = GUIDE_SNAP_PX + 1;
+        let bestYDiff = GUIDE_SNAP_PX + 1;
+
+        items
+          .filter((item) => item.kind !== "mirror")
+          .forEach((item) => {
+            const left = item.x;
+            const right = item.x + item.width;
+            const centerX = item.x + item.width / 2;
+            const top = item.y;
+            const bottom = item.y + item.height;
+            const centerY = item.y + item.height / 2;
+
+            const candidatesX = [
+              { diff: Math.abs(activeLeft - left), value: left },
+              { diff: Math.abs(activeRight - right), value: right - activeWidth },
+              { diff: Math.abs(activeLeft - right), value: right },
+              { diff: Math.abs(activeRight - left), value: left - activeWidth },
+              { diff: Math.abs(activeCenterX - centerX), value: centerX - activeWidth / 2 },
+            ];
+
+            candidatesX.forEach((candidate) => {
+              if (candidate.diff <= GUIDE_SNAP_PX && candidate.diff < bestXDiff) {
+                bestXDiff = candidate.diff;
+                snappedX = candidate.value;
+              }
+            });
+
+            const candidatesY = [
+              { diff: Math.abs(activeTop - top), value: top },
+              { diff: Math.abs(activeBottom - bottom), value: bottom - activeHeight },
+              { diff: Math.abs(activeTop - bottom), value: bottom },
+              { diff: Math.abs(activeBottom - top), value: top - activeHeight },
+              { diff: Math.abs(activeCenterY - centerY), value: centerY - activeHeight / 2 },
+            ];
+
+            candidatesY.forEach((candidate) => {
+              if (candidate.diff <= GUIDE_SNAP_PX && candidate.diff < bestYDiff) {
+                bestYDiff = candidate.diff;
+                snappedY = candidate.value;
+              }
+            });
+          });
+
+        setPaletteSnapOffset({ x: snappedX - x, y: snappedY - y });
+        setDragSnapOffset({ itemId: null, x: 0, y: 0 });
+      } else {
+        setDragSnapOffset({ itemId: null, x: 0, y: 0 });
+        setPaletteSnapOffset({ x: 0, y: 0 });
+      }
     },
-    [items]
+    [isAlignmentAssistEnabled, isPreviewMode, items]
   );
 
   const handleResizeStart = React.useCallback(
@@ -1250,6 +1521,70 @@ export default function EditorPage() {
   }, [backgroundImage, buildDraftPayload, sessionData?.user?.id]);
 
   React.useEffect(() => {
+    const snapshot = buildEditorSnapshot();
+    const snapshotKey = JSON.stringify(snapshot);
+
+    if (snapshotKey === lastSnapshotKeyRef.current) {
+      return;
+    }
+
+    if (isApplyingHistoryRef.current) {
+      lastSnapshotKeyRef.current = snapshotKey;
+      return;
+    }
+
+    const currentIndex = historyIndexRef.current;
+    const nextHistory = historyRef.current.slice(0, currentIndex + 1);
+    nextHistory.push(snapshot);
+
+    if (nextHistory.length > 100) {
+      nextHistory.shift();
+    }
+
+    historyRef.current = nextHistory;
+    historyIndexRef.current = nextHistory.length - 1;
+    lastSnapshotKeyRef.current = snapshotKey;
+    updateHistoryAvailability();
+  }, [buildEditorSnapshot, updateHistoryAvailability]);
+
+  React.useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+
+      const key = event.key.toLowerCase();
+      const isMod = event.ctrlKey || event.metaKey;
+      if (!isMod) return;
+
+      if (key === "z") {
+        event.preventDefault();
+        if (event.shiftKey) {
+          handleRedo();
+        } else {
+          handleUndo();
+        }
+        return;
+      }
+
+      if (key === "y") {
+        event.preventDefault();
+        handleRedo();
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [handleRedo, handleUndo]);
+
+  React.useEffect(() => {
     const userId = sessionData?.user?.id;
     if (!userId) {
       hasRestoredRef.current = false;
@@ -1526,17 +1861,99 @@ export default function EditorPage() {
         const maxWidth = Math.max(64, canvasRect.width - resize.originX);
         const maxHeight = Math.max(36, canvasRect.height - resize.originY);
 
-        const nextWidth = Math.max(
+        const rawWidth = Math.max(
           64,
           Math.min(resize.startWidth + (event.clientX - resize.startX), maxWidth)
         );
-        const nextHeight = Math.max(
+        const rawHeight = Math.max(
           36,
           Math.min(
             resize.startHeight + (event.clientY - resize.startY),
             maxHeight
           )
         );
+
+        if (!isAlignmentAssistEnabled) {
+          setAlignmentGuides({ vertical: [], horizontal: [] });
+          setItems((prev) =>
+            prev.map((item) =>
+              item.id === resize.id
+                ? { ...item, width: rawWidth, height: rawHeight }
+                : item
+            )
+          );
+          return;
+        }
+
+        const activeLeft = resize.originX;
+        const activeTop = resize.originY;
+        const activeRight = activeLeft + rawWidth;
+        const activeBottom = activeTop + rawHeight;
+
+        let snappedRight = activeRight;
+        let snappedBottom = activeBottom;
+        let bestXDiff = GUIDE_SNAP_PX + 1;
+        let bestYDiff = GUIDE_SNAP_PX + 1;
+
+        const vertical = new Set<number>();
+        const horizontal = new Set<number>();
+
+        items
+          .filter((item) => item.id !== resize.id && item.kind !== "mirror")
+          .forEach((item) => {
+            const left = item.x;
+            const right = item.x + item.width;
+            const centerX = item.x + item.width / 2;
+            const top = item.y;
+            const bottom = item.y + item.height;
+            const centerY = item.y + item.height / 2;
+
+            const candidatesX = [
+              { diff: Math.abs(activeRight - left), value: left },
+              { diff: Math.abs(activeRight - right), value: right },
+              { diff: Math.abs(activeRight - centerX), value: centerX },
+            ];
+
+            candidatesX.forEach((candidate) => {
+              if (candidate.diff <= GUIDE_SNAP_PX) {
+                vertical.add(candidate.value);
+              }
+              if (candidate.diff <= GUIDE_SNAP_PX && candidate.diff < bestXDiff) {
+                bestXDiff = candidate.diff;
+                snappedRight = candidate.value;
+              }
+            });
+
+            const candidatesY = [
+              { diff: Math.abs(activeBottom - top), value: top },
+              { diff: Math.abs(activeBottom - bottom), value: bottom },
+              { diff: Math.abs(activeBottom - centerY), value: centerY },
+            ];
+
+            candidatesY.forEach((candidate) => {
+              if (candidate.diff <= GUIDE_SNAP_PX) {
+                horizontal.add(candidate.value);
+              }
+              if (candidate.diff <= GUIDE_SNAP_PX && candidate.diff < bestYDiff) {
+                bestYDiff = candidate.diff;
+                snappedBottom = candidate.value;
+              }
+            });
+          });
+
+        const nextWidth = Math.max(
+          64,
+          Math.min(snappedRight - activeLeft, maxWidth)
+        );
+        const nextHeight = Math.max(
+          36,
+          Math.min(snappedBottom - activeTop, maxHeight)
+        );
+
+        setAlignmentGuides({
+          vertical: Array.from(vertical),
+          horizontal: Array.from(horizontal),
+        });
 
         setItems((prev) =>
           prev.map((item) =>
@@ -1609,6 +2026,7 @@ export default function EditorPage() {
     const handlePointerUp = () => {
       resizingRef.current = null;
       mirrorHandleRef.current = null;
+      setAlignmentGuides({ vertical: [], horizontal: [] });
     };
 
     window.addEventListener("pointermove", handlePointerMove);
@@ -1618,10 +2036,18 @@ export default function EditorPage() {
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerUp);
     };
-  }, []);
+  }, [isAlignmentAssistEnabled, items]);
 
   const handleDragEnd = React.useCallback(
     (event: DragEndEvent) => {
+      if (isPreviewMode) {
+        setActiveType(null);
+        setAlignmentGuides({ vertical: [], horizontal: [] });
+        setDragSnapOffset({ itemId: null, x: 0, y: 0 });
+        setPaletteSnapOffset({ x: 0, y: 0 });
+        return;
+      }
+
       const data = event.active.data.current as DragData | undefined;
 
       const canvasRect = canvasRef.current?.getBoundingClientRect();
@@ -1669,6 +2095,8 @@ export default function EditorPage() {
         setItems((prev) => prev.filter((item) => item.id !== data.itemId));
         setActiveType(null);
         setAlignmentGuides({ vertical: [], horizontal: [] });
+        setDragSnapOffset({ itemId: null, x: 0, y: 0 });
+        setPaletteSnapOffset({ x: 0, y: 0 });
         return;
       }
 
@@ -1681,6 +2109,8 @@ export default function EditorPage() {
       if (!isInsideCanvas) {
         setActiveType(null);
         setAlignmentGuides({ vertical: [], horizontal: [] });
+        setDragSnapOffset({ itemId: null, x: 0, y: 0 });
+        setPaletteSnapOffset({ x: 0, y: 0 });
         return;
       }
 
@@ -1691,6 +2121,10 @@ export default function EditorPage() {
       y = Math.max(0, Math.min(y, canvasRect.height - activeHeight));
 
       const snapToGuides = (nextX: number, nextY: number) => {
+        if (!isAlignmentAssistEnabled) {
+          return { x: nextX, y: nextY };
+        }
+
         let snappedX = nextX;
         let snappedY = nextY;
         let bestXDiff = GUIDE_SNAP_PX + 1;
@@ -1717,6 +2151,8 @@ export default function EditorPage() {
             const candidatesX = [
               { diff: Math.abs(activeLeft - left), value: left },
               { diff: Math.abs(activeRight - right), value: right - activeWidth },
+              { diff: Math.abs(activeLeft - right), value: right },
+              { diff: Math.abs(activeRight - left), value: left - activeWidth },
               { diff: Math.abs(activeCenterX - centerX), value: centerX - activeWidth / 2 },
             ];
 
@@ -1730,6 +2166,8 @@ export default function EditorPage() {
             const candidatesY = [
               { diff: Math.abs(activeTop - top), value: top },
               { diff: Math.abs(activeBottom - bottom), value: bottom - activeHeight },
+              { diff: Math.abs(activeTop - bottom), value: bottom },
+              { diff: Math.abs(activeBottom - top), value: top - activeHeight },
               { diff: Math.abs(activeCenterY - centerY), value: centerY - activeHeight / 2 },
             ];
 
@@ -1747,23 +2185,26 @@ export default function EditorPage() {
       };
 
       if (data?.type === "canvas" && data.itemId) {
+        const adjustedX = x + (dragSnapOffset.itemId === data.itemId ? dragSnapOffset.x : 0);
+        const adjustedY = y + (dragSnapOffset.itemId === data.itemId ? dragSnapOffset.y : 0);
+
         setItems((prev) =>
           prev.map((item) => {
             if (item.id !== data.itemId) return item;
             if (item.kind !== "mirror") {
-              const snapped = snapToGuides(x, y);
+              const snapped = snapToGuides(adjustedX, adjustedY);
               return { ...item, x: snapped.x, y: snapped.y };
             }
-            const dx = x - item.x;
-            const dy = y - item.y;
+            const dx = adjustedX - item.x;
+            const dy = adjustedY - item.y;
             const startX = (item.startX ?? item.x) + dx;
             const startY = (item.startY ?? item.y) + dy;
             const endX = (item.endX ?? item.x + item.width) + dx;
             const endY = (item.endY ?? item.y + item.height) + dy;
             return {
               ...item,
-              x,
-              y,
+              x: adjustedX,
+              y: adjustedY,
               startX,
               startY,
               endX,
@@ -1773,14 +2214,24 @@ export default function EditorPage() {
         );
         setActiveType(null);
         setAlignmentGuides({ vertical: [], horizontal: [] });
+        setDragSnapOffset({ itemId: null, x: 0, y: 0 });
+        setPaletteSnapOffset({ x: 0, y: 0 });
         return;
       }
 
       if (data?.type === "palette") {
         if (data.assetKind === "mirror" && items.some((item) => item.kind === "mirror")) {
           setActiveType(null);
+          setPaletteSnapOffset({ x: 0, y: 0 });
           return;
         }
+
+        x += paletteSnapOffset.x;
+        y += paletteSnapOffset.y;
+
+        x = Math.max(0, Math.min(x, canvasRect.width - activeWidth));
+        y = Math.max(0, Math.min(y, canvasRect.height - activeHeight));
+
         if (data.assetKind !== "mirror") {
           const snapped = snapToGuides(x, y);
           x = snapped.x;
@@ -1837,10 +2288,37 @@ export default function EditorPage() {
         ]);
         setActiveType(null);
         setAlignmentGuides({ vertical: [], horizontal: [] });
+        setDragSnapOffset({ itemId: null, x: 0, y: 0 });
+        setPaletteSnapOffset({ x: 0, y: 0 });
       }
     },
-    [items]
+    [
+      dragSnapOffset,
+      isAlignmentAssistEnabled,
+      isPreviewMode,
+      items,
+      paletteSnapOffset,
+    ]
   );
+
+  const handleResetEditor = React.useCallback(() => {
+    setItems([]);
+    setBackgroundImage(null);
+    setAspectWidth("16");
+    setAspectHeight("9");
+    setAspectWidthDraft("16");
+    setAspectHeightDraft("9");
+    setAlignmentGuides({ vertical: [], horizontal: [] });
+    setDragSnapOffset({ itemId: null, x: 0, y: 0 });
+    setPaletteSnapOffset({ x: 0, y: 0 });
+    setActiveType(null);
+    setIsPreviewMode(false);
+    historyRef.current = [];
+    historyIndexRef.current = -1;
+    lastSnapshotKeyRef.current = "";
+    setCanUndo(false);
+    setCanRedo(false);
+  }, []);
 
   return (
     <DndContext
@@ -1850,7 +2328,7 @@ export default function EditorPage() {
       onDragEnd={handleDragEnd}
     >
       <div className="min-h-screen bg-black text-white">
-        <header className="sticky top-0 z-50 border-b border-white/10 bg-black/95 backdrop-blur">
+        <header className="sticky top-0 z-50 border-b border-white/10 bg-neutral-900/95 backdrop-blur">
           <div className="mx-auto flex w-full max-w-6xl items-center justify-between px-6 py-4">
             <h1 className="text-xl font-bold tracking-tight">GoonScout</h1>
             <div className="ml-6 flex items-center gap-3 sm:gap-4">
@@ -1940,7 +2418,8 @@ export default function EditorPage() {
                     className="pointer-events-none absolute inset-0 h-full w-full object-cover"
                   />
                 ) : null}
-                {(alignmentGuides.vertical.length > 0 ||
+                {!isPreviewMode &&
+                  (alignmentGuides.vertical.length > 0 ||
                   alignmentGuides.horizontal.length > 0) && (
                   <div className="pointer-events-none absolute inset-0">
                     {alignmentGuides.vertical.map((xGuide) => (
@@ -1962,18 +2441,31 @@ export default function EditorPage() {
                 {items.length === 0 && (
                   <p className="text-sm text-white/60">Drop assets here</p>
                 )}
-                {items.map((item) =>
-                  item.kind === "mirror" ? (
+                {items.map((item) => {
+                  if (isPreviewMode && item.kind === "mirror") {
+                    return null;
+                  }
+
+                  const snapOffset =
+                    dragSnapOffset.itemId === item.id
+                      ? { x: dragSnapOffset.x, y: dragSnapOffset.y }
+                      : undefined;
+
+                  return item.kind === "mirror" ? (
                     <CanvasMirrorLine
                       key={item.id}
                       item={item}
                       onHandleStart={handleMirrorHandleStart}
+                      snapOffset={snapOffset}
+                      isPreviewMode={isPreviewMode}
                     />
                   ) : item.kind === "cover" ? (
                     <CanvasCover
                       key={item.id}
                       item={item}
                       onResizeStart={handleResizeStart}
+                      snapOffset={snapOffset}
+                      isPreviewMode={isPreviewMode}
                     />
                   ) : item.kind === "input" ? (
                     <CanvasInput
@@ -1981,6 +2473,8 @@ export default function EditorPage() {
                       item={item}
                       onResizeStart={handleResizeStart}
                       onEditInput={handleEditLabel}
+                      snapOffset={snapOffset}
+                      isPreviewMode={isPreviewMode}
                     />
                   ) : (
                     <CanvasButton
@@ -1989,56 +2483,112 @@ export default function EditorPage() {
                       onResizeStart={handleResizeStart}
                       onEditLabel={handleEditLabel}
                       onSwapSides={handleSwapSides}
+                      snapOffset={snapOffset}
+                      isPreviewMode={isPreviewMode}
                     />
-                  )
-                )}
+                  );
+                })}
               </section>
             </AspectRatio>
           </div>
 
-          <aside
-            ref={setAssetsRef}
-            className="flex h-[420px] w-full flex-none flex-col rounded-md bg-black px-6 py-8 text-white shadow-2xl ring-1 ring-white/10 lg:w-55"
-          >
-            <div className="mb-4 flex items-center justify-between">
-              <span className="text-sm font-semibold uppercase tracking-wide text-white/70">
-                Assets
-              </span>
+          <div className="w-full flex-none lg:w-55">
+            <div className="mb-3 grid w-full grid-cols-2 gap-2">
               <Button
                 variant="outline"
-                size="icon"
-                className="h-9 w-9"
-                aria-label="Settings"
                 type="button"
-                onClick={() => {
-                  setAspectWidthDraft(aspectWidth);
-                  setAspectHeightDraft(aspectHeight);
-                  setIsAspectDialogOpen(true);
-                }}
+                className="w-full"
+                onClick={handleUndo}
+                disabled={!canUndo}
+                aria-label="Undo"
               >
-                <Settings className="h-4 w-4" />
+                <Undo2 className="mr-2 h-4 w-4" />
+                Undo
+              </Button>
+              <Button
+                variant="outline"
+                type="button"
+                className="w-full"
+                onClick={handleRedo}
+                disabled={!canRedo}
+                aria-label="Redo"
+              >
+                <Redo2 className="mr-2 h-4 w-4" />
+                Redo
               </Button>
             </div>
-            <ScrollArea
-              className="h-full w-full"
-              scrollbarClassName="bg-black/40"
-              thumbClassName="bg-black"
+            <aside
+              ref={setAssetsRef}
+              className="flex h-[420px] w-full flex-col rounded-md bg-black px-6 py-8 text-white shadow-2xl ring-1 ring-white/10"
             >
-              <div className="flex flex-col items-center gap-6 px-1">
-                <PaletteButton />
-                <PaletteIconButton />
-                <PaletteMirrorButton />
-                <PaletteSwapButton />
-                <PaletteCoverButton />
-                <PaletteInputButton />
+              <div className="mb-4 flex items-center justify-between">
+                <span className="text-sm font-semibold uppercase tracking-wide text-white/70">
+                  Assets
+                </span>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-9 w-9"
+                  aria-label="Settings"
+                  type="button"
+                  onClick={() => {
+                    setAspectWidthDraft(aspectWidth);
+                    setAspectHeightDraft(aspectHeight);
+                    setIsAspectDialogOpen(true);
+                  }}
+                >
+                  <Settings className="h-4 w-4" />
+                </Button>
               </div>
-            </ScrollArea>
-          </aside>
+              <ScrollArea
+                className="h-full w-full"
+                scrollbarClassName="bg-black/40"
+                thumbClassName="bg-black"
+              >
+                <div
+                  className={`flex flex-col items-center gap-6 px-1 ${
+                    isPreviewMode ? "pointer-events-none opacity-50" : ""
+                  }`}
+                >
+                  <PaletteButton />
+                  <PaletteIconButton />
+                  <PaletteMirrorButton />
+                  <PaletteSwapButton />
+                  <PaletteCoverButton />
+                  <PaletteInputButton />
+                </div>
+              </ScrollArea>
+            </aside>
+            <div className="mt-3 grid w-full gap-2">
+              <Button
+                variant="outline"
+                type="button"
+                className="w-full"
+                onClick={() => setIsPreviewMode((current) => !current)}
+              >
+                {isPreviewMode ? "Back to editor" : "Preview"}
+              </Button>
+              <Button
+                variant="outline"
+                type="button"
+                className="w-full"
+                onClick={() => setIsResetDialogOpen(true)}
+              >
+                Reset
+              </Button>
+            </div>
+          </div>
         </main>
 
         <DragOverlay dropAnimation={null}>
-          {activeType === "palette" ? (
-            <div style={{ width: activeSize.width, height: activeSize.height }}>
+          {!isPreviewMode && activeType === "palette" ? (
+            <div
+              style={{
+                width: activeSize.width,
+                height: activeSize.height,
+                transform: `translate(${paletteSnapOffset.x}px, ${paletteSnapOffset.y}px)`,
+              }}
+            >
               {activeKind === "mirror" ? (
                 <svg
                   width={activeSize.width}
@@ -2190,7 +2740,7 @@ export default function EditorPage() {
           open={isAspectDialogOpen}
           onOpenChange={(open) => setIsAspectDialogOpen(open)}
         >
-          <DialogContent>
+          <DialogContent className="data-[state=closed]:slide-out-to-right-1/2 data-[state=open]:slide-in-from-right-1/2">
             <DialogHeader>
               <DialogTitle>Field aspect ratio</DialogTitle>
               <DialogDescription>
@@ -2244,6 +2794,37 @@ export default function EditorPage() {
                   Remove image
                 </Button>
               </div>
+            </div>
+            <div className="mt-4 flex items-center justify-between rounded-md border border-white/10 px-3 py-2">
+              <div className="grid gap-0.5">
+                <Label htmlFor="alignment-assist-toggle">Alignment assist</Label>
+                <p className="text-xs text-white/60">
+                  Snap and guide lines while moving elements
+                </p>
+              </div>
+              <button
+                id="alignment-assist-toggle"
+                type="button"
+                role="switch"
+                aria-checked={isAlignmentAssistEnabled}
+                aria-label="Toggle alignment assist"
+                onClick={() =>
+                  setIsAlignmentAssistEnabled((current) => !current)
+                }
+                className={`relative inline-flex h-6 w-11 items-center rounded-full border transition-colors ${
+                  isAlignmentAssistEnabled
+                    ? "border-white/60 bg-white/80"
+                    : "border-white/30 bg-white/10"
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-black transition-transform ${
+                    isAlignmentAssistEnabled
+                      ? "translate-x-6"
+                      : "translate-x-1"
+                  }`}
+                />
+              </button>
             </div>
             <DialogFooter>
               <Button variant="outline" onClick={() => setIsAspectDialogOpen(false)}>
@@ -2448,6 +3029,30 @@ export default function EditorPage() {
               </Button>
               <Button onClick={handleUploadConfig} disabled={uploadPayload.length === 0}>
                 Upload config
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={isResetDialogOpen} onOpenChange={setIsResetDialogOpen}>
+          <DialogContent className="data-[state=closed]:slide-out-to-right-1/2 data-[state=closed]:slide-out-to-bottom-[48%] data-[state=open]:slide-in-from-right-1/2 data-[state=open]:slide-in-from-bottom-[48%]">
+            <DialogHeader>
+              <DialogTitle>Reset editor?</DialogTitle>
+              <DialogDescription>
+                This will clear all elements, background image, and current layout settings.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setIsResetDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                onClick={() => {
+                  handleResetEditor();
+                  setIsResetDialogOpen(false);
+                }}
+              >
+                Yes, reset
               </Button>
             </DialogFooter>
           </DialogContent>
