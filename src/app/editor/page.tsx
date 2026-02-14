@@ -44,6 +44,7 @@ const ICON_CELL_SIZE = 48;
 const ICON_CELL_OFFSET = 4;
 const MIRROR_SNAP_PX = 8;
 const GUIDE_SNAP_PX = 6;
+const AUTOSAVE_DELAY_MS = 1500;
 
 const ICON_COMPONENTS = Object.entries(LucideIcons).reduce(
   (acc, [name, value]) => {
@@ -91,6 +92,45 @@ type DragData = {
   type: DragType;
   itemId?: string;
   assetKind?: AssetKind;
+};
+
+type PersistedEditorState = {
+  items: CanvasItem[];
+  aspectWidth: string;
+  aspectHeight: string;
+  backgroundImage: string | null;
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const parsePersistedEditorState = (
+  payload: unknown
+): PersistedEditorState | null => {
+  const source =
+    isRecord(payload) && isRecord(payload.editorState)
+      ? payload.editorState
+      : isRecord(payload)
+        ? payload
+        : null;
+
+  if (!source || !Array.isArray(source.items)) {
+    return null;
+  }
+
+  const aspectWidth =
+    typeof source.aspectWidth === "string" ? source.aspectWidth : "16";
+  const aspectHeight =
+    typeof source.aspectHeight === "string" ? source.aspectHeight : "9";
+  const backgroundImage =
+    typeof source.backgroundImage === "string" ? source.backgroundImage : null;
+
+  return {
+    items: source.items as CanvasItem[],
+    aspectWidth,
+    aspectHeight,
+    backgroundImage,
+  };
 };
 
 function PaletteButton() {
@@ -546,6 +586,14 @@ export default function EditorPage() {
   const [uploadPayload, setUploadPayload] = React.useState<
     Array<Record<string, unknown>>
   >([]);
+  const [autosaveState, setAutosaveState] = React.useState<
+    "idle" | "saving" | "saved" | "error"
+  >("idle");
+  const [autosaveUpdatedAt, setAutosaveUpdatedAt] = React.useState<string | null>(
+    null
+  );
+  const isRestoringRef = React.useRef(false);
+  const hasRestoredRef = React.useRef(false);
 
   const resolvedUserImage = React.useMemo(() => {
     const image = userImage?.trim();
@@ -1056,10 +1104,21 @@ export default function EditorPage() {
   const handleUploadConfig = React.useCallback(async () => {
     if (uploadPayload.length === 0) return;
     try {
+      const editorState: PersistedEditorState = {
+        items,
+        aspectWidth,
+        aspectHeight,
+        backgroundImage,
+      };
       const response = await fetch("/api/field-configs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: "test", payload: uploadPayload }),
+        body: JSON.stringify({
+          payload: uploadPayload,
+          editorState,
+          backgroundImage,
+          isDraft: false,
+        }),
       });
 
       if (!response.ok) {
@@ -1072,7 +1131,7 @@ export default function EditorPage() {
     } catch (error) {
       toast.error("Upload failed. Please try again.");
     }
-  }, [uploadPayload]);
+  }, [aspectHeight, aspectWidth, backgroundImage, items, uploadPayload]);
 
   const handleDownloadExport = React.useCallback(() => {
     if (!exportJson) return;
@@ -1143,6 +1202,169 @@ export default function EditorPage() {
     },
     []
   );
+
+  const buildEditorState = React.useCallback((): PersistedEditorState => {
+    return {
+      items,
+      aspectWidth,
+      aspectHeight,
+      backgroundImage,
+    };
+  }, [aspectHeight, aspectWidth, backgroundImage, items]);
+
+  const buildDraftPayload = React.useCallback(() => {
+    const editorState = buildEditorState();
+    return {
+      editorState,
+    };
+  }, [buildEditorState]);
+
+  const persistDraft = React.useCallback(async () => {
+    if (!sessionData?.user?.id) return;
+    const payload = buildDraftPayload();
+    setAutosaveState("saving");
+
+    try {
+      const response = await fetch("/api/field-configs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          payload,
+          editorState: payload.editorState,
+          backgroundImage,
+          isDraft: true,
+        }),
+      });
+
+      if (!response.ok) {
+        setAutosaveState("error");
+        return;
+      }
+
+      const result = (await response.json()) as { updatedAt?: string };
+      setAutosaveState("saved");
+      setAutosaveUpdatedAt(result.updatedAt ?? new Date().toISOString());
+    } catch {
+      setAutosaveState("error");
+    }
+  }, [backgroundImage, buildDraftPayload, sessionData?.user?.id]);
+
+  React.useEffect(() => {
+    const userId = sessionData?.user?.id;
+    if (!userId) {
+      hasRestoredRef.current = false;
+      setAutosaveState("idle");
+      setAutosaveUpdatedAt(null);
+      return;
+    }
+
+    let isCancelled = false;
+    isRestoringRef.current = true;
+
+    const restore = async () => {
+      try {
+        const response = await fetch("/api/field-configs", {
+          method: "GET",
+          headers: { "Content-Type": "application/json" },
+        });
+
+        if (!response.ok) {
+          hasRestoredRef.current = true;
+          return;
+        }
+
+        const result = (await response.json()) as {
+          config?: { payload?: unknown; updatedAt?: string } | null;
+        };
+
+        const restored = parsePersistedEditorState(result.config?.payload);
+        if (!isCancelled && restored) {
+          setItems(restored.items);
+          setAspectWidth(restored.aspectWidth);
+          setAspectHeight(restored.aspectHeight);
+          setBackgroundImage(restored.backgroundImage);
+          setAutosaveUpdatedAt(result.config?.updatedAt ?? null);
+          setAutosaveState("saved");
+        }
+      } catch {
+        if (!isCancelled) {
+          setAutosaveState("error");
+        }
+      } finally {
+        if (!isCancelled) {
+          hasRestoredRef.current = true;
+          isRestoringRef.current = false;
+        }
+      }
+    };
+
+    void restore();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [sessionData?.user?.id]);
+
+  React.useEffect(() => {
+    if (!sessionData?.user?.id) return;
+    if (!hasRestoredRef.current || isRestoringRef.current) return;
+
+    const timer = window.setTimeout(() => {
+      void persistDraft();
+    }, AUTOSAVE_DELAY_MS);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    aspectHeight,
+    aspectWidth,
+    backgroundImage,
+    items,
+    persistDraft,
+    sessionData?.user?.id,
+  ]);
+
+  React.useEffect(() => {
+    if (!sessionData?.user?.id) return;
+
+    const flushAutosave = () => {
+      if (!hasRestoredRef.current || isRestoringRef.current) return;
+
+      const payload = buildDraftPayload();
+      const body = JSON.stringify({
+        payload,
+        editorState: payload.editorState,
+        backgroundImage,
+        isDraft: true,
+      });
+
+      if (typeof navigator !== "undefined" && navigator.sendBeacon) {
+        const blob = new Blob([body], { type: "application/json" });
+        navigator.sendBeacon("/api/field-configs", blob);
+        return;
+      }
+
+      void fetch("/api/field-configs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+        keepalive: true,
+      });
+    };
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        flushAutosave();
+      }
+    };
+
+    window.addEventListener("beforeunload", flushAutosave);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    return () => {
+      window.removeEventListener("beforeunload", flushAutosave);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [backgroundImage, buildDraftPayload, sessionData?.user?.id]);
 
   React.useEffect(() => {
     iconEditingIdRef.current = iconEditingId;
@@ -1632,6 +1854,15 @@ export default function EditorPage() {
           <div className="mx-auto flex w-full max-w-6xl items-center justify-between px-6 py-4">
             <h1 className="text-xl font-bold tracking-tight">GoonScout</h1>
             <div className="ml-6 flex items-center gap-3 sm:gap-4">
+              <span className="hidden text-xs text-white/70 sm:inline">
+                {autosaveState === "saving"
+                  ? "Autosave: saving..."
+                  : autosaveState === "saved"
+                    ? `Autosave: saved${autosaveUpdatedAt ? ` (${new Date(autosaveUpdatedAt).toLocaleTimeString()})` : ""}`
+                    : autosaveState === "error"
+                      ? "Autosave: error"
+                      : "Autosave: idle"}
+              </span>
               <Button
                 variant="outline"
                 aria-label="Upload layout"

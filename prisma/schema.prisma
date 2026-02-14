@@ -73,8 +73,17 @@ model verification {
 model FieldConfig {
   id        String   @id @default(uuid()) @db.Uuid
   createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  uploadId  String   @default(uuid()) @db.Uuid @map("upload_id")
   userId    String   @map("user_id")
+  contentHash String @db.VarChar(64) @map("content_hash")
+  backgroundImage String? @db.Text @map("background_image")
+  isDraft   Boolean  @default(true) @map("is_draft")
   payload   Json
 
+  @@index([userId, updatedAt(sort: Desc)])
+  @@index([userId, isDraft, updatedAt(sort: Desc)])
+  @@index([userId, contentHash])
+  @@unique([uploadId])
   @@map("field_configs")
 }
