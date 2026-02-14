@@ -16,7 +16,18 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { Button } from "@/components/ui/button";
 import * as LucideIcons from "lucide-react";
-import { Bot, Download, Redo2, Settings, Undo2, Upload } from "lucide-react";
+import {
+  Bot,
+  ChevronRight,
+  Download,
+  Eye,
+  Redo2,
+  Save,
+  Settings,
+  Square,
+  Type,
+  Undo2,
+} from "lucide-react";
 import { toast } from "sonner";
 import {
   Dialog,
@@ -29,7 +40,6 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { AspectRatio } from "@/components/ui/aspect-ratio";
 import { authClient } from "@/lib/auth-client";
 import { useRouter } from "next/navigation";
 
@@ -46,6 +56,17 @@ const MIRROR_SNAP_PX = 8;
 const GUIDE_SNAP_PX = 6;
 const AUTOSAVE_DELAY_MS = 1500;
 
+const gcd = (a: number, b: number): number => {
+  let x = Math.abs(Math.round(a));
+  let y = Math.abs(Math.round(b));
+  while (y !== 0) {
+    const next = x % y;
+    x = y;
+    y = next;
+  }
+  return x || 1;
+};
+
 const ICON_COMPONENTS = Object.entries(LucideIcons).reduce(
   (acc, [name, value]) => {
     if (!name || name[0] !== name[0]?.toUpperCase()) return acc;
@@ -56,11 +77,12 @@ const ICON_COMPONENTS = Object.entries(LucideIcons).reduce(
       typeof value === "function" ||
       (typeof value === "object" && value !== null && "$$typeof" in value)
     ) {
-      acc[name] = value as React.ComponentType<{ className?: string }>;
+      acc[name] =
+        value as unknown as React.ComponentType<React.SVGProps<SVGSVGElement>>;
     }
     return acc;
   },
-  {} as Record<string, React.ComponentType<{ className?: string }>>
+  {} as Record<string, React.ComponentType<React.SVGProps<SVGSVGElement>>>
 );
 
 const ICON_NAMES = Object.keys(ICON_COMPONENTS);
@@ -159,7 +181,36 @@ const toDragTransform = (
   });
 };
 
-function PaletteButton() {
+const getClientPointFromEvent = (
+  event: Event | null | undefined
+): { x: number; y: number } | null => {
+  if (!event) return null;
+
+  const pointerLike = event as MouseEvent;
+  if (
+    typeof pointerLike.clientX === "number" &&
+    typeof pointerLike.clientY === "number"
+  ) {
+    return { x: pointerLike.clientX, y: pointerLike.clientY };
+  }
+
+  const touchLike = event as TouchEvent;
+  const firstTouch = touchLike.touches?.[0] ?? touchLike.changedTouches?.[0];
+  if (firstTouch) {
+    return { x: firstTouch.clientX, y: firstTouch.clientY };
+  }
+
+  return null;
+};
+
+type PaletteButtonProps = {
+  onPalettePointerDown: (
+    assetKind: AssetKind,
+    event: React.PointerEvent<HTMLButtonElement>
+  ) => void;
+};
+
+function PaletteButton({ onPalettePointerDown }: PaletteButtonProps) {
   const { attributes, listeners, setNodeRef, isDragging } =
     useDraggable({
       id: "palette-button",
@@ -175,17 +226,24 @@ function PaletteButton() {
       ref={setNodeRef}
       style={style}
       variant="outline"
-      className="h-12 w-28 transition-opacity duration-150"
+      className="mx-auto h-[58px] w-[calc(100%-8px)] justify-start gap-3 rounded-xl border-white/10 bg-slate-900/70 px-3 text-left text-white transition-all duration-150 hover:border-white/20 hover:bg-slate-800/80"
+      onPointerDownCapture={(event) => onPalettePointerDown("text", event)}
       {...attributes}
       {...listeners}
       type="button"
     >
-      Button
+      <span className="flex h-8 w-8 items-center justify-center rounded-md bg-sky-500/20 text-sky-300">
+        <Square className="h-4 w-4" />
+      </span>
+      <span className="flex flex-col items-start leading-tight">
+        <span className="text-sm font-semibold">Button</span>
+        <span className="text-xs text-white/55">Small clickable action</span>
+      </span>
     </Button>
   );
 }
 
-function PaletteIconButton() {
+function PaletteIconButton({ onPalettePointerDown }: PaletteButtonProps) {
   const { attributes, listeners, setNodeRef, isDragging } =
     useDraggable({
       id: "palette-icon-button",
@@ -201,19 +259,25 @@ function PaletteIconButton() {
       ref={setNodeRef}
       style={style}
       variant="outline"
-      size="icon"
-      className="transition-opacity duration-150"
+      className="mx-auto h-[58px] w-[calc(100%-8px)] justify-start gap-3 rounded-xl border-white/10 bg-slate-900/70 px-3 text-left text-white transition-all duration-150 hover:border-white/20 hover:bg-slate-800/80"
+      onPointerDownCapture={(event) => onPalettePointerDown("icon", event)}
       {...attributes}
       {...listeners}
       type="button"
-      aria-label="Bot"
+      aria-label="Icon button"
     >
-      <Bot className="h-5 w-5" />
+      <span className="flex h-8 w-8 items-center justify-center rounded-md bg-white/10 text-white">
+        <Bot className="h-4 w-4" />
+      </span>
+      <span className="flex flex-col items-start leading-tight">
+        <span className="text-sm font-semibold">Icon Button</span>
+        <span className="text-xs text-white/55">Configurable icon action</span>
+      </span>
     </Button>
   );
 }
 
-function PaletteMirrorButton() {
+function PaletteMirrorButton({ onPalettePointerDown }: PaletteButtonProps) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: "palette-mirror-line",
     data: { type: "palette", assetKind: "mirror" } satisfies DragData,
@@ -228,17 +292,25 @@ function PaletteMirrorButton() {
       ref={setNodeRef}
       style={style}
       variant="outline"
-      className="relative h-12 w-28 overflow-hidden transition-opacity duration-150"
+      className="mx-auto h-[58px] w-[calc(100%-8px)] justify-start gap-3 rounded-xl border-white/10 bg-slate-900/70 px-3 text-left text-white transition-all duration-150 hover:border-white/20 hover:bg-slate-800/80"
+      onPointerDownCapture={(event) => onPalettePointerDown("mirror", event)}
       {...attributes}
       {...listeners}
       type="button"
+      aria-label="Mirror line"
     >
-      <span className="absolute left-1/2 top-2 h-8 w-0.5 -translate-x-1/2 rounded-full bg-red-500" />
+      <span className="flex h-8 w-8 items-center justify-center rounded-md bg-white/10 text-white">
+        <span className="h-5 w-0.5 rounded-full bg-red-400" />
+      </span>
+      <span className="flex flex-col items-start leading-tight">
+        <span className="text-sm font-semibold">Mirror Line</span>
+        <span className="text-xs text-white/55">Reference line for side swap</span>
+      </span>
     </Button>
   );
 }
 
-function PaletteSwapButton() {
+function PaletteSwapButton({ onPalettePointerDown }: PaletteButtonProps) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: "palette-swap-sides",
     data: { type: "palette", assetKind: "swap" } satisfies DragData,
@@ -253,7 +325,8 @@ function PaletteSwapButton() {
       ref={setNodeRef}
       style={style}
       variant="outline"
-      className="h-12 w-28 transition-opacity duration-150"
+      className="mx-auto h-10 w-[calc(100%-8px)] justify-center rounded-xl border-white/10 bg-slate-900/70 text-white transition-all duration-150 hover:border-white/20 hover:bg-slate-800/80"
+      onPointerDownCapture={(event) => onPalettePointerDown("swap", event)}
       {...attributes}
       {...listeners}
       type="button"
@@ -263,7 +336,7 @@ function PaletteSwapButton() {
   );
 }
 
-function PaletteCoverButton() {
+function PaletteCoverButton({ onPalettePointerDown }: PaletteButtonProps) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: "palette-cover",
     data: { type: "palette", assetKind: "cover" } satisfies DragData,
@@ -278,17 +351,25 @@ function PaletteCoverButton() {
       ref={setNodeRef}
       style={style}
       variant="outline"
-      className="h-12 w-28 transition-opacity duration-150"
+      className="mx-auto h-[58px] w-[calc(100%-8px)] justify-start gap-3 rounded-xl border-white/10 bg-slate-900/70 px-3 text-left text-white transition-all duration-150 hover:border-white/20 hover:bg-slate-800/80"
+      onPointerDownCapture={(event) => onPalettePointerDown("cover", event)}
       {...attributes}
       {...listeners}
       type="button"
+      aria-label="Cover"
     >
-      Cover
+      <span className="flex h-8 w-8 items-center justify-center rounded-md bg-sky-500/20 text-sky-300">
+        <Square className="h-4 w-4" />
+      </span>
+      <span className="flex flex-col items-start leading-tight">
+        <span className="text-sm font-semibold">Cover</span>
+        <span className="text-xs text-white/55">Occludes a field region</span>
+      </span>
     </Button>
   );
 }
 
-function PaletteInputButton() {
+function PaletteInputButton({ onPalettePointerDown }: PaletteButtonProps) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: "palette-input",
     data: { type: "palette", assetKind: "input" } satisfies DragData,
@@ -303,12 +384,19 @@ function PaletteInputButton() {
       ref={setNodeRef}
       style={style}
       variant="outline"
-      className="h-12 w-28 transition-opacity duration-150"
+      className="mx-auto h-[58px] w-[calc(100%-8px)] justify-start gap-3 rounded-xl border-white/10 bg-slate-900/70 px-3 text-left text-white transition-all duration-150 hover:border-white/20 hover:bg-slate-800/80"
+      onPointerDownCapture={(event) => onPalettePointerDown("input", event)}
       {...attributes}
       {...listeners}
       type="button"
     >
-      Text input
+      <span className="flex h-8 w-8 items-center justify-center rounded-md bg-white/10 text-white">
+        <Type className="h-4 w-4" />
+      </span>
+      <span className="flex flex-col items-start leading-tight">
+        <span className="text-sm font-semibold">Text Field</span>
+        <span className="text-xs text-white/55">User text input field</span>
+      </span>
     </Button>
   );
 }
@@ -318,6 +406,7 @@ function CanvasButton({
   onResizeStart,
   onEditLabel,
   onSwapSides,
+  onSelect,
   snapOffset,
   isPreviewMode,
 }: {
@@ -325,6 +414,7 @@ function CanvasButton({
   onResizeStart: (event: React.PointerEvent, item: CanvasItem) => void;
   onEditLabel: (item: CanvasItem) => void;
   onSwapSides: () => void;
+  onSelect: (itemId: string) => void;
   snapOffset?: { x: number; y: number };
   isPreviewMode?: boolean;
 }) {
@@ -350,20 +440,21 @@ function CanvasButton({
       style={style}
       variant="outline"
       size={item.kind === "icon" ? "icon" : "default"}
-      className="group absolute !bg-black !text-white transition-opacity duration-150 hover:!bg-black"
+      className="group absolute rounded-lg border-white/20 !bg-slate-900 !text-white transition-opacity duration-150 hover:!bg-slate-900"
+      onPointerDown={() => {
+        if (!isPreviewMode) onSelect(item.id);
+      }}
       onClick={() => {
+        if (!isPreviewMode) {
+          onSelect(item.id);
+          if (item.kind === "icon") {
+            onEditLabel(item);
+          }
+          return;
+        }
         if (item.kind === "swap" && isPreviewMode) {
           onSwapSides();
         }
-      }}
-      onContextMenu={(event) => {
-        if (isPreviewMode) return;
-        event.preventDefault();
-        if (item.kind === "swap") {
-          onSwapSides();
-          return;
-        }
-        onEditLabel(item);
       }}
       {...attributes}
       {...listeners}
@@ -401,6 +492,7 @@ function CanvasButton({
 function CanvasMirrorLine({
   item,
   onHandleStart,
+  onSelect,
   snapOffset,
   isPreviewMode,
 }: {
@@ -410,6 +502,7 @@ function CanvasMirrorLine({
     item: CanvasItem,
     handle: "start" | "end"
   ) => void;
+  onSelect: (itemId: string) => void;
   snapOffset?: { x: number; y: number };
   isPreviewMode?: boolean;
 }) {
@@ -448,6 +541,9 @@ function CanvasMirrorLine({
       ref={setNodeRef}
       style={style}
       className="absolute"
+      onPointerDown={() => {
+        if (!isPreviewMode) onSelect(item.id);
+      }}
       {...attributes}
       {...listeners}
     >
@@ -491,11 +587,13 @@ function CanvasMirrorLine({
 function CanvasCover({
   item,
   onResizeStart,
+  onSelect,
   snapOffset,
   isPreviewMode,
 }: {
   item: CanvasItem;
   onResizeStart: (event: React.PointerEvent, item: CanvasItem) => void;
+  onSelect: (itemId: string) => void;
   snapOffset?: { x: number; y: number };
   isPreviewMode?: boolean;
 }) {
@@ -519,9 +617,12 @@ function CanvasCover({
       style={style}
       className={`group absolute rounded-md ${
         isPreviewMode
-          ? "border border-white/20 bg-neutral-900"
-          : "border border-dashed border-white/50 bg-white/5"
+          ? "bg-slate-900"
+          : "bg-white/5"
       }`}
+      onPointerDown={() => {
+        if (!isPreviewMode) onSelect(item.id);
+      }}
       {...attributes}
       {...listeners}
     >
@@ -545,12 +646,14 @@ function CanvasInput({
   item,
   onResizeStart,
   onEditInput,
+  onSelect,
   snapOffset,
   isPreviewMode,
 }: {
   item: CanvasItem;
   onResizeStart: (event: React.PointerEvent, item: CanvasItem) => void;
   onEditInput: (item: CanvasItem) => void;
+  onSelect: (itemId: string) => void;
   snapOffset?: { x: number; y: number };
   isPreviewMode?: boolean;
 }) {
@@ -573,9 +676,12 @@ function CanvasInput({
       ref={setNodeRef}
       style={style}
       className="group absolute flex flex-col gap-2"
-      onContextMenu={(event) => {
+      onPointerDown={() => {
+        if (!isPreviewMode) onSelect(item.id);
+      }}
+      onClick={() => {
         if (isPreviewMode) return;
-        event.preventDefault();
+        onSelect(item.id);
         onEditInput(item);
       }}
       {...attributes}
@@ -612,7 +718,9 @@ export default function EditorPage() {
     .toUpperCase();
   const [items, setItems] = React.useState<CanvasItem[]>([]);
   const [activeType, setActiveType] = React.useState<DragType | null>(null);
-  const [activeSize, setActiveSize] = React.useState(BUTTON_SIZE);
+  const [activeSize, setActiveSize] = React.useState<{ width: number; height: number }>(
+    BUTTON_SIZE
+  );
   const [activeLabel, setActiveLabel] = React.useState("Button");
   const [activeKind, setActiveKind] = React.useState<AssetKind>("text");
   const [activeIconName, setActiveIconName] = React.useState("Bot");
@@ -641,6 +749,7 @@ export default function EditorPage() {
   const [isAlignmentAssistEnabled, setIsAlignmentAssistEnabled] =
     React.useState(true);
   const [isPreviewMode, setIsPreviewMode] = React.useState(false);
+  const [selectedItemId, setSelectedItemId] = React.useState<string | null>(null);
   const [backgroundImage, setBackgroundImage] = React.useState<string | null>(null);
   const backgroundInputRef = React.useRef<HTMLInputElement | null>(null);
   const [isUserMenuOpen, setIsUserMenuOpen] = React.useState(false);
@@ -696,6 +805,17 @@ export default function EditorPage() {
     x: 0,
     y: 0,
   });
+  const palettePointerStartRef = React.useRef<{
+    kind: AssetKind;
+    pointerX: number;
+    pointerY: number;
+    sourceWidth: number;
+    sourceHeight: number;
+  } | null>(null);
+  const [palettePointerOffset, setPalettePointerOffset] = React.useState({
+    x: 0,
+    y: 0,
+  });
   const resizingRef = React.useRef<{
     id: string;
     startX: number;
@@ -737,6 +857,97 @@ export default function EditorPage() {
       backgroundImage,
     };
   }, [aspectHeight, aspectWidth, backgroundImage, items]);
+
+  const selectedItem = React.useMemo(
+    () => items.find((item) => item.id === selectedItemId) ?? null,
+    [items, selectedItemId]
+  );
+
+  const handleSelectedLabelChange = React.useCallback(
+    (value: string) => {
+      if (!selectedItemId) return;
+      setItems((prev) =>
+        prev.map((item) =>
+          item.id === selectedItemId
+            ? {
+                ...item,
+                label: value,
+              }
+            : item
+        )
+      );
+    },
+    [selectedItemId]
+  );
+
+  const handleSelectedTagChange = React.useCallback(
+    (value: string) => {
+      if (!selectedItemId) return;
+      setItems((prev) =>
+        prev.map((item) =>
+          item.id === selectedItemId
+            ? {
+                ...item,
+                tag: value,
+              }
+            : item
+        )
+      );
+    },
+    [selectedItemId]
+  );
+
+  const handleSelectedIconNameChange = React.useCallback(
+    (iconName: string) => {
+      if (!selectedItemId) return;
+      setItems((prev) =>
+        prev.map((item) =>
+          item.id === selectedItemId && item.kind === "icon"
+            ? {
+                ...item,
+                iconName,
+                label: iconName,
+              }
+            : item
+        )
+      );
+    },
+    [selectedItemId]
+  );
+
+  const handleSelectedOutlineColorChange = React.useCallback(
+    (value: string) => {
+      if (!selectedItemId) return;
+      setItems((prev) =>
+        prev.map((item) =>
+          item.id === selectedItemId && item.kind === "icon"
+            ? {
+                ...item,
+                outlineColor: value,
+              }
+            : item
+        )
+      );
+    },
+    [selectedItemId]
+  );
+
+  const handleSelectedFillColorChange = React.useCallback(
+    (value: string) => {
+      if (!selectedItemId) return;
+      setItems((prev) =>
+        prev.map((item) =>
+          item.id === selectedItemId && item.kind === "icon"
+            ? {
+                ...item,
+                fillColor: value,
+              }
+            : item
+        )
+      );
+    },
+    [selectedItemId]
+  );
 
   const applyEditorSnapshot = React.useCallback(
     (snapshot: EditorSnapshot) => {
@@ -800,6 +1011,49 @@ export default function EditorPage() {
     [setAssetsDroppableRef]
   );
 
+  const handlePalettePointerDown = React.useCallback(
+    (assetKind: AssetKind, event: React.PointerEvent<HTMLButtonElement>) => {
+      const rect = event.currentTarget.getBoundingClientRect();
+      const pointerX = Math.min(
+        Math.max(event.clientX - rect.left, 0),
+        Math.max(rect.width, 1)
+      );
+      const pointerY = Math.min(
+        Math.max(event.clientY - rect.top, 0),
+        Math.max(rect.height, 1)
+      );
+
+      palettePointerStartRef.current = {
+        kind: assetKind,
+        pointerX,
+        pointerY,
+        sourceWidth: Math.max(rect.width, 1),
+        sourceHeight: Math.max(rect.height, 1),
+      };
+
+      const targetSize =
+        assetKind === "icon"
+          ? ICON_BUTTON_SIZE
+          : assetKind === "mirror"
+            ? MIRROR_LINE_SIZE
+            : assetKind === "cover"
+              ? COVER_SIZE
+              : assetKind === "input"
+                ? INPUT_SIZE
+                : assetKind === "swap"
+                  ? BUTTON_SIZE
+                  : BUTTON_SIZE;
+
+      const mappedX = (pointerX / Math.max(rect.width, 1)) * targetSize.width;
+      const mappedY = (pointerY / Math.max(rect.height, 1)) * targetSize.height;
+      setPalettePointerOffset({
+        x: pointerX - mappedX,
+        y: pointerY - mappedY,
+      });
+    },
+    []
+  );
+
   const handleDragStart = React.useCallback(
     (event: DragStartEvent) => {
       if (isPreviewMode) return;
@@ -808,7 +1062,12 @@ export default function EditorPage() {
       setDragSnapOffset({ itemId: data?.itemId ?? null, x: 0, y: 0 });
       setPaletteSnapOffset({ x: 0, y: 0 });
 
+      if (data?.type !== "palette") {
+        setPalettePointerOffset({ x: 0, y: 0 });
+      }
+
       if (data?.type === "canvas" && data.itemId) {
+        setSelectedItemId(data.itemId);
         const currentItem = items.find((item) => item.id === data.itemId);
         setActiveSize(
           currentItem
@@ -822,20 +1081,20 @@ export default function EditorPage() {
         setActiveFillColor(currentItem?.fillColor);
       } else if (data?.type === "palette") {
         const nextKind = data.assetKind ?? "text";
-        setActiveKind(nextKind);
-        setActiveSize(
+        const targetSize =
           nextKind === "icon"
             ? ICON_BUTTON_SIZE
             : nextKind === "mirror"
               ? MIRROR_LINE_SIZE
               : nextKind === "cover"
                 ? COVER_SIZE
-            : nextKind === "input"
-              ? INPUT_SIZE
+              : nextKind === "input"
+                ? INPUT_SIZE
               : nextKind === "swap"
                 ? BUTTON_SIZE
-              : BUTTON_SIZE
-        );
+              : BUTTON_SIZE;
+        setActiveKind(nextKind);
+        setActiveSize(targetSize);
         setActiveLabel(
           nextKind === "icon"
             ? "Bot"
@@ -852,6 +1111,44 @@ export default function EditorPage() {
         setActiveIconName("Bot");
         setActiveOutlineColor(undefined);
         setActiveFillColor(undefined);
+
+        const capturedPointer =
+          palettePointerStartRef.current?.kind === nextKind
+            ? palettePointerStartRef.current
+            : null;
+
+        const initialRect = event.active.rect.current.initial;
+        const clientPoint = getClientPointFromEvent(event.activatorEvent);
+
+        if (capturedPointer) {
+          const mappedX =
+            (capturedPointer.pointerX / capturedPointer.sourceWidth) *
+            targetSize.width;
+          const mappedY =
+            (capturedPointer.pointerY / capturedPointer.sourceHeight) *
+            targetSize.height;
+          setPalettePointerOffset({
+            x: capturedPointer.pointerX - mappedX,
+            y: capturedPointer.pointerY - mappedY,
+          });
+        } else if (initialRect && clientPoint) {
+          const sourceWidth = Math.max(initialRect.width, 1);
+          const sourceHeight = Math.max(initialRect.height, 1);
+          const pointerX = Math.min(
+            Math.max(clientPoint.x - initialRect.left, 0),
+            sourceWidth
+          );
+          const pointerY = Math.min(
+            Math.max(clientPoint.y - initialRect.top, 0),
+            sourceHeight
+          );
+          const mappedX = (pointerX / sourceWidth) * targetSize.width;
+          const mappedY = (pointerY / sourceHeight) * targetSize.height;
+          setPalettePointerOffset({
+            x: pointerX - mappedX,
+            y: pointerY - mappedY,
+          });
+        }
       } else {
         setActiveSize(BUTTON_SIZE);
         setActiveLabel("Button");
@@ -859,6 +1156,7 @@ export default function EditorPage() {
         setActiveIconName("Bot");
         setActiveOutlineColor(undefined);
         setActiveFillColor(undefined);
+        setPalettePointerOffset({ x: 0, y: 0 });
       }
     },
     [isPreviewMode, items]
@@ -892,6 +1190,10 @@ export default function EditorPage() {
       const finalLeft =
         translatedRect?.left ?? initialRect.left + event.delta.x;
       const finalTop = translatedRect?.top ?? initialRect.top + event.delta.y;
+      const adjustedFinalLeft =
+        data?.type === "palette" ? finalLeft + palettePointerOffset.x : finalLeft;
+      const adjustedFinalTop =
+        data?.type === "palette" ? finalTop + palettePointerOffset.y : finalTop;
 
       const activeItem =
         data?.type === "canvas" && data.itemId
@@ -914,10 +1216,10 @@ export default function EditorPage() {
       const activeHeight = activeItem?.height ?? paletteSize.height;
 
       const isInsideCanvas =
-        finalLeft + activeWidth > canvasRect.left &&
-        finalLeft < canvasRect.right &&
-        finalTop + activeHeight > canvasRect.top &&
-        finalTop < canvasRect.bottom;
+        adjustedFinalLeft + activeWidth > canvasRect.left &&
+        adjustedFinalLeft < canvasRect.right &&
+        adjustedFinalTop + activeHeight > canvasRect.top &&
+        adjustedFinalTop < canvasRect.bottom;
 
       if (!isInsideCanvas) {
         setAlignmentGuides({ vertical: [], horizontal: [] });
@@ -926,8 +1228,8 @@ export default function EditorPage() {
         return;
       }
 
-      const x = finalLeft - canvasRect.left;
-      const y = finalTop - canvasRect.top;
+      const x = adjustedFinalLeft - canvasRect.left;
+      const y = adjustedFinalTop - canvasRect.top;
 
       const activeLeft = x;
       const activeRight = x + activeWidth;
@@ -1080,7 +1382,7 @@ export default function EditorPage() {
         setPaletteSnapOffset({ x: 0, y: 0 });
       }
     },
-    [isAlignmentAssistEnabled, isPreviewMode, items]
+    [isAlignmentAssistEnabled, isPreviewMode, items, palettePointerOffset.x, palettePointerOffset.y]
   );
 
   const handleResizeStart = React.useCallback(
@@ -1172,13 +1474,7 @@ export default function EditorPage() {
 
   const handleEditLabel = React.useCallback((item: CanvasItem) => {
     if (item.kind === "icon") {
-      setIconEditingId(item.id);
-      iconEditingIdRef.current = item.id;
-      setIconSearch("");
-      setOutlineDraft(item.outlineColor ?? "#ffffff");
-      setFillDraft(item.fillColor ?? "transparent");
-      setIconTagDraft(item.tag ?? "");
-      setIsIconDialogOpen(true);
+      setSelectedItemId(item.id);
       return;
     }
 
@@ -1191,10 +1487,7 @@ export default function EditorPage() {
       return;
     }
 
-    setEditingId(item.id);
-    setLabelDraft(item.label);
-    setTagDraft(item.tag ?? "");
-    setIsDialogOpen(true);
+    setSelectedItemId(item.id);
   }, []);
 
   const handleSaveLabel = React.useCallback(() => {
@@ -1431,6 +1724,23 @@ export default function EditorPage() {
     height: FIELD_HEIGHT,
   });
 
+  const applyImageAspectRatio = React.useCallback((src: string) => {
+    const img = new Image();
+    img.onload = () => {
+      const width = img.naturalWidth;
+      const height = img.naturalHeight;
+      if (!width || !height) return;
+      const divisor = gcd(width, height);
+      const normalizedWidth = Math.round(width / divisor);
+      const normalizedHeight = Math.round(height / divisor);
+      setAspectWidth(String(normalizedWidth));
+      setAspectHeight(String(normalizedHeight));
+      setAspectWidthDraft(String(normalizedWidth));
+      setAspectHeightDraft(String(normalizedHeight));
+    };
+    img.src = src;
+  }, []);
+
   React.useEffect(() => {
     const node = stageWrapRef.current;
     if (!node) return;
@@ -1467,11 +1777,12 @@ export default function EditorPage() {
       reader.onload = () => {
         if (typeof reader.result === "string") {
           setBackgroundImage(reader.result);
+          applyImageAspectRatio(reader.result);
         }
       };
       reader.readAsDataURL(file);
     },
-    []
+    [applyImageAspectRatio]
   );
 
   const buildEditorState = React.useCallback((): PersistedEditorState => {
@@ -1747,13 +2058,15 @@ export default function EditorPage() {
       return;
     }
 
-    const handle =
-      "requestIdleCallback" in window
-        ? window.requestIdleCallback(() => setShowIconGrid(true))
-        : window.setTimeout(() => setShowIconGrid(true), 0);
+    const hasIdleCallbacks =
+      typeof window.requestIdleCallback === "function" &&
+      typeof window.cancelIdleCallback === "function";
+    const handle = hasIdleCallbacks
+      ? window.requestIdleCallback(() => setShowIconGrid(true))
+      : window.setTimeout(() => setShowIconGrid(true), 0);
 
     return () => {
-      if ("cancelIdleCallback" in window) {
+      if (hasIdleCallbacks) {
         window.cancelIdleCallback(handle as number);
       } else {
         window.clearTimeout(handle as number);
@@ -2045,6 +2358,8 @@ export default function EditorPage() {
         setAlignmentGuides({ vertical: [], horizontal: [] });
         setDragSnapOffset({ itemId: null, x: 0, y: 0 });
         setPaletteSnapOffset({ x: 0, y: 0 });
+        setPalettePointerOffset({ x: 0, y: 0 });
+        palettePointerStartRef.current = null;
         return;
       }
 
@@ -2056,6 +2371,8 @@ export default function EditorPage() {
 
       if (!canvasRect || !initialRect) {
         setAlignmentGuides({ vertical: [], horizontal: [] });
+        setPalettePointerOffset({ x: 0, y: 0 });
+        palettePointerStartRef.current = null;
         return;
       }
 
@@ -2097,6 +2414,8 @@ export default function EditorPage() {
         setAlignmentGuides({ vertical: [], horizontal: [] });
         setDragSnapOffset({ itemId: null, x: 0, y: 0 });
         setPaletteSnapOffset({ x: 0, y: 0 });
+        setPalettePointerOffset({ x: 0, y: 0 });
+        palettePointerStartRef.current = null;
         return;
       }
 
@@ -2111,6 +2430,8 @@ export default function EditorPage() {
         setAlignmentGuides({ vertical: [], horizontal: [] });
         setDragSnapOffset({ itemId: null, x: 0, y: 0 });
         setPaletteSnapOffset({ x: 0, y: 0 });
+        setPalettePointerOffset({ x: 0, y: 0 });
+        palettePointerStartRef.current = null;
         return;
       }
 
@@ -2216,6 +2537,8 @@ export default function EditorPage() {
         setAlignmentGuides({ vertical: [], horizontal: [] });
         setDragSnapOffset({ itemId: null, x: 0, y: 0 });
         setPaletteSnapOffset({ x: 0, y: 0 });
+        setPalettePointerOffset({ x: 0, y: 0 });
+        palettePointerStartRef.current = null;
         return;
       }
 
@@ -2223,11 +2546,15 @@ export default function EditorPage() {
         if (data.assetKind === "mirror" && items.some((item) => item.kind === "mirror")) {
           setActiveType(null);
           setPaletteSnapOffset({ x: 0, y: 0 });
+          setPalettePointerOffset({ x: 0, y: 0 });
+          palettePointerStartRef.current = null;
           return;
         }
 
         x += paletteSnapOffset.x;
         y += paletteSnapOffset.y;
+        x += palettePointerOffset.x;
+        y += palettePointerOffset.y;
 
         x = Math.max(0, Math.min(x, canvasRect.width - activeWidth));
         y = Math.max(0, Math.min(y, canvasRect.height - activeHeight));
@@ -2286,10 +2613,13 @@ export default function EditorPage() {
             placeholder: kind === "input" ? "Enter text" : undefined,
           },
         ]);
+        setSelectedItemId(newId);
         setActiveType(null);
         setAlignmentGuides({ vertical: [], horizontal: [] });
         setDragSnapOffset({ itemId: null, x: 0, y: 0 });
         setPaletteSnapOffset({ x: 0, y: 0 });
+        setPalettePointerOffset({ x: 0, y: 0 });
+        palettePointerStartRef.current = null;
       }
     },
     [
@@ -2297,6 +2627,8 @@ export default function EditorPage() {
       isAlignmentAssistEnabled,
       isPreviewMode,
       items,
+      palettePointerOffset.x,
+      palettePointerOffset.y,
       paletteSnapOffset,
     ]
   );
@@ -2312,6 +2644,7 @@ export default function EditorPage() {
     setDragSnapOffset({ itemId: null, x: 0, y: 0 });
     setPaletteSnapOffset({ x: 0, y: 0 });
     setActiveType(null);
+    setSelectedItemId(null);
     setIsPreviewMode(false);
     historyRef.current = [];
     historyIndexRef.current = -1;
@@ -2320,6 +2653,12 @@ export default function EditorPage() {
     setCanRedo(false);
   }, []);
 
+  React.useEffect(() => {
+    if (!selectedItemId) return;
+    if (items.some((item) => item.id === selectedItemId)) return;
+    setSelectedItemId(null);
+  }, [items, selectedItemId]);
+
   return (
     <DndContext
       sensors={sensors}
@@ -2327,12 +2666,12 @@ export default function EditorPage() {
       onDragMove={handleDragMove}
       onDragEnd={handleDragEnd}
     >
-      <div className="min-h-screen bg-black text-white">
-        <header className="sticky top-0 z-50 border-b border-white/10 bg-neutral-900/95 backdrop-blur">
-          <div className="mx-auto flex w-full max-w-6xl items-center justify-between px-6 py-4">
-            <h1 className="text-xl font-bold tracking-tight">GoonScout</h1>
+      <div className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-950 to-blue-950/40 text-white">
+        <header className="sticky top-0 z-50 border-b border-white/5 bg-slate-950/80 backdrop-blur-xl">
+          <div className="mx-auto flex w-full max-w-[1760px] items-center justify-between px-5 py-3">
+            <h1 className="text-4xl font-black tracking-tight">GoonScout</h1>
             <div className="ml-6 flex items-center gap-3 sm:gap-4">
-              <span className="hidden text-xs text-white/70 sm:inline">
+              <span className="hidden text-xs text-white/60 xl:inline">
                 {autosaveState === "saving"
                   ? "Autosave: saving..."
                   : autosaveState === "saved"
@@ -2343,23 +2682,29 @@ export default function EditorPage() {
               </span>
               <Button
                 variant="outline"
-                aria-label="Upload layout"
-                className="h-10 gap-2 px-3"
                 type="button"
+                className="h-10 gap-2 rounded-lg border-white/15 bg-slate-900/60 px-4 text-white hover:bg-slate-800/80"
+                onClick={() => setIsPreviewMode((current) => !current)}
+              >
+                <Eye className="h-4 w-4" />
+                {isPreviewMode ? "Editor" : "Preview"}
+              </Button>
+              <Button
+                type="button"
+                className="h-10 gap-2 rounded-lg bg-blue-600 px-5 text-white hover:bg-blue-500"
                 onClick={handleUploadPreview}
               >
-                <Upload className="h-5 w-5" />
-                <span>Upload</span>
+                <Save className="h-4 w-4" />
+                Save
               </Button>
               <Button
                 variant="outline"
-                aria-label="Download layout"
-                className="h-10 gap-2 px-3"
                 type="button"
+                className="h-10 gap-2 rounded-lg border-white/15 bg-slate-900/60 px-4 text-white hover:bg-slate-800/80"
                 onClick={handleExport}
               >
-                <Download className="h-5 w-5" />
-                <span>Download</span>
+                <Download className="h-4 w-4" />
+                Download
               </Button>
               <div ref={userMenuRef} className="relative">
                 <button
@@ -2382,7 +2727,7 @@ export default function EditorPage() {
                   )}
                 </button>
                 {isUserMenuOpen ? (
-                  <div className="absolute right-0 mt-2 w-44 rounded-md border border-white/10 bg-neutral-900 p-1 shadow-2xl">
+                  <div className="absolute right-0 mt-2 w-44 rounded-lg border border-white/10 bg-slate-900 p-1 shadow-2xl">
                     <div className="px-2 py-2 text-xs text-white/70">{userName}</div>
                     <button
                       type="button"
@@ -2398,109 +2743,177 @@ export default function EditorPage() {
             </div>
           </div>
         </header>
-        <main className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-6 py-10 lg:flex-row lg:items-start lg:gap-8">
-          <div ref={stageWrapRef} className="min-w-0 flex-1">
-            <AspectRatio
-              ratio={aspectRatio}
-              className="mx-auto"
-              style={{ width: stageSize.width, height: stageSize.height }}
+
+        <main className="mx-auto grid w-full max-w-[1760px] grid-cols-1 gap-4 px-5 py-5 xl:grid-cols-[260px_minmax(0,1fr)_260px]">
+          <aside
+            ref={setAssetsRef}
+            className="flex h-[min(66vh,620px)] min-h-0 flex-col overflow-hidden rounded-2xl border border-white/[0.03] bg-slate-900/70 p-4 text-white shadow-2xl backdrop-blur"
+          >
+            <div className="mb-4 px-1">
+              <h2 className="text-3xl font-semibold tracking-tight">Assets</h2>
+            </div>
+
+            <div className="mb-3 flex items-center justify-between px-1 text-xs font-bold uppercase tracking-[0.15em] text-white/55">
+              <span>Elements</span>
+              <ChevronRight className="h-4 w-4" />
+            </div>
+
+            <ScrollArea
+              className="h-full w-full"
+              scrollbarClassName="bg-black/40"
+              thumbClassName="bg-black"
             >
-              <section
-                ref={setCanvasRef}
-                className={`relative flex h-full w-full items-center justify-center rounded-md bg-black shadow-2xl transition-colors ${
-                  isOver ? "ring-2 ring-white/40" : "ring-1 ring-white/10"
+              <div
+                className={`flex flex-col gap-3 pr-2 ${
+                  isPreviewMode ? "pointer-events-none opacity-50" : ""
                 }`}
               >
-                {backgroundImage ? (
-                  <img
-                    src={backgroundImage}
-                    alt=""
-                    className="pointer-events-none absolute inset-0 h-full w-full object-cover"
+                <PaletteButton onPalettePointerDown={handlePalettePointerDown} />
+                <PaletteIconButton onPalettePointerDown={handlePalettePointerDown} />
+                <PaletteMirrorButton onPalettePointerDown={handlePalettePointerDown} />
+                <PaletteInputButton onPalettePointerDown={handlePalettePointerDown} />
+                <PaletteCoverButton onPalettePointerDown={handlePalettePointerDown} />
+              </div>
+              <div className="mt-6 flex items-center justify-between px-1 text-xs font-bold uppercase tracking-[0.15em] text-white/45">
+                <span>Layout</span>
+                <ChevronRight className="h-4 w-4" />
+              </div>
+              <div className={`mt-3 pr-2 ${isPreviewMode ? "pointer-events-none opacity-50" : ""}`}>
+                <PaletteSwapButton onPalettePointerDown={handlePalettePointerDown} />
+              </div>
+            </ScrollArea>
+          </aside>
+
+          <section className="min-w-0">
+            <div
+              className="relative flex h-[min(66vh,620px)] min-h-0 items-center justify-center overflow-hidden rounded-2xl border border-white/[0.03] bg-slate-900/60 p-1 shadow-2xl backdrop-blur"
+            >
+              <div
+                ref={stageWrapRef}
+                className="flex h-full w-full items-center justify-center"
+              >
+                <div
+                  className="relative"
+                  style={{ width: stageSize.width, height: stageSize.height }}
+                >
+                  <section
+                    ref={setCanvasRef}
+                    className={`relative h-full w-full overflow-hidden rounded-xl border border-white/[0.03] bg-slate-950/90 transition-colors ${
+                      isOver ? "ring-1 ring-blue-300/25" : ""
+                    }`}
+                  >
+                  <div
+                    className="pointer-events-none absolute inset-0 opacity-35"
+                    style={{
+                      backgroundImage:
+                        "radial-gradient(circle at center, rgba(148,163,184,0.45) 1px, transparent 1px)",
+                      backgroundSize: "18px 18px",
+                    }}
                   />
-                ) : null}
-                {!isPreviewMode &&
-                  (alignmentGuides.vertical.length > 0 ||
-                  alignmentGuides.horizontal.length > 0) && (
-                  <div className="pointer-events-none absolute inset-0">
-                    {alignmentGuides.vertical.map((xGuide) => (
-                      <div
-                        key={`v-${xGuide}`}
-                        className="absolute top-0 h-full border-l border-dotted border-white/60"
-                        style={{ left: xGuide }}
+                    {backgroundImage ? (
+                      <img
+                        src={backgroundImage}
+                        alt=""
+                        className="pointer-events-none absolute inset-0 h-full w-full object-contain"
                       />
-                    ))}
-                    {alignmentGuides.horizontal.map((yGuide) => (
-                      <div
-                        key={`h-${yGuide}`}
-                        className="absolute left-0 w-full border-t border-dotted border-white/60"
-                        style={{ top: yGuide }}
+                    ) : null}
+                  {!isPreviewMode &&
+                    (alignmentGuides.vertical.length > 0 ||
+                      alignmentGuides.horizontal.length > 0) && (
+                      <div className="pointer-events-none absolute inset-0">
+                        {alignmentGuides.vertical.map((xGuide) => (
+                          <div
+                            key={`v-${xGuide}`}
+                            className="absolute top-0 h-full border-l border-dotted border-sky-300/70"
+                            style={{ left: xGuide }}
+                          />
+                        ))}
+                        {alignmentGuides.horizontal.map((yGuide) => (
+                          <div
+                            key={`h-${yGuide}`}
+                            className="absolute left-0 w-full border-t border-dotted border-sky-300/70"
+                            style={{ top: yGuide }}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  {items.length === 0 && (
+                    <p className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-sm text-white/55">
+                      Drop assets here
+                    </p>
+                  )}
+                    {items.map((item) => {
+                    if (isPreviewMode && item.kind === "mirror") {
+                      return null;
+                    }
+
+                    const snapOffset =
+                      dragSnapOffset.itemId === item.id
+                        ? { x: dragSnapOffset.x, y: dragSnapOffset.y }
+                        : undefined;
+
+                    return item.kind === "mirror" ? (
+                      <CanvasMirrorLine
+                        key={item.id}
+                        item={item}
+                        onHandleStart={handleMirrorHandleStart}
+                        onSelect={setSelectedItemId}
+                        snapOffset={snapOffset}
+                        isPreviewMode={isPreviewMode}
                       />
-                    ))}
-                  </div>
-                )}
-                {items.length === 0 && (
-                  <p className="text-sm text-white/60">Drop assets here</p>
-                )}
-                {items.map((item) => {
-                  if (isPreviewMode && item.kind === "mirror") {
-                    return null;
-                  }
+                    ) : item.kind === "cover" ? (
+                      <CanvasCover
+                        key={item.id}
+                        item={item}
+                        onResizeStart={handleResizeStart}
+                        onSelect={setSelectedItemId}
+                        snapOffset={snapOffset}
+                        isPreviewMode={isPreviewMode}
+                      />
+                    ) : item.kind === "input" ? (
+                      <CanvasInput
+                        key={item.id}
+                        item={item}
+                        onResizeStart={handleResizeStart}
+                        onEditInput={handleEditLabel}
+                        onSelect={setSelectedItemId}
+                        snapOffset={snapOffset}
+                        isPreviewMode={isPreviewMode}
+                      />
+                    ) : (
+                      <CanvasButton
+                        key={item.id}
+                        item={item}
+                        onResizeStart={handleResizeStart}
+                        onEditLabel={handleEditLabel}
+                        onSwapSides={handleSwapSides}
+                        onSelect={setSelectedItemId}
+                        snapOffset={snapOffset}
+                        isPreviewMode={isPreviewMode}
+                      />
+                    );
+                    })}
+                  </section>
+                </div>
+              </div>
 
-                  const snapOffset =
-                    dragSnapOffset.itemId === item.id
-                      ? { x: dragSnapOffset.x, y: dragSnapOffset.y }
-                      : undefined;
+            </div>
+          </section>
 
-                  return item.kind === "mirror" ? (
-                    <CanvasMirrorLine
-                      key={item.id}
-                      item={item}
-                      onHandleStart={handleMirrorHandleStart}
-                      snapOffset={snapOffset}
-                      isPreviewMode={isPreviewMode}
-                    />
-                  ) : item.kind === "cover" ? (
-                    <CanvasCover
-                      key={item.id}
-                      item={item}
-                      onResizeStart={handleResizeStart}
-                      snapOffset={snapOffset}
-                      isPreviewMode={isPreviewMode}
-                    />
-                  ) : item.kind === "input" ? (
-                    <CanvasInput
-                      key={item.id}
-                      item={item}
-                      onResizeStart={handleResizeStart}
-                      onEditInput={handleEditLabel}
-                      snapOffset={snapOffset}
-                      isPreviewMode={isPreviewMode}
-                    />
-                  ) : (
-                    <CanvasButton
-                      key={item.id}
-                      item={item}
-                      onResizeStart={handleResizeStart}
-                      onEditLabel={handleEditLabel}
-                      onSwapSides={handleSwapSides}
-                      snapOffset={snapOffset}
-                      isPreviewMode={isPreviewMode}
-                    />
-                  );
-                })}
-              </section>
-            </AspectRatio>
-          </div>
+          <aside
+            className="flex h-[min(66vh,620px)] min-h-0 flex-col overflow-y-auto rounded-2xl border border-white/[0.03] bg-slate-900/70 p-4 text-white shadow-2xl backdrop-blur [scrollbar-color:rgba(100,116,139,0.45)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-slate-600/50"
+          >
+            <div className="mb-5 px-1">
+              <h2 className="text-3xl font-semibold tracking-tight">Properties</h2>
+            </div>
 
-          <div className="w-full flex-none lg:w-55">
-            <div className="mb-3 grid w-full grid-cols-2 gap-2">
+            <div className="mb-6 grid grid-cols-2 gap-2">
               <Button
                 variant="outline"
                 type="button"
-                className="w-full"
+                className="h-10 rounded-lg border-white/15 bg-slate-900/70 text-white hover:bg-slate-800/80"
                 onClick={handleUndo}
                 disabled={!canUndo}
-                aria-label="Undo"
               >
                 <Undo2 className="mr-2 h-4 w-4" />
                 Undo
@@ -2508,76 +2921,189 @@ export default function EditorPage() {
               <Button
                 variant="outline"
                 type="button"
-                className="w-full"
+                className="h-10 rounded-lg border-white/15 bg-slate-900/70 text-white hover:bg-slate-800/80"
                 onClick={handleRedo}
                 disabled={!canRedo}
-                aria-label="Redo"
               >
                 <Redo2 className="mr-2 h-4 w-4" />
                 Redo
               </Button>
             </div>
-            <aside
-              ref={setAssetsRef}
-              className="flex h-[420px] w-full flex-col rounded-md bg-black px-6 py-8 text-white shadow-2xl ring-1 ring-white/10"
-            >
-              <div className="mb-4 flex items-center justify-between">
-                <span className="text-sm font-semibold uppercase tracking-wide text-white/70">
-                  Assets
-                </span>
-                <Button
-                  variant="outline"
-                  size="icon"
-                  className="h-9 w-9"
-                  aria-label="Settings"
-                  type="button"
-                  onClick={() => {
-                    setAspectWidthDraft(aspectWidth);
-                    setAspectHeightDraft(aspectHeight);
-                    setIsAspectDialogOpen(true);
-                  }}
-                >
-                  <Settings className="h-4 w-4" />
-                </Button>
-              </div>
-              <ScrollArea
-                className="h-full w-full"
-                scrollbarClassName="bg-black/40"
-                thumbClassName="bg-black"
-              >
-                <div
-                  className={`flex flex-col items-center gap-6 px-1 ${
-                    isPreviewMode ? "pointer-events-none opacity-50" : ""
-                  }`}
-                >
-                  <PaletteButton />
-                  <PaletteIconButton />
-                  <PaletteMirrorButton />
-                  <PaletteSwapButton />
-                  <PaletteCoverButton />
-                  <PaletteInputButton />
+
+            {selectedItem?.kind === "icon" ? (
+              <div className="grid gap-4">
+                <div className="grid gap-2">
+                  <Label htmlFor="icon-tag-side" className="text-sm text-white/80">
+                    Tag
+                  </Label>
+                  <Input
+                    id="icon-tag-side"
+                    value={selectedItem.tag ?? ""}
+                    onChange={(event) => handleSelectedTagChange(event.target.value)}
+                    placeholder="Optional tag"
+                    className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
+                  />
                 </div>
-              </ScrollArea>
-            </aside>
-            <div className="mt-3 grid w-full gap-2">
+
+                <div className="grid gap-2">
+                  <Label className="text-sm text-white/80">Button colors</Label>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <div className="grid gap-2">
+                      <Label htmlFor="icon-outline-side" className="text-xs text-white/70">
+                        Outline
+                      </Label>
+                      <div className="grid grid-cols-[52px_minmax(0,1fr)] items-center gap-2">
+                        <Input
+                          id="icon-outline-side"
+                          type="color"
+                          value={
+                            (selectedItem.outlineColor ?? "#ffffff") === "transparent"
+                              ? "#000000"
+                              : (selectedItem.outlineColor ?? "#ffffff")
+                          }
+                          onInput={(event) =>
+                            handleSelectedOutlineColorChange(event.currentTarget.value)
+                          }
+                          className="h-10 w-[52px] min-w-[52px] cursor-pointer border-white/10 bg-slate-900 p-1"
+                        />
+                        <Button
+                          variant="outline"
+                          className="h-9 w-full min-w-0 border-white/10 bg-slate-900 px-2 text-[11px] text-white hover:bg-slate-800"
+                          onClick={() => handleSelectedOutlineColorChange("transparent")}
+                        >
+                          Clear
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="grid gap-2">
+                      <Label htmlFor="icon-fill-side" className="text-xs text-white/70">
+                        Fill
+                      </Label>
+                      <div className="grid grid-cols-[52px_minmax(0,1fr)] items-center gap-2">
+                        <Input
+                          id="icon-fill-side"
+                          type="color"
+                          value={
+                            (selectedItem.fillColor ?? "transparent") === "transparent"
+                              ? "#000000"
+                              : (selectedItem.fillColor ?? "transparent")
+                          }
+                          onInput={(event) =>
+                            handleSelectedFillColorChange(event.currentTarget.value)
+                          }
+                          className="h-10 w-[52px] min-w-[52px] cursor-pointer border-white/10 bg-slate-900 p-1"
+                        />
+                        <Button
+                          variant="outline"
+                          className="h-9 w-full min-w-0 border-white/10 bg-slate-900 px-2 text-[11px] text-white hover:bg-slate-800"
+                          onClick={() => handleSelectedFillColorChange("transparent")}
+                        >
+                          Clear
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid gap-2">
+                  <Label htmlFor="icon-search-side" className="text-sm text-white/80">
+                    Icon picker
+                  </Label>
+                  <Input
+                    id="icon-search-side"
+                    value={iconSearch}
+                    onChange={(event) => setIconSearch(event.target.value)}
+                    placeholder="Search icon name"
+                    className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
+                  />
+                  <ScrollArea
+                    className="h-52 rounded-md border border-white/10 bg-slate-900/70 p-2"
+                    scrollbarClassName="bg-transparent"
+                    thumbClassName="bg-slate-500/60"
+                  >
+                    <div className="grid grid-cols-5 gap-2">
+                      {ICON_NAMES.filter((name) =>
+                        name.toLowerCase().includes(iconSearch.trim().toLowerCase())
+                      )
+                        .slice(0, 300)
+                        .map((name) => {
+                          const IconComponent = ICON_COMPONENTS[name] ?? Bot;
+                          const isActive = selectedItem.iconName === name;
+                          return (
+                            <Button
+                              key={name}
+                              variant="outline"
+                              size="icon"
+                              className={`h-9 w-9 border-white/10 bg-slate-900 text-white hover:bg-slate-800 ${
+                                isActive ? "ring-1 ring-blue-400/70" : ""
+                              }`}
+                              aria-label={name}
+                              onClick={() => handleSelectedIconNameChange(name)}
+                            >
+                              <IconComponent className="h-4 w-4" />
+                            </Button>
+                          );
+                        })}
+                    </div>
+                  </ScrollArea>
+                </div>
+              </div>
+            ) : (
+              <div className="grid gap-4">
+                <div className="grid gap-2">
+                  <Label htmlFor="button-name" className="text-sm text-white/80">
+                    Button name
+                  </Label>
+                  <Input
+                    id="button-name"
+                    value={selectedItem?.kind === "text" ? selectedItem.label : ""}
+                    onChange={(event) => handleSelectedLabelChange(event.target.value)}
+                    placeholder="Enter button text"
+                    disabled={selectedItem?.kind !== "text"}
+                    className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35 disabled:opacity-50"
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="button-tag" className="text-sm text-white/80">
+                    Tag
+                  </Label>
+                  <Input
+                    id="button-tag"
+                    value={selectedItem?.kind === "text" ? (selectedItem.tag ?? "") : ""}
+                    onChange={(event) => handleSelectedTagChange(event.target.value)}
+                    placeholder="Enter tag"
+                    disabled={selectedItem?.kind !== "text"}
+                    className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35 disabled:opacity-50"
+                  />
+                </div>
+              </div>
+            )}
+
+            <div className="mt-8 grid gap-2">
               <Button
                 variant="outline"
                 type="button"
-                className="w-full"
-                onClick={() => setIsPreviewMode((current) => !current)}
+                className="h-10 rounded-lg border-white/15 bg-slate-900/70 text-white hover:bg-slate-800/80"
+                onClick={() => {
+                  setAspectWidthDraft(aspectWidth);
+                  setAspectHeightDraft(aspectHeight);
+                  setIsAspectDialogOpen(true);
+                }}
               >
-                {isPreviewMode ? "Back to editor" : "Preview"}
+                <Settings className="mr-2 h-4 w-4" />
+                Field settings
               </Button>
               <Button
                 variant="outline"
                 type="button"
-                className="w-full"
+                className="h-10 rounded-lg border-white/15 bg-slate-900/70 text-white hover:bg-slate-800/80"
                 onClick={() => setIsResetDialogOpen(true)}
               >
                 Reset
               </Button>
             </div>
-          </div>
+          </aside>
         </main>
 
         <DragOverlay dropAnimation={null}>
@@ -2586,7 +3112,7 @@ export default function EditorPage() {
               style={{
                 width: activeSize.width,
                 height: activeSize.height,
-                transform: `translate(${paletteSnapOffset.x}px, ${paletteSnapOffset.y}px)`,
+                transform: `translate(${paletteSnapOffset.x + palettePointerOffset.x}px, ${paletteSnapOffset.y + palettePointerOffset.y}px)`,
               }}
             >
               {activeKind === "mirror" ? (
@@ -2617,7 +3143,7 @@ export default function EditorPage() {
                 <Button
                   variant="outline"
                   size={activeKind === "icon" ? "icon" : "default"}
-                  className="h-full w-full !bg-black !text-white hover:!bg-black"
+                  className="h-full w-full rounded-lg border-white/25 !bg-slate-900/80 !text-white hover:!bg-slate-900/80"
                   aria-label={activeKind === "icon" ? activeLabel : undefined}
                 >
                   {activeKind === "icon" ? (
@@ -2740,37 +3266,39 @@ export default function EditorPage() {
           open={isAspectDialogOpen}
           onOpenChange={(open) => setIsAspectDialogOpen(open)}
         >
-          <DialogContent className="data-[state=closed]:slide-out-to-right-1/2 data-[state=open]:slide-in-from-right-1/2">
+          <DialogContent className="border-white/10 bg-slate-950 text-white data-[state=closed]:slide-out-to-right-1/2 data-[state=open]:slide-in-from-right-1/2">
             <DialogHeader>
               <DialogTitle>Field aspect ratio</DialogTitle>
-              <DialogDescription>
+              <DialogDescription className="text-white/60">
                 Set the width and height ratio for the field.
               </DialogDescription>
             </DialogHeader>
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="grid gap-2">
-                <Label htmlFor="aspect-width">Width</Label>
+                <Label htmlFor="aspect-width" className="text-white/85">Width</Label>
                 <Input
                   id="aspect-width"
                   inputMode="decimal"
                   value={aspectWidthDraft}
                   onChange={(event) => setAspectWidthDraft(event.target.value)}
                   placeholder="16"
+                  className="border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
                 />
               </div>
               <div className="grid gap-2">
-                <Label htmlFor="aspect-height">Height</Label>
+                <Label htmlFor="aspect-height" className="text-white/85">Height</Label>
                 <Input
                   id="aspect-height"
                   inputMode="decimal"
                   value={aspectHeightDraft}
                   onChange={(event) => setAspectHeightDraft(event.target.value)}
                   placeholder="9"
+                  className="border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
                 />
               </div>
             </div>
             <div className="mt-4 grid gap-2">
-              <Label htmlFor="background-upload">Background image</Label>
+              <Label htmlFor="background-upload" className="text-white/85">Background image</Label>
               <input
                 ref={backgroundInputRef}
                 id="background-upload"
@@ -2781,13 +3309,13 @@ export default function EditorPage() {
               />
               <div className="flex flex-wrap items-center gap-2">
                 <Button
-                  className="bg-black text-white hover:bg-black disabled:bg-black disabled:text-white"
+                  className="border border-white/10 bg-slate-900 text-white hover:bg-slate-800 disabled:bg-slate-900 disabled:text-white/50"
                   onClick={() => backgroundInputRef.current?.click()}
                 >
                   Upload image
                 </Button>
                 <Button
-                  className="bg-black text-white hover:bg-black disabled:bg-black disabled:text-white"
+                  className="border border-white/10 bg-slate-900 text-white hover:bg-slate-800 disabled:bg-slate-900 disabled:text-white/50"
                   onClick={() => setBackgroundImage(null)}
                   disabled={!backgroundImage}
                 >
@@ -2827,10 +3355,16 @@ export default function EditorPage() {
               </button>
             </div>
             <DialogFooter>
-              <Button variant="outline" onClick={() => setIsAspectDialogOpen(false)}>
+              <Button
+                variant="outline"
+                className="border-white/10 bg-slate-900 text-white hover:bg-slate-800"
+                onClick={() => setIsAspectDialogOpen(false)}
+              >
                 Cancel
               </Button>
-              <Button onClick={handleSaveAspectRatio}>Apply</Button>
+              <Button className="bg-blue-600 text-white hover:bg-blue-500" onClick={handleSaveAspectRatio}>
+                Apply
+              </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
@@ -2870,7 +3404,7 @@ export default function EditorPage() {
                           type="color"
                           value={outlineDraft === "transparent" ? "#000000" : outlineDraft}
                           onInput={(event) => {
-                            const next = event.target.value;
+                            const next = event.currentTarget.value;
                             setOutlineDraft(next);
                           }}
                           onPointerUp={() => commitOutlineColor(outlineDraft)}
@@ -2896,7 +3430,7 @@ export default function EditorPage() {
                           type="color"
                           value={fillDraft === "transparent" ? "#000000" : fillDraft}
                           onInput={(event) => {
-                            const next = event.target.value;
+                            const next = event.currentTarget.value;
                             setFillDraft(next);
                           }}
                           onPointerUp={() => commitFillColor(fillDraft)}
@@ -3035,18 +3569,23 @@ export default function EditorPage() {
         </Dialog>
 
         <Dialog open={isResetDialogOpen} onOpenChange={setIsResetDialogOpen}>
-          <DialogContent className="data-[state=closed]:slide-out-to-right-1/2 data-[state=closed]:slide-out-to-bottom-[48%] data-[state=open]:slide-in-from-right-1/2 data-[state=open]:slide-in-from-bottom-[48%]">
+          <DialogContent className="border-white/10 bg-slate-950 text-white data-[state=closed]:slide-out-to-right-1/2 data-[state=closed]:slide-out-to-bottom-[48%] data-[state=open]:slide-in-from-right-1/2 data-[state=open]:slide-in-from-bottom-[48%]">
             <DialogHeader>
               <DialogTitle>Reset editor?</DialogTitle>
-              <DialogDescription>
+              <DialogDescription className="text-white/60">
                 This will clear all elements, background image, and current layout settings.
               </DialogDescription>
             </DialogHeader>
             <DialogFooter>
-              <Button variant="outline" onClick={() => setIsResetDialogOpen(false)}>
+              <Button
+                variant="outline"
+                className="border-white/10 bg-slate-900 text-white hover:bg-slate-800"
+                onClick={() => setIsResetDialogOpen(false)}
+              >
                 Cancel
               </Button>
               <Button
+                className="bg-red-600 text-white hover:bg-red-500"
                 onClick={() => {
                   handleResetEditor();
                   setIsResetDialogOpen(false);
