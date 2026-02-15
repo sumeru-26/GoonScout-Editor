@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import * as LucideIcons from "lucide-react";
 import {
   Bot,
+  CircleHelp,
   ChevronDown,
   ChevronRight,
   Download,
@@ -148,6 +149,27 @@ type EditorSnapshot = {
   aspectWidth: string;
   aspectHeight: string;
   backgroundImage: string | null;
+};
+
+type TutorialStepKey =
+  | "navbar"
+  | "assets"
+  | "canvas"
+  | "field-settings"
+  | "properties"
+  | "tags"
+  | "staging"
+  | "stage-indicator"
+  | "preview"
+  | "export";
+
+type TutorialPlacement = "top" | "right" | "bottom" | "left";
+
+type TutorialStep = {
+  key: TutorialStepKey;
+  title: string;
+  body: string;
+  placement: TutorialPlacement;
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -499,7 +521,9 @@ function CanvasButton({
       style={style}
       variant="outline"
       size={item.kind === "icon" ? "icon" : "default"}
-      className={`group absolute rounded-lg border-white/20 !bg-slate-900 !text-white transition-all duration-150 hover:!bg-slate-900 ${
+      className={`group absolute rounded-lg border-white/20 !bg-slate-900 !text-white hover:!bg-slate-900 ${
+        isPreviewMode ? "transition-all duration-150" : "!transition-none"
+      } ${
         isPreviewMode && isPreviewPressed
           ? "scale-[0.97] ring-2 ring-sky-300/70 !bg-slate-800"
           : ""
@@ -546,6 +570,7 @@ function CanvasButton({
       }}
       {...attributes}
       {...listeners}
+      data-stage-root={hasStages ? "true" : undefined}
       type="button"
       aria-label={item.kind === "icon" ? item.label : undefined}
     >
@@ -940,6 +965,25 @@ export default function EditorPage() {
     null
   );
   const [selectedItemId, setSelectedItemId] = React.useState<string | null>(null);
+  const [isTutorialOpen, setIsTutorialOpen] = React.useState(false);
+  const [tutorialStepIndex, setTutorialStepIndex] = React.useState(0);
+  const [tutorialTargetRect, setTutorialTargetRect] = React.useState<DOMRect | null>(
+    null
+  );
+  const [tutorialCardPosition, setTutorialCardPosition] = React.useState({
+    left: 24,
+    top: 24,
+  });
+  const navHeaderRef = React.useRef<HTMLDivElement | null>(null);
+  const assetsPanelRef = React.useRef<HTMLDivElement | null>(null);
+  const canvasPanelRef = React.useRef<HTMLDivElement | null>(null);
+  const propertiesPanelRef = React.useRef<HTMLDivElement | null>(null);
+  const previewButtonRef = React.useRef<HTMLButtonElement | null>(null);
+  const downloadButtonRef = React.useRef<HTMLButtonElement | null>(null);
+  const fieldSettingsButtonRef = React.useRef<HTMLButtonElement | null>(null);
+  const stagingButtonRef = React.useRef<HTMLButtonElement | null>(null);
+  const tagInputRef = React.useRef<HTMLInputElement | null>(null);
+  const tutorialHelpButtonRef = React.useRef<HTMLButtonElement | null>(null);
   const [backgroundImage, setBackgroundImage] = React.useState<string | null>(null);
   const backgroundInputRef = React.useRef<HTMLInputElement | null>(null);
   const [isUserMenuOpen, setIsUserMenuOpen] = React.useState(false);
@@ -964,6 +1008,9 @@ export default function EditorPage() {
   const [autosaveUpdatedAt, setAutosaveUpdatedAt] = React.useState<string | null>(
     null
   );
+  const [isAutosaveBadgeVisible, setIsAutosaveBadgeVisible] =
+    React.useState(false);
+  const autosaveBadgeTimeoutRef = React.useRef<number | null>(null);
   const [latestUploadId, setLatestUploadId] = React.useState<string | null>(null);
   const isRestoringRef = React.useRef(false);
   const hasRestoredRef = React.useRef(false);
@@ -1089,6 +1136,121 @@ export default function EditorPage() {
 
   const selectedIsStagingRoot =
     Boolean(selectedItem?.id) && stagingParentId === selectedItem?.id;
+
+  const tutorialSteps = React.useMemo<TutorialStep[]>(
+    () => [
+      {
+        key: "navbar",
+        title: "Welcome to GoonScout",
+        body: "This tour walks through building interactive scouting layouts with staging, preview testing, and export-ready config output.",
+        placement: "bottom",
+      },
+      {
+        key: "assets",
+        title: "Assets Panel",
+        body: "Drag elements from here onto the field: buttons, icon buttons, mirror lines, text inputs, toggles, covers, and swap controls.",
+        placement: "right",
+      },
+      {
+        key: "canvas",
+        title: "Field Canvas",
+        body: "This is your live placement area. Coordinates here drive runtime element positions, spacing, and stage interactions.",
+        placement: "top",
+      },
+      {
+        key: "field-settings",
+        title: "Field Settings",
+        body: "Set field aspect ratio, upload/remove a background image, and toggle alignment assist snapping from this panel.",
+        placement: "top",
+      },
+      {
+        key: "properties",
+        title: "Properties Panel",
+        body: "Select an element and configure its behavior here: labels, tags, colors, toggle options, and staging actions.",
+        placement: "left",
+      },
+      {
+        key: "tags",
+        title: "Tags Power Data Binding",
+        body: "Tags are runtime identifiers used by your scouting app. Keep them unique so export/import mapping stays stable.",
+        placement: "left",
+      },
+      {
+        key: "staging",
+        title: "Staging Controls",
+        body: "Use Add Stage on button/icon elements to build child interaction layers. End staging moves back up one stage level.",
+        placement: "left",
+      },
+      {
+        key: "stage-indicator",
+        title: "Stage Indicators",
+        body: "Elements with the down-arrow have staged children. Right-click them in editor to open stage view quickly.",
+        placement: "top",
+      },
+      {
+        key: "preview",
+        title: "Preview Mode",
+        body: "Preview runs click flow like runtime: staged roots open focused views, and leaf stage clicks return to main.",
+        placement: "bottom",
+      },
+      {
+        key: "export",
+        title: "Download Export",
+        body: "Download JSON includes element schema, stage relationships, and backend image pointers when an upload ID exists.",
+        placement: "bottom",
+      },
+    ],
+    []
+  );
+
+  const currentTutorialStep = tutorialSteps[tutorialStepIndex] ?? tutorialSteps[0];
+  const isTutorialFirstStep = tutorialStepIndex === 0;
+  const isTutorialLastStep = tutorialStepIndex === tutorialSteps.length - 1;
+
+  const tutorialArrowClass =
+    currentTutorialStep?.placement === "right"
+      ? "-left-2 top-1/2 -translate-y-1/2"
+      : currentTutorialStep?.placement === "left"
+        ? "-right-2 top-1/2 -translate-y-1/2"
+        : currentTutorialStep?.placement === "top"
+          ? "bottom-[-6px] left-1/2 -translate-x-1/2"
+          : "-top-2 left-1/2 -translate-x-1/2";
+
+  const getTutorialTargetElement = React.useCallback(
+    (step: TutorialStep | undefined): HTMLElement | null => {
+      if (!step) return tutorialHelpButtonRef.current;
+
+      switch (step.key) {
+        case "navbar":
+          return navHeaderRef.current;
+        case "assets":
+          return assetsPanelRef.current;
+        case "canvas":
+          return canvasPanelRef.current;
+        case "field-settings":
+          return fieldSettingsButtonRef.current ?? propertiesPanelRef.current;
+        case "properties":
+          return propertiesPanelRef.current;
+        case "tags":
+          return tagInputRef.current ?? propertiesPanelRef.current;
+        case "staging":
+          return stagingButtonRef.current ?? propertiesPanelRef.current;
+        case "stage-indicator": {
+          const stageIndicatorHost = document.querySelector(
+            '[data-stage-root="true"]'
+          ) as HTMLElement | null;
+          return stageIndicatorHost ?? canvasPanelRef.current;
+        }
+        case "preview":
+          return previewButtonRef.current;
+        case "export":
+          return downloadButtonRef.current;
+        default:
+          return tutorialHelpButtonRef.current;
+      }
+    },
+    []
+  );
 
   const handleSelectedLabelChange = React.useCallback(
     (value: string) => {
@@ -3211,6 +3373,82 @@ export default function EditorPage() {
     setSelectedItemId(null);
   }, [selectedItemId, visibleItems]);
 
+  React.useEffect(() => {
+    if (autosaveState !== "saved") return;
+
+    if (autosaveBadgeTimeoutRef.current !== null) {
+      window.clearTimeout(autosaveBadgeTimeoutRef.current);
+    }
+
+    setIsAutosaveBadgeVisible(true);
+    autosaveBadgeTimeoutRef.current = window.setTimeout(() => {
+      setIsAutosaveBadgeVisible(false);
+      autosaveBadgeTimeoutRef.current = null;
+    }, 5000);
+  }, [autosaveState, autosaveUpdatedAt]);
+
+  React.useEffect(() => {
+    return () => {
+      if (autosaveBadgeTimeoutRef.current !== null) {
+        window.clearTimeout(autosaveBadgeTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  React.useEffect(() => {
+    if (!isTutorialOpen) return;
+
+    const updateTutorialLayout = () => {
+      const target = getTutorialTargetElement(currentTutorialStep);
+      if (!target) {
+        setTutorialTargetRect(null);
+        setTutorialCardPosition({ left: 24, top: 24 });
+        return;
+      }
+
+      const rect = target.getBoundingClientRect();
+      setTutorialTargetRect(rect);
+
+      const cardWidth = 330;
+      const cardHeight = 210;
+      const viewportWidth = window.innerWidth;
+      const viewportHeight = window.innerHeight;
+      const gap = 16;
+      const minMargin = 12;
+
+      let left = rect.left;
+      let top = rect.bottom + gap;
+
+      if (currentTutorialStep.placement === "right") {
+        left = rect.right + gap;
+        top = rect.top + rect.height / 2 - cardHeight / 2;
+      } else if (currentTutorialStep.placement === "left") {
+        left = rect.left - cardWidth - gap;
+        top = rect.top + rect.height / 2 - cardHeight / 2;
+      } else if (currentTutorialStep.placement === "top") {
+        left = rect.left + rect.width / 2 - cardWidth / 2;
+        top = rect.top - cardHeight - gap;
+      } else {
+        left = rect.left + rect.width / 2 - cardWidth / 2;
+        top = rect.bottom + gap;
+      }
+
+      left = Math.max(minMargin, Math.min(left, viewportWidth - cardWidth - minMargin));
+      top = Math.max(minMargin, Math.min(top, viewportHeight - cardHeight - minMargin));
+
+      setTutorialCardPosition({ left, top });
+    };
+
+    updateTutorialLayout();
+    window.addEventListener("resize", updateTutorialLayout);
+    window.addEventListener("scroll", updateTutorialLayout, true);
+
+    return () => {
+      window.removeEventListener("resize", updateTutorialLayout);
+      window.removeEventListener("scroll", updateTutorialLayout, true);
+    };
+  }, [currentTutorialStep, getTutorialTargetElement, isTutorialOpen]);
+
   return (
     <DndContext
       sensors={sensors}
@@ -3220,19 +3458,22 @@ export default function EditorPage() {
     >
       <div className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-950 to-blue-950/40 text-white">
         <header className="sticky top-0 z-50 border-b border-white/5 bg-slate-950/80 backdrop-blur-xl">
-          <div className="mx-auto flex w-full max-w-[1760px] items-center justify-between px-5 py-3">
+          <div
+            ref={navHeaderRef}
+            className="mx-auto flex w-full max-w-[1760px] items-center justify-between px-5 py-3"
+          >
             <h1 className="text-4xl font-black tracking-tight">GoonScout</h1>
             <div className="ml-6 flex items-center gap-3 sm:gap-4">
-              <span className="hidden text-xs text-white/60 xl:inline">
-                {autosaveState === "saving"
-                  ? "Autosave: saving..."
-                  : autosaveState === "saved"
-                    ? `Autosave: saved${autosaveUpdatedAt ? ` (${new Date(autosaveUpdatedAt).toLocaleTimeString()})` : ""}`
-                    : autosaveState === "error"
-                      ? "Autosave: error"
-                      : "Autosave: idle"}
+              <span
+                className={`hidden items-center gap-2 rounded-full border border-emerald-400/40 bg-emerald-400/10 px-2.5 py-1 text-xs font-medium text-emerald-300 transition-opacity duration-300 xl:inline-flex ${
+                  isAutosaveBadgeVisible ? "opacity-100" : "opacity-0"
+                }`}
+              >
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-300" />
+                Saved
               </span>
               <Button
+                ref={previewButtonRef}
                 variant="outline"
                 type="button"
                 className="h-10 gap-2 rounded-lg border-white/15 bg-slate-900/60 px-4 text-white hover:bg-slate-800/80"
@@ -3260,6 +3501,7 @@ export default function EditorPage() {
                 Save
               </Button>
               <Button
+                ref={downloadButtonRef}
                 variant="outline"
                 type="button"
                 className="h-10 gap-2 rounded-lg border-white/15 bg-slate-900/60 px-4 text-white hover:bg-slate-800/80"
@@ -3267,6 +3509,19 @@ export default function EditorPage() {
               >
                 <Download className="h-4 w-4" />
                 Download
+              </Button>
+              <Button
+                ref={tutorialHelpButtonRef}
+                variant="outline"
+                type="button"
+                aria-label="Open tutorial"
+                className="h-10 w-10 rounded-full border-white/15 bg-slate-900/60 p-0 text-white hover:bg-slate-800/80"
+                onClick={() => {
+                  setTutorialStepIndex(0);
+                  setIsTutorialOpen(true);
+                }}
+              >
+                <CircleHelp className="h-4 w-4" />
               </Button>
               <div ref={userMenuRef} className="relative">
                 <button
@@ -3308,7 +3563,10 @@ export default function EditorPage() {
 
         <main className="mx-auto grid w-full max-w-[1760px] grid-cols-1 gap-4 px-5 py-5 xl:grid-cols-[260px_minmax(0,1fr)_260px]">
           <aside
-            ref={setAssetsRef}
+            ref={(node: HTMLDivElement | null) => {
+              setAssetsRef(node);
+              assetsPanelRef.current = node;
+            }}
             className="flex h-[min(66vh,620px)] min-h-0 flex-col overflow-hidden rounded-2xl border border-white/[0.03] bg-slate-900/70 p-4 text-white shadow-2xl backdrop-blur"
           >
             <div className="mb-4 px-1">
@@ -3349,6 +3607,7 @@ export default function EditorPage() {
 
           <section className="min-w-0">
             <div
+              ref={canvasPanelRef}
               className="relative flex h-[min(66vh,620px)] min-h-0 items-center justify-center overflow-hidden rounded-2xl border border-white/[0.03] bg-slate-900/60 p-1 shadow-2xl backdrop-blur"
             >
               <div
@@ -3407,12 +3666,13 @@ export default function EditorPage() {
                         ))}
                       </div>
                     )}
-                  {visibleItems.length === 0 && (
+                  {!isTutorialOpen && visibleItems.length === 0 && (
                     <p className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-sm text-white/55">
                       Drop assets here
                     </p>
                   )}
-                    {visibleItems.map((item) => {
+                    {!isTutorialOpen &&
+                    visibleItems.map((item) => {
                     if (isPreviewMode && item.kind === "mirror") {
                       return null;
                     }
@@ -3487,6 +3747,7 @@ export default function EditorPage() {
           </section>
 
           <aside
+            ref={propertiesPanelRef}
             className="flex h-[min(66vh,620px)] min-h-0 flex-col overflow-y-auto rounded-2xl border border-white/[0.03] bg-slate-900/70 p-4 text-white shadow-2xl backdrop-blur [scrollbar-color:rgba(100,116,139,0.45)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-slate-600/50"
           >
             <div className="mb-5 px-1">
@@ -3523,6 +3784,7 @@ export default function EditorPage() {
                     Tag
                   </Label>
                   <Input
+                    ref={tagInputRef}
                     id="icon-tag-side"
                     value={selectedItem.tag ?? ""}
                     onChange={(event) => handleSelectedTagChange(event.target.value)}
@@ -3638,6 +3900,7 @@ export default function EditorPage() {
                 <div className="grid gap-2">
                   <Label className="text-sm text-white/80">Staging</Label>
                   <Button
+                    ref={stagingButtonRef}
                     variant="outline"
                     type="button"
                     className="h-10 rounded-lg border-white/15 bg-slate-900/70 text-white hover:bg-slate-800/80"
@@ -3667,6 +3930,7 @@ export default function EditorPage() {
                     Tag
                   </Label>
                   <Input
+                    ref={tagInputRef}
                     id="toggle-tag"
                     value={selectedItem.tag ?? ""}
                     onChange={(event) => handleSelectedTagChange(event.target.value)}
@@ -3768,6 +4032,7 @@ export default function EditorPage() {
                     Tag
                   </Label>
                   <Input
+                    ref={tagInputRef}
                     id="input-tag-side"
                     value={selectedItem.tag ?? ""}
                     onChange={(event) => handleSelectedTagChange(event.target.value)}
@@ -3796,6 +4061,7 @@ export default function EditorPage() {
                     Tag
                   </Label>
                   <Input
+                    ref={tagInputRef}
                     id="button-tag"
                     value={selectedItem?.kind === "text" ? (selectedItem.tag ?? "") : ""}
                     onChange={(event) => handleSelectedTagChange(event.target.value)}
@@ -3807,6 +4073,7 @@ export default function EditorPage() {
                 <div className="grid gap-2">
                   <Label className="text-sm text-white/80">Staging</Label>
                   <Button
+                    ref={stagingButtonRef}
                     variant="outline"
                     type="button"
                     className="h-10 rounded-lg border-white/15 bg-slate-900/70 text-white hover:bg-slate-800/80"
@@ -3821,6 +4088,7 @@ export default function EditorPage() {
 
             <div className="mt-8 grid gap-2">
               <Button
+                ref={fieldSettingsButtonRef}
                 variant="outline"
                 type="button"
                 className="h-10 rounded-lg border-white/15 bg-slate-900/70 text-white hover:bg-slate-800/80"
@@ -3844,6 +4112,115 @@ export default function EditorPage() {
             </div>
           </aside>
         </main>
+
+        {isTutorialOpen ? (
+          <>
+            <div
+              className={`pointer-events-none fixed inset-0 z-[75] ${
+                currentTutorialStep.key === "field-settings"
+                  ? "bg-transparent"
+                  : "bg-slate-950/65"
+              }`}
+            />
+            {tutorialTargetRect ? (
+              <div
+                className={`pointer-events-none fixed z-[76] rounded-xl border border-sky-300/80 ${
+                  currentTutorialStep.key === "field-settings"
+                    ? ""
+                    : "shadow-[0_0_0_9999px_rgba(2,6,23,0.5)]"
+                }`}
+                style={{
+                  left: tutorialTargetRect.left - 6,
+                  top: tutorialTargetRect.top - 6,
+                  width: tutorialTargetRect.width + 12,
+                  height: tutorialTargetRect.height + 12,
+                }}
+              />
+            ) : null}
+            <div
+              className="fixed z-[77] w-[330px] rounded-xl border border-white/20 bg-slate-900/95 p-4 text-white shadow-2xl"
+              style={{
+                left: tutorialCardPosition.left,
+                top: tutorialCardPosition.top,
+              }}
+            >
+              <span
+                className={`pointer-events-none absolute h-3 w-3 rotate-45 border border-white/20 bg-slate-900/95 ${tutorialArrowClass}`}
+              />
+              <div className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-sky-300">
+                Step {tutorialStepIndex + 1} of {tutorialSteps.length}
+              </div>
+              <h3 className="mb-2 text-base font-semibold leading-tight">
+                {currentTutorialStep.title}
+              </h3>
+              <p className="mb-4 text-sm leading-relaxed text-white/80">
+                {currentTutorialStep.body}
+              </p>
+              {currentTutorialStep.key === "staging" ? (
+                <div className="mb-4 rounded-lg border border-white/10 bg-slate-950/80 p-3">
+                  <div className="mb-2 text-[11px] uppercase tracking-[0.14em] text-white/60">
+                    Staging preview mock
+                  </div>
+                  <div className="relative overflow-hidden rounded-md border border-white/10 bg-slate-900/90 p-3">
+                    <div className="absolute inset-0 bg-slate-700/20 blur-md" />
+                    <div className="relative flex items-center justify-between gap-2">
+                      <div className="rounded-md border border-sky-300/60 bg-sky-400/25 px-3 py-1 text-xs text-sky-100">
+                        Stage Root
+                      </div>
+                      <ChevronDown className="h-4 w-4 text-sky-300" />
+                    </div>
+                    <div className="relative mt-3 grid gap-2">
+                      <div className="rounded-md border border-white/15 bg-slate-800/90 px-3 py-1.5 text-xs text-white/85">
+                        Visible child in stage
+                      </div>
+                      <div className="rounded-md border border-white/10 bg-slate-900/80 px-3 py-1.5 text-xs text-white/50">
+                        Hidden outside-stage element
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+              <div className="flex items-center justify-between">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-9 border-white/20 bg-slate-900 text-white hover:bg-slate-800"
+                  disabled={isTutorialFirstStep}
+                  onClick={() =>
+                    setTutorialStepIndex((index) => Math.max(0, index - 1))
+                  }
+                >
+                  Back
+                </Button>
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="h-9 border-white/20 bg-slate-900 text-white hover:bg-slate-800"
+                    onClick={() => setIsTutorialOpen(false)}
+                  >
+                    Skip
+                  </Button>
+                  <Button
+                    type="button"
+                    className="h-9 bg-blue-600 text-white hover:bg-blue-500"
+                    onClick={() => {
+                      if (isTutorialLastStep) {
+                        setIsTutorialOpen(false);
+                        return;
+                      }
+                      setTutorialStepIndex((index) =>
+                        Math.min(tutorialSteps.length - 1, index + 1)
+                      );
+                    }}
+                  >
+                    {isTutorialLastStep ? "Finish" : "Next"}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </>
+        ) : null}
 
         <DragOverlay dropAnimation={null}>
           {!isPreviewMode && activeType === "palette" ? (
