@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import * as LucideIcons from "lucide-react";
 import {
   Bot,
+  ChevronDown,
   ChevronRight,
   Download,
   Eye,
@@ -25,6 +26,7 @@ import {
   Save,
   Settings,
   Square,
+  ToggleLeft,
   Type,
   Undo2,
 } from "lucide-react";
@@ -48,6 +50,7 @@ const ICON_BUTTON_SIZE = { width: 40, height: 40 } as const;
 const MIRROR_LINE_SIZE = { width: 160, height: 80 } as const;
 const COVER_SIZE = { width: 220, height: 120 } as const;
 const INPUT_SIZE = { width: 220, height: 56 } as const;
+const TOGGLE_SIZE = { width: 64, height: 36 } as const;
 const FIELD_HEIGHT = 560;
 const ICON_GRID_COLUMNS = 6;
 const ICON_CELL_SIZE = 48;
@@ -87,7 +90,14 @@ const ICON_COMPONENTS = Object.entries(LucideIcons).reduce(
 
 const ICON_NAMES = Object.keys(ICON_COMPONENTS);
 
-type AssetKind = "text" | "icon" | "mirror" | "swap" | "cover" | "input";
+type AssetKind =
+  | "text"
+  | "icon"
+  | "mirror"
+  | "swap"
+  | "cover"
+  | "input"
+  | "toggle";
 
 type CanvasItem = {
   id: string;
@@ -106,6 +116,10 @@ type CanvasItem = {
   endX?: number;
   endY?: number;
   placeholder?: string;
+  toggleOn?: boolean;
+  toggleTextAlign?: "left" | "center" | "right";
+  toggleTextSize?: number;
+  stageParentId?: string;
 };
 
 type DragType = "palette" | "canvas";
@@ -401,12 +415,51 @@ function PaletteInputButton({ onPalettePointerDown }: PaletteButtonProps) {
   );
 }
 
+function PaletteToggleButton({ onPalettePointerDown }: PaletteButtonProps) {
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+    id: "palette-toggle",
+    data: { type: "palette", assetKind: "toggle" } satisfies DragData,
+  });
+
+  const style: React.CSSProperties = {
+    opacity: isDragging ? 0 : 1,
+  };
+
+  return (
+    <Button
+      ref={setNodeRef}
+      style={style}
+      variant="outline"
+      className="mx-auto h-[58px] w-[calc(100%-8px)] justify-start gap-3 rounded-xl border-white/10 bg-slate-900/70 px-3 text-left text-white transition-all duration-150 hover:border-white/20 hover:bg-slate-800/80"
+      onPointerDownCapture={(event) => onPalettePointerDown("toggle", event)}
+      {...attributes}
+      {...listeners}
+      type="button"
+      aria-label="Toggle"
+    >
+      <span className="flex h-8 w-8 items-center justify-center rounded-md bg-sky-500/20 text-sky-300">
+        <ToggleLeft className="h-4 w-4" />
+      </span>
+      <span className="flex flex-col items-start leading-tight">
+        <span className="text-sm font-semibold">Toggle</span>
+        <span className="text-xs text-white/55">Slider on/off control</span>
+      </span>
+    </Button>
+  );
+}
+
 function CanvasButton({
   item,
   onResizeStart,
   onEditLabel,
   onSwapSides,
   onSelect,
+  onPreviewPressStart,
+  onPreviewPressEnd,
+  onPreviewStageToggle,
+  onStageContextMenu,
+  hasStages,
+  isPreviewPressed,
   snapOffset,
   isPreviewMode,
 }: {
@@ -415,6 +468,12 @@ function CanvasButton({
   onEditLabel: (item: CanvasItem) => void;
   onSwapSides: () => void;
   onSelect: (itemId: string) => void;
+  onPreviewPressStart: (itemId: string) => void;
+  onPreviewPressEnd: (itemId: string) => void;
+  onPreviewStageToggle: (itemId: string) => void;
+  onStageContextMenu: (itemId: string) => void;
+  hasStages: boolean;
+  isPreviewPressed: boolean;
   snapOffset?: { x: number; y: number };
   isPreviewMode?: boolean;
 }) {
@@ -440,9 +499,29 @@ function CanvasButton({
       style={style}
       variant="outline"
       size={item.kind === "icon" ? "icon" : "default"}
-      className="group absolute rounded-lg border-white/20 !bg-slate-900 !text-white transition-opacity duration-150 hover:!bg-slate-900"
+      className={`group absolute rounded-lg border-white/20 !bg-slate-900 !text-white transition-all duration-150 hover:!bg-slate-900 ${
+        isPreviewMode && isPreviewPressed
+          ? "scale-[0.97] ring-2 ring-sky-300/70 !bg-slate-800"
+          : ""
+      }`}
       onPointerDown={() => {
-        if (!isPreviewMode) onSelect(item.id);
+        if (!isPreviewMode) {
+          onSelect(item.id);
+          return;
+        }
+        onPreviewPressStart(item.id);
+      }}
+      onPointerUp={() => {
+        if (!isPreviewMode) return;
+        onPreviewPressEnd(item.id);
+      }}
+      onPointerCancel={() => {
+        if (!isPreviewMode) return;
+        onPreviewPressEnd(item.id);
+      }}
+      onPointerLeave={() => {
+        if (!isPreviewMode) return;
+        onPreviewPressEnd(item.id);
       }}
       onClick={() => {
         if (!isPreviewMode) {
@@ -452,9 +531,18 @@ function CanvasButton({
           }
           return;
         }
+        if (item.kind === "icon" || item.kind === "text") {
+          onPreviewStageToggle(item.id);
+          return;
+        }
         if (item.kind === "swap" && isPreviewMode) {
           onSwapSides();
         }
+      }}
+      onContextMenu={(event) => {
+        if (isPreviewMode || !hasStages) return;
+        event.preventDefault();
+        onStageContextMenu(item.id);
       }}
       {...attributes}
       {...listeners}
@@ -478,6 +566,11 @@ function CanvasButton({
       ) : (
         item.label
       )}
+      {hasStages ? (
+        <span className="pointer-events-none absolute -right-1 -top-1 inline-flex h-4 w-4 items-center justify-center rounded-full bg-slate-800 text-sky-300">
+          <ChevronDown className="h-3 w-3" />
+        </span>
+      ) : null}
       {!isPreviewMode ? (
         <span
           role="presentation"
@@ -705,6 +798,96 @@ function CanvasInput({
   );
 }
 
+function CanvasToggle({
+  item,
+  onResizeStart,
+  onSelect,
+  onToggle,
+  snapOffset,
+  isPreviewMode,
+}: {
+  item: CanvasItem;
+  onResizeStart: (event: React.PointerEvent, item: CanvasItem) => void;
+  onSelect: (itemId: string) => void;
+  onToggle: (itemId: string) => void;
+  snapOffset?: { x: number; y: number };
+  isPreviewMode?: boolean;
+}) {
+  const { attributes, listeners, setNodeRef, transform } = useDraggable({
+    id: item.id,
+    disabled: Boolean(isPreviewMode),
+    data: { type: "canvas", itemId: item.id } satisfies DragData,
+  });
+
+  const style: React.CSSProperties = {
+    transform: toDragTransform(true, transform, snapOffset),
+    left: item.x,
+    top: item.y,
+    width: item.width,
+    height: item.height,
+  };
+
+  const isOn = Boolean(item.toggleOn);
+  const textAlign = item.toggleTextAlign ?? "center";
+  const textSize = item.toggleTextSize ?? 10;
+  const textClass =
+    textAlign === "left"
+      ? "text-left"
+      : textAlign === "right"
+        ? "text-right"
+        : "text-center";
+  const showLabel = Boolean(item.label);
+  const trackHeight = showLabel ? "h-[calc(100%-16px)]" : "h-full";
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className="group absolute"
+      onPointerDown={() => {
+        if (!isPreviewMode) onSelect(item.id);
+      }}
+      onClick={() => {
+        onSelect(item.id);
+        if (isPreviewMode) {
+          onToggle(item.id);
+        }
+      }}
+      {...attributes}
+      {...listeners}
+    >
+      {showLabel ? (
+        <Label
+          className={`mb-1 block text-xs text-white/80 ${textClass}`}
+          style={{ fontSize: textSize }}
+        >
+          {item.label}
+        </Label>
+      ) : null}
+      <div
+        className={`relative ${trackHeight} w-full rounded-full border transition-colors ${
+          isOn
+            ? "border-sky-300/50 bg-sky-400/35"
+            : "border-white/25 bg-slate-800/80"
+        }`}
+      >
+        <span
+          className={`absolute top-1/2 h-[68%] aspect-square -translate-y-1/2 rounded-full bg-white transition-all ${
+            isOn ? "right-1" : "left-1"
+          }`}
+        />
+      </div>
+      {!isPreviewMode ? (
+        <span
+          role="presentation"
+          onPointerDown={(event) => onResizeStart(event, item)}
+          className="absolute bottom-0 right-0 hidden h-3 w-3 cursor-se-resize rounded-sm border border-white/60 bg-white/80 group-hover:block"
+        />
+      ) : null}
+    </div>
+  );
+}
+
 export default function EditorPage() {
   const router = useRouter();
   const { data: sessionData } = authClient.useSession();
@@ -749,6 +932,13 @@ export default function EditorPage() {
   const [isAlignmentAssistEnabled, setIsAlignmentAssistEnabled] =
     React.useState(true);
   const [isPreviewMode, setIsPreviewMode] = React.useState(false);
+  const [stagingParentId, setStagingParentId] = React.useState<string | null>(null);
+  const [previewStageParentId, setPreviewStageParentId] = React.useState<string | null>(
+    null
+  );
+  const [previewPressedItemId, setPreviewPressedItemId] = React.useState<string | null>(
+    null
+  );
   const [selectedItemId, setSelectedItemId] = React.useState<string | null>(null);
   const [backgroundImage, setBackgroundImage] = React.useState<string | null>(null);
   const backgroundInputRef = React.useRef<HTMLInputElement | null>(null);
@@ -774,6 +964,7 @@ export default function EditorPage() {
   const [autosaveUpdatedAt, setAutosaveUpdatedAt] = React.useState<string | null>(
     null
   );
+  const [latestUploadId, setLatestUploadId] = React.useState<string | null>(null);
   const isRestoringRef = React.useRef(false);
   const hasRestoredRef = React.useRef(false);
 
@@ -812,6 +1003,7 @@ export default function EditorPage() {
     sourceWidth: number;
     sourceHeight: number;
   } | null>(null);
+  const dragStartPointerRef = React.useRef<{ x: number; y: number } | null>(null);
   const [palettePointerOffset, setPalettePointerOffset] = React.useState({
     x: 0,
     y: 0,
@@ -863,6 +1055,41 @@ export default function EditorPage() {
     [items, selectedItemId]
   );
 
+  const stageRootIds = React.useMemo(() => {
+    return new Set(
+      items
+        .map((item) => item.stageParentId)
+        .filter((value): value is string => Boolean(value))
+    );
+  }, [items]);
+
+  const visibleItems = React.useMemo(() => {
+    if (stagingParentId) {
+      return items.filter(
+        (item) => item.id === stagingParentId || item.stageParentId === stagingParentId
+      );
+    }
+
+    if (isPreviewMode && previewStageParentId) {
+      return items.filter(
+        (item) =>
+          item.id === previewStageParentId || item.stageParentId === previewStageParentId
+      );
+    }
+
+    return items.filter((item) => !item.stageParentId);
+  }, [isPreviewMode, items, previewStageParentId, stagingParentId]);
+
+  const isStageBlurActive =
+    Boolean(stagingParentId) || (isPreviewMode && Boolean(previewStageParentId));
+
+  const selectedIsStageableRoot =
+    Boolean(selectedItem) &&
+    (selectedItem?.kind === "text" || selectedItem?.kind === "icon");
+
+  const selectedIsStagingRoot =
+    Boolean(selectedItem?.id) && stagingParentId === selectedItem?.id;
+
   const handleSelectedLabelChange = React.useCallback(
     (value: string) => {
       if (!selectedItemId) return;
@@ -889,6 +1116,23 @@ export default function EditorPage() {
             ? {
                 ...item,
                 tag: value,
+              }
+            : item
+        )
+      );
+    },
+    [selectedItemId]
+  );
+
+  const handleSelectedPlaceholderChange = React.useCallback(
+    (value: string) => {
+      if (!selectedItemId) return;
+      setItems((prev) =>
+        prev.map((item) =>
+          item.id === selectedItemId && item.kind === "input"
+            ? {
+                ...item,
+                placeholder: value,
               }
             : item
         )
@@ -948,6 +1192,128 @@ export default function EditorPage() {
     },
     [selectedItemId]
   );
+
+  const handleSelectedToggleStateChange = React.useCallback(
+    (value: boolean) => {
+      if (!selectedItemId) return;
+      setItems((prev) =>
+        prev.map((item) =>
+          item.id === selectedItemId && item.kind === "toggle"
+            ? {
+                ...item,
+                toggleOn: value,
+              }
+            : item
+        )
+      );
+    },
+    [selectedItemId]
+  );
+
+  const handleSelectedToggleTextAlignChange = React.useCallback(
+    (value: "left" | "center" | "right") => {
+      if (!selectedItemId) return;
+      setItems((prev) =>
+        prev.map((item) =>
+          item.id === selectedItemId && item.kind === "toggle"
+            ? {
+                ...item,
+                toggleTextAlign: value,
+              }
+            : item
+        )
+      );
+    },
+    [selectedItemId]
+  );
+
+  const handleSelectedToggleTextSizeChange = React.useCallback(
+    (value: number) => {
+      if (!selectedItemId) return;
+      setItems((prev) =>
+        prev.map((item) =>
+          item.id === selectedItemId && item.kind === "toggle"
+            ? {
+                ...item,
+                toggleTextSize: value,
+              }
+            : item
+        )
+      );
+    },
+    [selectedItemId]
+  );
+
+  const handleToggleItem = React.useCallback((itemId: string) => {
+    setItems((prev) =>
+      prev.map((item) =>
+        item.id === itemId && item.kind === "toggle"
+          ? {
+              ...item,
+              toggleOn: !item.toggleOn,
+            }
+          : item
+      )
+    );
+  }, []);
+
+  const handleStartStaging = React.useCallback(() => {
+    if (!selectedItem) return;
+    if (selectedItem.kind !== "text" && selectedItem.kind !== "icon") return;
+    setStagingParentId(selectedItem.id);
+    setPreviewStageParentId(null);
+    setIsPreviewMode(false);
+    setSelectedItemId(selectedItem.id);
+  }, [selectedItem]);
+
+  const handleEndStaging = React.useCallback(() => {
+    setStagingParentId((current) => {
+      if (!current) return null;
+      const active = items.find((item) => item.id === current);
+      return active?.stageParentId ?? null;
+    });
+  }, [items]);
+
+  const handleStageContextMenu = React.useCallback(
+    (itemId: string) => {
+      const target = items.find((item) => item.id === itemId);
+      if (!target) return;
+      if (target.kind !== "text" && target.kind !== "icon") return;
+      if (!items.some((item) => item.stageParentId === itemId)) return;
+      if (stagingParentId === itemId) {
+        setStagingParentId(target.stageParentId ?? null);
+        return;
+      }
+      setStagingParentId(itemId);
+      setPreviewStageParentId(null);
+      setIsPreviewMode(false);
+      setSelectedItemId(itemId);
+    },
+    [items, stagingParentId]
+  );
+
+  const handlePreviewStageToggle = React.useCallback((itemId: string) => {
+    const target = items.find((item) => item.id === itemId);
+    if (!target) return;
+    if (target.kind !== "text" && target.kind !== "icon") return;
+
+    const hasChildren = items.some((item) => item.stageParentId === itemId);
+
+    setPreviewStageParentId((current) => {
+      if (!hasChildren) {
+        return current ? null : current;
+      }
+      return current === itemId ? null : itemId;
+    });
+  }, [items]);
+
+  const handlePreviewPressStart = React.useCallback((itemId: string) => {
+    setPreviewPressedItemId(itemId);
+  }, []);
+
+  const handlePreviewPressEnd = React.useCallback((itemId: string) => {
+    setPreviewPressedItemId((current) => (current === itemId ? null : current));
+  }, []);
 
   const applyEditorSnapshot = React.useCallback(
     (snapshot: EditorSnapshot) => {
@@ -1014,9 +1380,10 @@ export default function EditorPage() {
   const handlePalettePointerDown = React.useCallback(
     (assetKind: AssetKind, event: React.PointerEvent<HTMLButtonElement>) => {
       const rect = event.currentTarget.getBoundingClientRect();
+      const sourceWidthForPointer = Math.max(rect.width, 1);
       const pointerX = Math.min(
         Math.max(event.clientX - rect.left, 0),
-        Math.max(rect.width, 1)
+        sourceWidthForPointer
       );
       const pointerY = Math.min(
         Math.max(event.clientY - rect.top, 0),
@@ -1027,7 +1394,7 @@ export default function EditorPage() {
         kind: assetKind,
         pointerX,
         pointerY,
-        sourceWidth: Math.max(rect.width, 1),
+        sourceWidth: sourceWidthForPointer,
         sourceHeight: Math.max(rect.height, 1),
       };
 
@@ -1040,12 +1407,20 @@ export default function EditorPage() {
               ? COVER_SIZE
               : assetKind === "input"
                 ? INPUT_SIZE
+              : assetKind === "toggle"
+                ? TOGGLE_SIZE
                 : assetKind === "swap"
                   ? BUTTON_SIZE
                   : BUTTON_SIZE;
 
-      const mappedX = (pointerX / Math.max(rect.width, 1)) * targetSize.width;
-      const mappedY = (pointerY / Math.max(rect.height, 1)) * targetSize.height;
+      const shouldCenterOnPointer =
+        assetKind === "icon" || assetKind === "toggle";
+      const mappedX = shouldCenterOnPointer
+        ? targetSize.width / 2
+        : (pointerX / sourceWidthForPointer) * targetSize.width;
+      const mappedY = shouldCenterOnPointer
+        ? targetSize.height / 2
+        : (pointerY / Math.max(rect.height, 1)) * targetSize.height;
       setPalettePointerOffset({
         x: pointerX - mappedX,
         y: pointerY - mappedY,
@@ -1057,6 +1432,7 @@ export default function EditorPage() {
   const handleDragStart = React.useCallback(
     (event: DragStartEvent) => {
       if (isPreviewMode) return;
+      dragStartPointerRef.current = getClientPointFromEvent(event.activatorEvent);
       const data = event.active.data.current as DragData | undefined;
       setActiveType(data?.type ?? null);
       setDragSnapOffset({ itemId: data?.itemId ?? null, x: 0, y: 0 });
@@ -1090,6 +1466,8 @@ export default function EditorPage() {
                 ? COVER_SIZE
               : nextKind === "input"
                 ? INPUT_SIZE
+              : nextKind === "toggle"
+                ? TOGGLE_SIZE
               : nextKind === "swap"
                 ? BUTTON_SIZE
               : BUTTON_SIZE;
@@ -1104,6 +1482,8 @@ export default function EditorPage() {
                 ? "Cover"
             : nextKind === "input"
               ? "Input label"
+              : nextKind === "toggle"
+                ? "Toggle"
               : nextKind === "swap"
                 ? "Swap sides"
                 : "Button"
@@ -1121,12 +1501,16 @@ export default function EditorPage() {
         const clientPoint = getClientPointFromEvent(event.activatorEvent);
 
         if (capturedPointer) {
-          const mappedX =
-            (capturedPointer.pointerX / capturedPointer.sourceWidth) *
-            targetSize.width;
-          const mappedY =
-            (capturedPointer.pointerY / capturedPointer.sourceHeight) *
-            targetSize.height;
+          const shouldCenterOnPointer =
+            nextKind === "icon" || nextKind === "toggle";
+          const mappedX = shouldCenterOnPointer
+            ? targetSize.width / 2
+            : (capturedPointer.pointerX / capturedPointer.sourceWidth) *
+              targetSize.width;
+          const mappedY = shouldCenterOnPointer
+            ? targetSize.height / 2
+            : (capturedPointer.pointerY / capturedPointer.sourceHeight) *
+              targetSize.height;
           setPalettePointerOffset({
             x: capturedPointer.pointerX - mappedX,
             y: capturedPointer.pointerY - mappedY,
@@ -1142,8 +1526,14 @@ export default function EditorPage() {
             Math.max(clientPoint.y - initialRect.top, 0),
             sourceHeight
           );
-          const mappedX = (pointerX / sourceWidth) * targetSize.width;
-          const mappedY = (pointerY / sourceHeight) * targetSize.height;
+          const shouldCenterOnPointer =
+            nextKind === "icon" || nextKind === "toggle";
+          const mappedX = shouldCenterOnPointer
+            ? targetSize.width / 2
+            : (pointerX / sourceWidth) * targetSize.width;
+          const mappedY = shouldCenterOnPointer
+            ? targetSize.height / 2
+            : (pointerY / sourceHeight) * targetSize.height;
           setPalettePointerOffset({
             x: pointerX - mappedX,
             y: pointerY - mappedY,
@@ -1209,6 +1599,8 @@ export default function EditorPage() {
               ? COVER_SIZE
               : paletteKind === "input"
                 ? INPUT_SIZE
+              : paletteKind === "toggle"
+                ? TOGGLE_SIZE
               : paletteKind === "swap"
                 ? BUTTON_SIZE
                 : BUTTON_SIZE;
@@ -1241,7 +1633,7 @@ export default function EditorPage() {
       const vertical = new Set<number>();
       const horizontal = new Set<number>();
 
-      items
+      visibleItems
         .filter((item) => item.kind !== "mirror")
         .forEach((item) => {
           if (data?.type === "canvas" && item.id === data.itemId) return;
@@ -1281,7 +1673,7 @@ export default function EditorPage() {
         let bestXDiff = GUIDE_SNAP_PX + 1;
         let bestYDiff = GUIDE_SNAP_PX + 1;
 
-        items
+        visibleItems
           .filter((item) => item.kind !== "mirror" && item.id !== data.itemId)
           .forEach((item) => {
             const left = item.x;
@@ -1329,12 +1721,19 @@ export default function EditorPage() {
         });
         setPaletteSnapOffset({ x: 0, y: 0 });
       } else if (data?.type === "palette") {
+        if (paletteKind === "icon" || paletteKind === "toggle") {
+          setAlignmentGuides({ vertical: [], horizontal: [] });
+          setPaletteSnapOffset({ x: 0, y: 0 });
+          setDragSnapOffset({ itemId: null, x: 0, y: 0 });
+          return;
+        }
+
         let snappedX = x;
         let snappedY = y;
         let bestXDiff = GUIDE_SNAP_PX + 1;
         let bestYDiff = GUIDE_SNAP_PX + 1;
 
-        items
+        visibleItems
           .filter((item) => item.kind !== "mirror")
           .forEach((item) => {
             const left = item.x;
@@ -1382,7 +1781,14 @@ export default function EditorPage() {
         setPaletteSnapOffset({ x: 0, y: 0 });
       }
     },
-    [isAlignmentAssistEnabled, isPreviewMode, items, palettePointerOffset.x, palettePointerOffset.y]
+    [
+      isAlignmentAssistEnabled,
+      isPreviewMode,
+      items,
+      palettePointerOffset.x,
+      palettePointerOffset.y,
+      visibleItems,
+    ]
   );
 
   const handleResizeStart = React.useCallback(
@@ -1479,11 +1885,7 @@ export default function EditorPage() {
     }
 
     if (item.kind === "input") {
-      setInputEditingId(item.id);
-      setInputLabelDraft(item.label);
-      setInputPlaceholderDraft(item.placeholder ?? "");
-      setInputTagDraft(item.tag ?? "");
-      setIsInputDialogOpen(true);
+      setSelectedItemId(item.id);
       return;
     }
 
@@ -1523,8 +1925,17 @@ export default function EditorPage() {
     const canvasRect = canvasRef.current?.getBoundingClientRect();
     if (!canvasRect) return null;
 
+    const tagById = new Map(
+      items.map((item) => [item.id, (item.tag ?? "").trim()] as const)
+    );
+    const stagedParentIds = new Set(
+      items
+        .map((item) => item.stageParentId)
+        .filter((value): value is string => Boolean(value))
+    );
+
     const taggedItems = items.filter((item) =>
-      ["text", "icon", "input"].includes(item.kind)
+      ["text", "icon", "input", "toggle"].includes(item.kind)
     );
     const tags = taggedItems.map((item) => (item.tag ?? "").trim());
 
@@ -1560,6 +1971,10 @@ export default function EditorPage() {
     const payload = items.map((item) => {
       const centerItemX = item.x + item.width / 2;
       const centerItemY = item.y + item.height / 2;
+      const stageParentTag = item.stageParentId
+        ? tagById.get(item.stageParentId) ?? ""
+        : "";
+      const hasStageChildren = stagedParentIds.has(item.id);
 
       switch (item.kind) {
         case "text":
@@ -1569,6 +1984,8 @@ export default function EditorPage() {
               x: scaleX(centerItemX),
               y: scaleY(centerItemY),
               text: item.label,
+              stageParentTag,
+              hasStageChildren,
               width: scaleWidth(item.width),
               height: scaleHeight(item.height),
             },
@@ -1582,6 +1999,8 @@ export default function EditorPage() {
               icon: item.iconName ?? "",
               outline: item.outlineColor ?? "#ffffff",
               fill: item.fillColor ?? "transparent",
+              stageParentTag,
+              hasStageChildren,
               width: scaleWidth(item.width),
               height: scaleHeight(item.height),
             },
@@ -1594,6 +2013,22 @@ export default function EditorPage() {
               y: scaleY(centerItemY),
               label: item.label,
               placeholder: item.placeholder ?? "",
+              stageParentTag,
+              width: scaleWidth(item.width),
+              height: scaleHeight(item.height),
+            },
+          };
+        case "toggle":
+          return {
+            "toggle-switch": {
+              tag: item.tag ?? "",
+              x: scaleX(centerItemX),
+              y: scaleY(centerItemY),
+              label: item.label,
+              value: Boolean(item.toggleOn),
+              textAlign: item.toggleTextAlign ?? "center",
+              textSize: item.toggleTextSize ?? 10,
+              stageParentTag,
               width: scaleWidth(item.width),
               height: scaleHeight(item.height),
             },
@@ -1644,11 +2079,33 @@ export default function EditorPage() {
       (entry): entry is NonNullable<typeof entry> => Boolean(entry)
     );
 
+    const backgroundPointer = latestUploadId
+      ? {
+          uploadId: latestUploadId,
+          configUrl: `/api/field-configs/public/${latestUploadId}`,
+          imageUrl: `/api/field-configs/public/${latestUploadId}/background-image`,
+        }
+      : {
+          uploadId: null,
+          configUrl: null,
+          imageUrl: null,
+          note: "Upload once to generate a shareable backend pointer.",
+        };
+
+    const downloadable = {
+      version: 2,
+      payload: filteredPayload,
+      background: {
+        backendPointer: backgroundPointer,
+        fallbackImage: backgroundImage,
+      },
+    };
+
     return {
       payload: filteredPayload,
-      json: JSON.stringify(filteredPayload, null, 2),
+      json: JSON.stringify(downloadable, null, 2),
     };
-  }, [items]);
+  }, [backgroundImage, items, latestUploadId]);
 
   const handleExport = React.useCallback(() => {
     const result = buildExportPayload();
@@ -1689,6 +2146,9 @@ export default function EditorPage() {
         toast.error("Upload failed. Please try again.");
         return;
       }
+
+      const result = (await response.json()) as { uploadId?: string };
+      setLatestUploadId(result.uploadId ?? null);
 
       toast.success("Config uploaded.");
       setIsUploadDialogOpen(false);
@@ -1901,6 +2361,7 @@ export default function EditorPage() {
       hasRestoredRef.current = false;
       setAutosaveState("idle");
       setAutosaveUpdatedAt(null);
+      setLatestUploadId(null);
       return;
     }
 
@@ -1920,7 +2381,7 @@ export default function EditorPage() {
         }
 
         const result = (await response.json()) as {
-          config?: { payload?: unknown; updatedAt?: string } | null;
+          config?: { payload?: unknown; updatedAt?: string; uploadId?: string } | null;
         };
 
         const restored = parsePersistedEditorState(result.config?.payload);
@@ -1930,6 +2391,7 @@ export default function EditorPage() {
           setAspectHeight(restored.aspectHeight);
           setBackgroundImage(restored.backgroundImage);
           setAutosaveUpdatedAt(result.config?.updatedAt ?? null);
+          setLatestUploadId(result.config?.uploadId ?? null);
           setAutosaveState("saved");
         }
       } catch {
@@ -2211,7 +2673,7 @@ export default function EditorPage() {
         const vertical = new Set<number>();
         const horizontal = new Set<number>();
 
-        items
+        visibleItems
           .filter((item) => item.id !== resize.id && item.kind !== "mirror")
           .forEach((item) => {
             const left = item.x;
@@ -2349,7 +2811,7 @@ export default function EditorPage() {
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerUp);
     };
-  }, [isAlignmentAssistEnabled, items]);
+  }, [isAlignmentAssistEnabled, items, visibleItems]);
 
   const handleDragEnd = React.useCallback(
     (event: DragEndEvent) => {
@@ -2360,6 +2822,7 @@ export default function EditorPage() {
         setPaletteSnapOffset({ x: 0, y: 0 });
         setPalettePointerOffset({ x: 0, y: 0 });
         palettePointerStartRef.current = null;
+        dragStartPointerRef.current = null;
         return;
       }
 
@@ -2373,6 +2836,7 @@ export default function EditorPage() {
         setAlignmentGuides({ vertical: [], horizontal: [] });
         setPalettePointerOffset({ x: 0, y: 0 });
         palettePointerStartRef.current = null;
+        dragStartPointerRef.current = null;
         return;
       }
 
@@ -2394,6 +2858,8 @@ export default function EditorPage() {
               ? COVER_SIZE
           : paletteKind === "input"
             ? INPUT_SIZE
+            : paletteKind === "toggle"
+              ? TOGGLE_SIZE
             : paletteKind === "swap"
               ? BUTTON_SIZE
             : BUTTON_SIZE;
@@ -2409,13 +2875,18 @@ export default function EditorPage() {
         : false;
 
       if (data?.type === "canvas" && data.itemId && isInsideAssets) {
-        setItems((prev) => prev.filter((item) => item.id !== data.itemId));
+        setItems((prev) =>
+          prev.filter(
+            (item) => item.id !== data.itemId && item.stageParentId !== data.itemId
+          )
+        );
         setActiveType(null);
         setAlignmentGuides({ vertical: [], horizontal: [] });
         setDragSnapOffset({ itemId: null, x: 0, y: 0 });
         setPaletteSnapOffset({ x: 0, y: 0 });
         setPalettePointerOffset({ x: 0, y: 0 });
         palettePointerStartRef.current = null;
+        dragStartPointerRef.current = null;
         return;
       }
 
@@ -2432,6 +2903,7 @@ export default function EditorPage() {
         setPaletteSnapOffset({ x: 0, y: 0 });
         setPalettePointerOffset({ x: 0, y: 0 });
         palettePointerStartRef.current = null;
+        dragStartPointerRef.current = null;
         return;
       }
 
@@ -2458,7 +2930,7 @@ export default function EditorPage() {
         const activeBottom = nextY + activeHeight;
         const activeCenterY = nextY + activeHeight / 2;
 
-        items
+        visibleItems
           .filter((item) => item.kind !== "mirror")
           .forEach((item) => {
             if (data?.type === "canvas" && item.id === data.itemId) return;
@@ -2539,6 +3011,7 @@ export default function EditorPage() {
         setPaletteSnapOffset({ x: 0, y: 0 });
         setPalettePointerOffset({ x: 0, y: 0 });
         palettePointerStartRef.current = null;
+        dragStartPointerRef.current = null;
         return;
       }
 
@@ -2551,19 +3024,56 @@ export default function EditorPage() {
           return;
         }
 
-        x += paletteSnapOffset.x;
-        y += paletteSnapOffset.y;
-        x += palettePointerOffset.x;
-        y += palettePointerOffset.y;
+        const isCenterPlaced = data.assetKind === "icon" || data.assetKind === "toggle";
+        if (isCenterPlaced) {
+          const startPointer = dragStartPointerRef.current;
+          const pointerX =
+            startPointer?.x !== undefined
+              ? startPointer.x + event.delta.x
+              : finalLeft + activeWidth / 2;
+          const pointerY =
+            startPointer?.y !== undefined
+              ? startPointer.y + event.delta.y
+              : finalTop + activeHeight / 2;
+
+          x = pointerX - canvasRect.left - activeWidth / 2;
+          y = pointerY - canvasRect.top - activeHeight / 2;
+        } else {
+          x += paletteSnapOffset.x;
+          y += paletteSnapOffset.y;
+          x += palettePointerOffset.x;
+          y += palettePointerOffset.y;
+        }
 
         x = Math.max(0, Math.min(x, canvasRect.width - activeWidth));
         y = Math.max(0, Math.min(y, canvasRect.height - activeHeight));
 
-        if (data.assetKind !== "mirror") {
+        if (data.assetKind !== "mirror" && !isCenterPlaced) {
           const snapped = snapToGuides(x, y);
           x = snapped.x;
           y = snapped.y;
         }
+
+        if (stagingParentId) {
+          const stageRoot = items.find((item) => item.id === stagingParentId);
+          if (stageRoot) {
+            const stageMargin = 220;
+            const minX = Math.max(0, stageRoot.x - stageMargin);
+            const maxX = Math.min(
+              canvasRect.width - activeWidth,
+              stageRoot.x + stageRoot.width + stageMargin - activeWidth
+            );
+            const minY = Math.max(0, stageRoot.y - stageMargin);
+            const maxY = Math.min(
+              canvasRect.height - activeHeight,
+              stageRoot.y + stageRoot.height + stageMargin - activeHeight
+            );
+
+            x = Math.max(minX, Math.min(x, maxX));
+            y = Math.max(minY, Math.min(y, maxY));
+          }
+        }
+
         const newId =
           typeof crypto !== "undefined" && "randomUUID" in crypto
             ? crypto.randomUUID()
@@ -2578,6 +3088,8 @@ export default function EditorPage() {
                 ? COVER_SIZE
             : kind === "input"
               ? INPUT_SIZE
+              : kind === "toggle"
+                ? TOGGLE_SIZE
               : kind === "swap"
                 ? BUTTON_SIZE
               : BUTTON_SIZE;
@@ -2598,6 +3110,8 @@ export default function EditorPage() {
                     ? "Cover"
                 : kind === "input"
                   ? "Input label"
+                  : kind === "toggle"
+                    ? "Toggle"
                   : kind === "swap"
                     ? "Swap sides"
                     : "Button",
@@ -2611,6 +3125,10 @@ export default function EditorPage() {
             endX: kind === "mirror" ? x : undefined,
             endY: kind === "mirror" ? y + size.height : undefined,
             placeholder: kind === "input" ? "Enter text" : undefined,
+            toggleOn: kind === "toggle" ? false : undefined,
+            toggleTextAlign: kind === "toggle" ? "center" : undefined,
+            toggleTextSize: kind === "toggle" ? 10 : undefined,
+            stageParentId: stagingParentId ?? undefined,
           },
         ]);
         setSelectedItemId(newId);
@@ -2620,6 +3138,7 @@ export default function EditorPage() {
         setPaletteSnapOffset({ x: 0, y: 0 });
         setPalettePointerOffset({ x: 0, y: 0 });
         palettePointerStartRef.current = null;
+        dragStartPointerRef.current = null;
       }
     },
     [
@@ -2627,6 +3146,8 @@ export default function EditorPage() {
       isAlignmentAssistEnabled,
       isPreviewMode,
       items,
+      visibleItems,
+      stagingParentId,
       palettePointerOffset.x,
       palettePointerOffset.y,
       paletteSnapOffset,
@@ -2646,6 +3167,7 @@ export default function EditorPage() {
     setActiveType(null);
     setSelectedItemId(null);
     setIsPreviewMode(false);
+    setLatestUploadId(null);
     historyRef.current = [];
     historyIndexRef.current = -1;
     lastSnapshotKeyRef.current = "";
@@ -2658,6 +3180,36 @@ export default function EditorPage() {
     if (items.some((item) => item.id === selectedItemId)) return;
     setSelectedItemId(null);
   }, [items, selectedItemId]);
+
+  React.useEffect(() => {
+    if (!stagingParentId) return;
+    if (items.some((item) => item.id === stagingParentId)) return;
+    setStagingParentId(null);
+  }, [items, stagingParentId]);
+
+  React.useEffect(() => {
+    if (!previewStageParentId) return;
+    if (items.some((item) => item.id === previewStageParentId)) return;
+    setPreviewStageParentId(null);
+  }, [items, previewStageParentId]);
+
+  React.useEffect(() => {
+    if (isPreviewMode) return;
+    if (!previewStageParentId) return;
+    setPreviewStageParentId(null);
+  }, [isPreviewMode, previewStageParentId]);
+
+  React.useEffect(() => {
+    if (isPreviewMode) return;
+    if (!previewPressedItemId) return;
+    setPreviewPressedItemId(null);
+  }, [isPreviewMode, previewPressedItemId]);
+
+  React.useEffect(() => {
+    if (!selectedItemId) return;
+    if (visibleItems.some((item) => item.id === selectedItemId)) return;
+    setSelectedItemId(null);
+  }, [selectedItemId, visibleItems]);
 
   return (
     <DndContext
@@ -2684,7 +3236,17 @@ export default function EditorPage() {
                 variant="outline"
                 type="button"
                 className="h-10 gap-2 rounded-lg border-white/15 bg-slate-900/60 px-4 text-white hover:bg-slate-800/80"
-                onClick={() => setIsPreviewMode((current) => !current)}
+                onClick={() =>
+                  setIsPreviewMode((current) => {
+                    const next = !current;
+                    if (next) {
+                      setStagingParentId(null);
+                    } else {
+                      setPreviewStageParentId(null);
+                    }
+                    return next;
+                  })
+                }
               >
                 <Eye className="h-4 w-4" />
                 {isPreviewMode ? "Editor" : "Preview"}
@@ -2772,6 +3334,7 @@ export default function EditorPage() {
                 <PaletteIconButton onPalettePointerDown={handlePalettePointerDown} />
                 <PaletteMirrorButton onPalettePointerDown={handlePalettePointerDown} />
                 <PaletteInputButton onPalettePointerDown={handlePalettePointerDown} />
+                <PaletteToggleButton onPalettePointerDown={handlePalettePointerDown} />
                 <PaletteCoverButton onPalettePointerDown={handlePalettePointerDown} />
               </div>
               <div className="mt-6 flex items-center justify-between px-1 text-xs font-bold uppercase tracking-[0.15em] text-white/45">
@@ -2803,7 +3366,9 @@ export default function EditorPage() {
                     }`}
                   >
                   <div
-                    className="pointer-events-none absolute inset-0 opacity-35"
+                    className={`pointer-events-none absolute inset-0 opacity-35 transition-all duration-200 ${
+                      isStageBlurActive ? "scale-105 blur-[14px]" : ""
+                    }`}
                     style={{
                       backgroundImage:
                         "radial-gradient(circle at center, rgba(148,163,184,0.45) 1px, transparent 1px)",
@@ -2814,9 +3379,14 @@ export default function EditorPage() {
                       <img
                         src={backgroundImage}
                         alt=""
-                        className="pointer-events-none absolute inset-0 h-full w-full object-contain"
+                        className={`pointer-events-none absolute inset-0 h-full w-full object-contain transition-all duration-200 ${
+                          isStageBlurActive ? "scale-105 blur-[14px]" : ""
+                        }`}
                       />
                     ) : null}
+                  {isStageBlurActive ? (
+                    <div className="pointer-events-none absolute inset-0 bg-slate-950/45" />
+                  ) : null}
                   {!isPreviewMode &&
                     (alignmentGuides.vertical.length > 0 ||
                       alignmentGuides.horizontal.length > 0) && (
@@ -2837,12 +3407,12 @@ export default function EditorPage() {
                         ))}
                       </div>
                     )}
-                  {items.length === 0 && (
+                  {visibleItems.length === 0 && (
                     <p className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-sm text-white/55">
                       Drop assets here
                     </p>
                   )}
-                    {items.map((item) => {
+                    {visibleItems.map((item) => {
                     if (isPreviewMode && item.kind === "mirror") {
                       return null;
                     }
@@ -2880,6 +3450,16 @@ export default function EditorPage() {
                         snapOffset={snapOffset}
                         isPreviewMode={isPreviewMode}
                       />
+                    ) : item.kind === "toggle" ? (
+                      <CanvasToggle
+                        key={item.id}
+                        item={item}
+                        onResizeStart={handleResizeStart}
+                        onSelect={setSelectedItemId}
+                        onToggle={handleToggleItem}
+                        snapOffset={snapOffset}
+                        isPreviewMode={isPreviewMode}
+                      />
                     ) : (
                       <CanvasButton
                         key={item.id}
@@ -2888,6 +3468,12 @@ export default function EditorPage() {
                         onEditLabel={handleEditLabel}
                         onSwapSides={handleSwapSides}
                         onSelect={setSelectedItemId}
+                        onPreviewPressStart={handlePreviewPressStart}
+                        onPreviewPressEnd={handlePreviewPressEnd}
+                        onPreviewStageToggle={handlePreviewStageToggle}
+                        onStageContextMenu={handleStageContextMenu}
+                        hasStages={stageRootIds.has(item.id)}
+                        isPreviewPressed={previewPressedItemId === item.id}
                         snapOffset={snapOffset}
                         isPreviewMode={isPreviewMode}
                       />
@@ -3048,6 +3634,147 @@ export default function EditorPage() {
                     </div>
                   </ScrollArea>
                 </div>
+
+                <div className="grid gap-2">
+                  <Label className="text-sm text-white/80">Staging</Label>
+                  <Button
+                    variant="outline"
+                    type="button"
+                    className="h-10 rounded-lg border-white/15 bg-slate-900/70 text-white hover:bg-slate-800/80"
+                    onClick={selectedIsStagingRoot ? handleEndStaging : handleStartStaging}
+                    disabled={!selectedIsStagingRoot && !selectedIsStageableRoot}
+                  >
+                    {selectedIsStagingRoot ? "End staging" : "Add stage"}
+                  </Button>
+                </div>
+              </div>
+            ) : selectedItem?.kind === "toggle" ? (
+              <div className="grid gap-4">
+                <div className="grid gap-2">
+                  <Label htmlFor="toggle-name" className="text-sm text-white/80">
+                    Toggle name
+                  </Label>
+                  <Input
+                    id="toggle-name"
+                    value={selectedItem.label}
+                    onChange={(event) => handleSelectedLabelChange(event.target.value)}
+                    placeholder="Enter toggle text"
+                    className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="toggle-tag" className="text-sm text-white/80">
+                    Tag
+                  </Label>
+                  <Input
+                    id="toggle-tag"
+                    value={selectedItem.tag ?? ""}
+                    onChange={(event) => handleSelectedTagChange(event.target.value)}
+                    placeholder="Enter tag"
+                    className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label className="text-sm text-white/80">Default state</Label>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={Boolean(selectedItem.toggleOn)}
+                    className={`relative inline-flex h-10 w-20 items-center rounded-full border px-1 transition-colors ${
+                      selectedItem.toggleOn
+                        ? "border-sky-300/50 bg-sky-400/35"
+                        : "border-white/20 bg-slate-800/80"
+                    }`}
+                    onClick={() => handleSelectedToggleStateChange(!selectedItem.toggleOn)}
+                  >
+                    <span
+                      className={`inline-block h-7 w-7 rounded-full bg-white transition-transform ${
+                        selectedItem.toggleOn ? "translate-x-10" : "translate-x-0"
+                      }`}
+                    />
+                  </button>
+                </div>
+                <div className="grid gap-2">
+                  <Label className="text-sm text-white/80">Text alignment</Label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {(["left", "center", "right"] as const).map((align) => (
+                      <Button
+                        key={align}
+                        variant="outline"
+                        type="button"
+                        className={`h-9 border-white/10 bg-slate-900 text-xs text-white hover:bg-slate-800 ${
+                          (selectedItem.toggleTextAlign ?? "center") === align
+                            ? "ring-1 ring-blue-400/70"
+                            : ""
+                        }`}
+                        onClick={() => handleSelectedToggleTextAlignChange(align)}
+                      >
+                        {align === "center"
+                          ? "Middle"
+                          : align[0].toUpperCase() + align.slice(1)}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="toggle-text-size" className="text-sm text-white/80">
+                    Text size
+                  </Label>
+                  <Input
+                    id="toggle-text-size"
+                    type="number"
+                    min={8}
+                    max={20}
+                    value={selectedItem.toggleTextSize ?? 10}
+                    onChange={(event) =>
+                      handleSelectedToggleTextSizeChange(
+                        Number(event.target.value) || 10,
+                      )
+                    }
+                    className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
+                  />
+                </div>
+              </div>
+            ) : selectedItem?.kind === "input" ? (
+              <div className="grid gap-4">
+                <div className="grid gap-2">
+                  <Label htmlFor="input-name-side" className="text-sm text-white/80">
+                    Input label
+                  </Label>
+                  <Input
+                    id="input-name-side"
+                    value={selectedItem.label}
+                    onChange={(event) => handleSelectedLabelChange(event.target.value)}
+                    placeholder="Input label"
+                    className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="input-placeholder-side" className="text-sm text-white/80">
+                    Placeholder
+                  </Label>
+                  <Input
+                    id="input-placeholder-side"
+                    value={selectedItem.placeholder ?? ""}
+                    onChange={(event) =>
+                      handleSelectedPlaceholderChange(event.target.value)
+                    }
+                    placeholder="Enter text"
+                    className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="input-tag-side" className="text-sm text-white/80">
+                    Tag
+                  </Label>
+                  <Input
+                    id="input-tag-side"
+                    value={selectedItem.tag ?? ""}
+                    onChange={(event) => handleSelectedTagChange(event.target.value)}
+                    placeholder="Enter tag"
+                    className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
+                  />
+                </div>
               </div>
             ) : (
               <div className="grid gap-4">
@@ -3076,6 +3803,18 @@ export default function EditorPage() {
                     disabled={selectedItem?.kind !== "text"}
                     className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35 disabled:opacity-50"
                   />
+                </div>
+                <div className="grid gap-2">
+                  <Label className="text-sm text-white/80">Staging</Label>
+                  <Button
+                    variant="outline"
+                    type="button"
+                    className="h-10 rounded-lg border-white/15 bg-slate-900/70 text-white hover:bg-slate-800/80"
+                    onClick={selectedIsStagingRoot ? handleEndStaging : handleStartStaging}
+                    disabled={!selectedIsStagingRoot && !selectedIsStageableRoot}
+                  >
+                    {selectedIsStagingRoot ? "End staging" : "Add stage"}
+                  </Button>
                 </div>
               </div>
             )}
@@ -3138,6 +3877,13 @@ export default function EditorPage() {
                 <div className="flex h-full w-full flex-col gap-2">
                   <div className="text-xs text-white/80">Input label</div>
                   <Input placeholder="Enter text" readOnly />
+                </div>
+              ) : activeKind === "toggle" ? (
+                <div className="flex h-full w-full flex-col justify-center gap-1">
+                  <div className="text-center text-[11px] text-white/80">{activeLabel}</div>
+                  <div className="relative h-[calc(100%-18px)] w-full rounded-full border border-sky-300/40 bg-sky-400/25">
+                    <span className="absolute right-1 top-1/2 h-[68%] aspect-square -translate-y-1/2 rounded-full bg-white" />
+                  </div>
                 </div>
               ) : (
                 <Button
