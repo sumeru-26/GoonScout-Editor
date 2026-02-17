@@ -30,6 +30,7 @@ import {
   ToggleLeft,
   Type,
   Undo2,
+  Upload,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -100,6 +101,8 @@ type AssetKind =
   | "input"
   | "toggle";
 
+type TeamSide = "red" | "blue";
+
 type CanvasItem = {
   id: string;
   x: number;
@@ -120,6 +123,9 @@ type CanvasItem = {
   toggleOn?: boolean;
   toggleTextAlign?: "left" | "center" | "right";
   toggleTextSize?: number;
+  teamSide?: TeamSide;
+  swapRedSide?: "left" | "right";
+  swapActiveSide?: "left" | "right";
   stageParentId?: string;
 };
 
@@ -142,6 +148,9 @@ type PersistedEditorState = {
   aspectWidth: string;
   aspectHeight: string;
   backgroundImage: string | null;
+  useCustomSideLayouts?: boolean;
+  editorTeamSide?: TeamSide;
+  previewTeamSide?: TeamSide;
 };
 
 type EditorSnapshot = {
@@ -149,6 +158,9 @@ type EditorSnapshot = {
   aspectWidth: string;
   aspectHeight: string;
   backgroundImage: string | null;
+  useCustomSideLayouts: boolean;
+  editorTeamSide: TeamSide;
+  previewTeamSide: TeamSide;
 };
 
 type TutorialStepKey =
@@ -195,12 +207,304 @@ const parsePersistedEditorState = (
     typeof source.aspectHeight === "string" ? source.aspectHeight : "9";
   const backgroundImage =
     typeof source.backgroundImage === "string" ? source.backgroundImage : null;
+  const useCustomSideLayouts = Boolean(source.useCustomSideLayouts ?? false);
+  const editorTeamSide: TeamSide =
+    source.editorTeamSide === "blue" ? "blue" : "red";
+  const previewTeamSide: TeamSide =
+    source.previewTeamSide === "blue" ? "blue" : "red";
 
   return {
     items: source.items as CanvasItem[],
     aspectWidth,
     aspectHeight,
     backgroundImage,
+    useCustomSideLayouts,
+    editorTeamSide,
+    previewTeamSide,
+  };
+};
+
+const parseImportedEditorState = (
+  payload: unknown,
+  canvasWidth: number,
+  canvasHeight: number
+): PersistedEditorState => {
+  const restored = parsePersistedEditorState(payload);
+  if (restored) {
+    return {
+      ...restored,
+      items: restored.items.map((item) => ({
+        ...item,
+        teamSide:
+          item.teamSide === "red" || item.teamSide === "blue"
+            ? item.teamSide
+            : undefined,
+      })),
+    };
+  }
+
+  const source = isRecord(payload) ? payload : null;
+  const rawPayload = Array.isArray(source?.payload)
+    ? source.payload
+    : Array.isArray(payload)
+      ? payload
+      : null;
+
+  if (!rawPayload) {
+    throw new Error("Uploaded JSON must include a payload array or editorState.");
+  }
+
+  const halfWidth = canvasWidth / 2;
+  const halfHeight = canvasHeight / 2;
+  const centerX = canvasWidth / 2;
+  const centerY = canvasHeight / 2;
+
+  const readNumber = (value: unknown, fallback: number) => {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    return fallback;
+  };
+
+  const scaleX = (value: unknown) =>
+    centerX + (readNumber(value, 0) / 100) * halfWidth;
+  const scaleY = (value: unknown) =>
+    centerY - (readNumber(value, 0) / 100) * halfHeight;
+  const scaleWidth = (value: unknown, fallback: number) =>
+    Math.max(1, (readNumber(value, (fallback / halfWidth) * 100) / 100) * halfWidth);
+  const scaleHeight = (value: unknown, fallback: number) =>
+    Math.max(1, (readNumber(value, (fallback / halfHeight) * 100) / 100) * halfHeight);
+
+  const tagToId = new Map<string, string>();
+  const pendingStageLinks: Array<{ id: string; stageParentTag: string }> = [];
+
+  const items: CanvasItem[] = rawPayload.map((entry, index) => {
+    if (!isRecord(entry)) {
+      throw new Error(`Payload entry ${index + 1} is not an object.`);
+    }
+
+    const id =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `imported-${Date.now()}-${index}`;
+
+    const toTeamSide = (value: unknown): TeamSide | undefined =>
+      value === "red" || value === "blue" ? value : undefined;
+
+    const readTag = (value: unknown) =>
+      typeof value === "string" ? value.trim() : "";
+
+    const readStageParentTag = (value: unknown) =>
+      typeof value === "string" ? value.trim() : "";
+
+    const registerStageLink = (tag: unknown, nextId: string) => {
+      const stageParentTag = readStageParentTag(tag);
+      if (stageParentTag) {
+        pendingStageLinks.push({ id: nextId, stageParentTag });
+      }
+    };
+
+    if (isRecord(entry.button)) {
+      const data = entry.button;
+      const width = scaleWidth(data.width, BUTTON_SIZE.width);
+      const height = scaleHeight(data.height, BUTTON_SIZE.height);
+      const centerItemX = scaleX(data.x);
+      const centerItemY = scaleY(data.y);
+      const tag = readTag(data.tag);
+      if (tag) tagToId.set(tag, id);
+      registerStageLink(data.stageParentTag, id);
+      return {
+        id,
+        kind: "text",
+        x: centerItemX - width / 2,
+        y: centerItemY - height / 2,
+        width,
+        height,
+        label: typeof data.text === "string" ? data.text : "Button",
+        tag,
+        teamSide: toTeamSide(data.teamSide),
+      };
+    }
+
+    if (isRecord(entry["icon-button"])) {
+      const data = entry["icon-button"];
+      const width = scaleWidth(data.width, ICON_BUTTON_SIZE.width);
+      const height = scaleHeight(data.height, ICON_BUTTON_SIZE.height);
+      const centerItemX = scaleX(data.x);
+      const centerItemY = scaleY(data.y);
+      const tag = readTag(data.tag);
+      if (tag) tagToId.set(tag, id);
+      registerStageLink(data.stageParentTag, id);
+      return {
+        id,
+        kind: "icon",
+        x: centerItemX - width / 2,
+        y: centerItemY - height / 2,
+        width,
+        height,
+        label: typeof data.icon === "string" ? data.icon : "Bot",
+        iconName: typeof data.icon === "string" ? data.icon : "Bot",
+        outlineColor:
+          typeof data.outline === "string" ? data.outline : "#ffffff",
+        fillColor: typeof data.fill === "string" ? data.fill : "transparent",
+        tag,
+        teamSide: toTeamSide(data.teamSide),
+      };
+    }
+
+    if (isRecord(entry["text-input"])) {
+      const data = entry["text-input"];
+      const width = scaleWidth(data.width, INPUT_SIZE.width);
+      const height = scaleHeight(data.height, INPUT_SIZE.height);
+      const centerItemX = scaleX(data.x);
+      const centerItemY = scaleY(data.y);
+      const tag = readTag(data.tag);
+      if (tag) tagToId.set(tag, id);
+      registerStageLink(data.stageParentTag, id);
+      return {
+        id,
+        kind: "input",
+        x: centerItemX - width / 2,
+        y: centerItemY - height / 2,
+        width,
+        height,
+        label: typeof data.label === "string" ? data.label : "Input label",
+        placeholder:
+          typeof data.placeholder === "string" ? data.placeholder : "Enter text",
+        tag,
+        teamSide: toTeamSide(data.teamSide),
+      };
+    }
+
+    if (isRecord(entry["toggle-switch"])) {
+      const data = entry["toggle-switch"];
+      const width = scaleWidth(data.width, TOGGLE_SIZE.width);
+      const height = scaleHeight(data.height, TOGGLE_SIZE.height);
+      const centerItemX = scaleX(data.x);
+      const centerItemY = scaleY(data.y);
+      const tag = readTag(data.tag);
+      if (tag) tagToId.set(tag, id);
+      registerStageLink(data.stageParentTag, id);
+      const align =
+        data.textAlign === "left" ||
+        data.textAlign === "center" ||
+        data.textAlign === "right"
+          ? data.textAlign
+          : "center";
+      return {
+        id,
+        kind: "toggle",
+        x: centerItemX - width / 2,
+        y: centerItemY - height / 2,
+        width,
+        height,
+        label: typeof data.label === "string" ? data.label : "Toggle",
+        toggleOn: Boolean(data.value),
+        toggleTextAlign: align,
+        toggleTextSize: readNumber(data.textSize, 10),
+        tag,
+        teamSide: toTeamSide(data.teamSide),
+      };
+    }
+
+    if (isRecord(entry["swap-sides"])) {
+      const data = entry["swap-sides"];
+      const width = scaleWidth(data.width, BUTTON_SIZE.width);
+      const height = scaleHeight(data.height, BUTTON_SIZE.height);
+      const centerItemX = scaleX(data.x);
+      const centerItemY = scaleY(data.y);
+      const redSide = data.redSide === "right" ? "right" : "left";
+      const activeSide = data.activeSide === "right" ? "right" : "left";
+      return {
+        id,
+        kind: "swap",
+        x: centerItemX - width / 2,
+        y: centerItemY - height / 2,
+        width,
+        height,
+        label: "Swap sides",
+        tag: "",
+        teamSide: toTeamSide(data.teamSide),
+        swapRedSide: redSide,
+        swapActiveSide: activeSide,
+      };
+    }
+
+    if (isRecord(entry.cover)) {
+      const data = entry.cover;
+      const x1 = scaleX(data.x1);
+      const y1 = scaleY(data.y1);
+      const x2 = scaleX(data.x2);
+      const y2 = scaleY(data.y2);
+      return {
+        id,
+        kind: "cover",
+        x: Math.min(x1, x2),
+        y: Math.min(y1, y2),
+        width: Math.max(1, Math.abs(x2 - x1)),
+        height: Math.max(1, Math.abs(y2 - y1)),
+        label: "Cover",
+        tag: "",
+        teamSide: toTeamSide(data.teamSide),
+      };
+    }
+
+    if (isRecord(entry["mirror-line"])) {
+      const data = entry["mirror-line"];
+      const startX = scaleX(data.x1);
+      const startY = scaleY(data.y1);
+      const endX = scaleX(data.x2);
+      const endY = scaleY(data.y2);
+      return {
+        id,
+        kind: "mirror",
+        x: Math.min(startX, endX),
+        y: Math.min(startY, endY),
+        width: Math.max(1, Math.abs(endX - startX)),
+        height: Math.max(1, Math.abs(endY - startY)),
+        label: "Mirror line",
+        tag: "",
+        startX,
+        startY,
+        endX,
+        endY,
+      };
+    }
+
+    throw new Error(`Payload entry ${index + 1} has an unsupported schema.`);
+  });
+
+  const itemsWithStages = items.map((item) => {
+    const pending = pendingStageLinks.find((entry) => entry.id === item.id);
+    if (!pending) return item;
+    const stageParentId = tagToId.get(pending.stageParentTag);
+    if (!stageParentId) {
+      throw new Error(
+        `Invalid stage relationship: parent tag \"${pending.stageParentTag}\" was not found.`
+      );
+    }
+    return {
+      ...item,
+      stageParentId,
+    };
+  });
+
+  const useCustomSideLayouts = Boolean(source?.useCustomSideLayouts);
+  const editorTeamSide: TeamSide = source?.editorTeamSide === "blue" ? "blue" : "red";
+  const previewTeamSide: TeamSide =
+    source?.previewTeamSide === "blue" ? "blue" : "red";
+
+  const fallbackImage =
+    isRecord(source?.background) && typeof source.background.fallbackImage === "string"
+      ? source.background.fallbackImage
+      : null;
+
+  return {
+    items: itemsWithStages,
+    aspectWidth: "16",
+    aspectHeight: "9",
+    backgroundImage: fallbackImage,
+    useCustomSideLayouts,
+    editorTeamSide,
+    previewTeamSide,
   };
 };
 
@@ -313,9 +617,13 @@ function PaletteIconButton({ onPalettePointerDown }: PaletteButtonProps) {
   );
 }
 
-function PaletteMirrorButton({ onPalettePointerDown }: PaletteButtonProps) {
+function PaletteMirrorButton({
+  onPalettePointerDown,
+  disabled,
+}: PaletteButtonProps & { disabled?: boolean }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: "palette-mirror-line",
+    disabled: Boolean(disabled),
     data: { type: "palette", assetKind: "mirror" } satisfies DragData,
   });
 
@@ -328,11 +636,19 @@ function PaletteMirrorButton({ onPalettePointerDown }: PaletteButtonProps) {
       ref={setNodeRef}
       style={style}
       variant="outline"
-      className="mx-auto h-[58px] w-[calc(100%-8px)] justify-start gap-3 rounded-xl border-white/10 bg-slate-900/70 px-3 text-left text-white transition-all duration-150 hover:border-white/20 hover:bg-slate-800/80"
+      title={
+        disabled
+          ? "You cannot use this element in custom sides mode"
+          : undefined
+      }
+      className={`mx-auto h-[58px] w-[calc(100%-8px)] justify-start gap-3 rounded-xl border-white/10 bg-slate-900/70 px-3 text-left text-white transition-all duration-150 hover:border-white/20 hover:bg-slate-800/80 ${
+        disabled ? "cursor-not-allowed opacity-45" : ""
+      }`}
       onPointerDownCapture={(event) => onPalettePointerDown("mirror", event)}
       {...attributes}
       {...listeners}
       type="button"
+      disabled={disabled}
       aria-label="Mirror line"
     >
       <span className="flex h-8 w-8 items-center justify-center rounded-md bg-white/10 text-white">
@@ -340,7 +656,11 @@ function PaletteMirrorButton({ onPalettePointerDown }: PaletteButtonProps) {
       </span>
       <span className="flex flex-col items-start leading-tight">
         <span className="text-sm font-semibold">Mirror Line</span>
-        <span className="text-xs text-white/55">Reference line for side swap</span>
+        <span className="text-xs text-white/55">
+          {disabled
+            ? "Unavailable"
+            : "Reference line for side swap"}
+        </span>
       </span>
     </Button>
   );
@@ -482,6 +802,8 @@ function CanvasButton({
   onStageContextMenu,
   hasStages,
   isPreviewPressed,
+  isCustomSideLayoutsEnabled,
+  visibleTeamSide,
   snapOffset,
   isPreviewMode,
 }: {
@@ -496,6 +818,8 @@ function CanvasButton({
   onStageContextMenu: (itemId: string) => void;
   hasStages: boolean;
   isPreviewPressed: boolean;
+  isCustomSideLayoutsEnabled: boolean;
+  visibleTeamSide: TeamSide;
   snapOffset?: { x: number; y: number };
   isPreviewMode?: boolean;
 }) {
@@ -515,13 +839,27 @@ function CanvasButton({
     opacity: 1,
   };
 
+  const swapRedSide = item.swapRedSide ?? "left";
+  const swapActiveSide = item.swapActiveSide ?? "left";
+  const isSwapRedActive = swapActiveSide === swapRedSide;
+  const swapOutlineClass =
+    item.kind === "swap"
+      ? isCustomSideLayoutsEnabled
+        ? visibleTeamSide === "red"
+          ? "!border-2 !border-red-400"
+          : "!border-2 !border-blue-400"
+        : isSwapRedActive
+          ? "!border-2 !border-red-400"
+          : "!border-2 !border-blue-400"
+      : "border-white/20";
+
   return (
     <Button
       ref={setNodeRef}
       style={style}
       variant="outline"
       size={item.kind === "icon" ? "icon" : "default"}
-      className={`group absolute rounded-lg border-white/20 !bg-slate-900 !text-white hover:!bg-slate-900 ${
+      className={`group absolute rounded-lg ${swapOutlineClass} !bg-slate-900 !text-white hover:!bg-slate-900 ${
         isPreviewMode ? "transition-all duration-150" : "!transition-none"
       } ${
         isPreviewMode && isPreviewPressed
@@ -564,7 +902,13 @@ function CanvasButton({
         }
       }}
       onContextMenu={(event) => {
-        if (isPreviewMode || !hasStages) return;
+        if (isPreviewMode) return;
+        if (item.kind === "swap") {
+          event.preventDefault();
+          onSwapSides();
+          return;
+        }
+        if (!hasStages) return;
         event.preventDefault();
         onStageContextMenu(item.id);
       }}
@@ -735,8 +1079,8 @@ function CanvasCover({
       style={style}
       className={`group absolute rounded-md ${
         isPreviewMode
-          ? "bg-slate-900"
-          : "bg-white/5"
+          ? "bg-slate-900 transition-all duration-150 ease-out"
+          : "bg-white/5 !transition-none"
       }`}
       onPointerDown={() => {
         if (!isPreviewMode) onSelect(item.id);
@@ -793,7 +1137,9 @@ function CanvasInput({
     <div
       ref={setNodeRef}
       style={style}
-      className="group absolute flex flex-col gap-2"
+      className={`group absolute flex flex-col gap-2 ${
+        isPreviewMode ? "transition-all duration-150 ease-out" : "!transition-none"
+      }`}
       onPointerDown={() => {
         if (!isPreviewMode) onSelect(item.id);
       }}
@@ -868,7 +1214,9 @@ function CanvasToggle({
     <div
       ref={setNodeRef}
       style={style}
-      className="group absolute"
+      className={`group absolute ${
+        isPreviewMode ? "transition-all duration-150 ease-out" : "!transition-none"
+      }`}
       onPointerDown={() => {
         if (!isPreviewMode) onSelect(item.id);
       }}
@@ -957,6 +1305,10 @@ export default function EditorPage() {
   const [isAlignmentAssistEnabled, setIsAlignmentAssistEnabled] =
     React.useState(true);
   const [isPreviewMode, setIsPreviewMode] = React.useState(false);
+  const [isCustomSideLayoutsEnabled, setIsCustomSideLayoutsEnabled] =
+    React.useState(false);
+  const [editorTeamSide, setEditorTeamSide] = React.useState<TeamSide>("red");
+  const [previewTeamSide, setPreviewTeamSide] = React.useState<TeamSide>("red");
   const [stagingParentId, setStagingParentId] = React.useState<string | null>(null);
   const [previewStageParentId, setPreviewStageParentId] = React.useState<string | null>(
     null
@@ -997,11 +1349,18 @@ export default function EditorPage() {
   const [isExportDialogOpen, setIsExportDialogOpen] = React.useState(false);
   const [exportJson, setExportJson] = React.useState("");
   const [isUploadDialogOpen, setIsUploadDialogOpen] = React.useState(false);
+  const [isImportDialogOpen, setIsImportDialogOpen] = React.useState(false);
   const [isResetDialogOpen, setIsResetDialogOpen] = React.useState(false);
+  const [isDisableCustomSideDialogOpen, setIsDisableCustomSideDialogOpen] =
+    React.useState(false);
+  const [customSideToKeep, setCustomSideToKeep] =
+    React.useState<TeamSide>("red");
   const [uploadJson, setUploadJson] = React.useState("");
   const [uploadPayload, setUploadPayload] = React.useState<
     Array<Record<string, unknown>>
   >([]);
+  const [importJsonDraft, setImportJsonDraft] = React.useState("");
+  const importFileInputRef = React.useRef<HTMLInputElement | null>(null);
   const [autosaveState, setAutosaveState] = React.useState<
     "idle" | "saving" | "saved" | "error"
   >("idle");
@@ -1094,8 +1453,19 @@ export default function EditorPage() {
       aspectWidth,
       aspectHeight,
       backgroundImage,
+      useCustomSideLayouts: isCustomSideLayoutsEnabled,
+      editorTeamSide,
+      previewTeamSide,
     };
-  }, [aspectHeight, aspectWidth, backgroundImage, items]);
+  }, [
+    aspectHeight,
+    aspectWidth,
+    backgroundImage,
+    editorTeamSide,
+    isCustomSideLayoutsEnabled,
+    items,
+    previewTeamSide,
+  ]);
 
   const selectedItem = React.useMemo(
     () => items.find((item) => item.id === selectedItemId) ?? null,
@@ -1110,22 +1480,44 @@ export default function EditorPage() {
     );
   }, [items]);
 
+  const currentVisibleTeamSide = isPreviewMode ? previewTeamSide : editorTeamSide;
+
+  const sideScopedItems = React.useMemo(() => {
+    if (!isCustomSideLayoutsEnabled) return items;
+    return items.filter((item) => {
+      if (item.kind === "mirror") return true;
+      return item.teamSide === currentVisibleTeamSide;
+    });
+  }, [currentVisibleTeamSide, isCustomSideLayoutsEnabled, items]);
+
+  const hasRedCustomLayoutItems = React.useMemo(
+    () =>
+      items.some((item) => item.kind !== "mirror" && item.teamSide === "red"),
+    [items]
+  );
+
+  const hasBlueCustomLayoutItems = React.useMemo(
+    () =>
+      items.some((item) => item.kind !== "mirror" && item.teamSide === "blue"),
+    [items]
+  );
+
   const visibleItems = React.useMemo(() => {
     if (stagingParentId) {
-      return items.filter(
+      return sideScopedItems.filter(
         (item) => item.id === stagingParentId || item.stageParentId === stagingParentId
       );
     }
 
     if (isPreviewMode && previewStageParentId) {
-      return items.filter(
+      return sideScopedItems.filter(
         (item) =>
           item.id === previewStageParentId || item.stageParentId === previewStageParentId
       );
     }
 
-    return items.filter((item) => !item.stageParentId);
-  }, [isPreviewMode, items, previewStageParentId, stagingParentId]);
+    return sideScopedItems.filter((item) => !item.stageParentId);
+  }, [isPreviewMode, previewStageParentId, sideScopedItems, stagingParentId]);
 
   const isStageBlurActive =
     Boolean(stagingParentId) || (isPreviewMode && Boolean(previewStageParentId));
@@ -1406,6 +1798,23 @@ export default function EditorPage() {
     [selectedItemId]
   );
 
+  const handleSelectedSwapRedSideChange = React.useCallback(
+    (value: "left" | "right") => {
+      if (!selectedItemId) return;
+      setItems((prev) =>
+        prev.map((item) =>
+          item.id === selectedItemId && item.kind === "swap"
+            ? {
+                ...item,
+                swapRedSide: value,
+              }
+            : item
+        )
+      );
+    },
+    [selectedItemId]
+  );
+
   const handleToggleItem = React.useCallback((itemId: string) => {
     setItems((prev) =>
       prev.map((item) =>
@@ -1484,6 +1893,9 @@ export default function EditorPage() {
       setAspectWidth(snapshot.aspectWidth);
       setAspectHeight(snapshot.aspectHeight);
       setBackgroundImage(snapshot.backgroundImage);
+      setIsCustomSideLayoutsEnabled(snapshot.useCustomSideLayouts);
+      setEditorTeamSide(snapshot.editorTeamSide);
+      setPreviewTeamSide(snapshot.previewTeamSide);
       lastSnapshotKeyRef.current = JSON.stringify(snapshot);
       window.setTimeout(() => {
         isApplyingHistoryRef.current = false;
@@ -1995,6 +2407,34 @@ export default function EditorPage() {
   );
 
   const handleSwapSides = React.useCallback(() => {
+    if (isCustomSideLayoutsEnabled) {
+      const currentSide = isPreviewMode ? previewTeamSide : editorTeamSide;
+      const nextSide: TeamSide = currentSide === "red" ? "blue" : "red";
+
+      if (isPreviewMode) {
+        setPreviewTeamSide(nextSide);
+      } else {
+        setEditorTeamSide(nextSide);
+      }
+
+      setItems((prev) =>
+        prev.map((item) =>
+          item.kind === "swap"
+            ? {
+                ...item,
+                swapActiveSide:
+                  nextSide === "red"
+                    ? item.swapRedSide ?? "left"
+                    : (item.swapRedSide ?? "left") === "left"
+                      ? "right"
+                      : "left",
+              }
+            : item
+        )
+      );
+      return;
+    }
+
     const mirrorLine = items.find((item) => item.kind === "mirror");
     const canvasRect = canvasRef.current?.getBoundingClientRect();
     if (!mirrorLine || !canvasRect) return;
@@ -2035,10 +2475,20 @@ export default function EditorPage() {
           Math.max(0, reflected.y - item.height / 2),
           canvasRect.height - item.height
         );
-        return { ...item, x: nextX, y: nextY };
+        return {
+          ...item,
+          x: nextX,
+          y: nextY,
+          swapActiveSide:
+            item.kind === "swap"
+              ? (item.swapActiveSide ?? "left") === "left"
+                ? "right"
+                : "left"
+              : item.swapActiveSide,
+        };
       })
     );
-  }, [items]);
+  }, [editorTeamSide, isCustomSideLayoutsEnabled, isPreviewMode, items, previewTeamSide]);
 
   const handleEditLabel = React.useCallback((item: CanvasItem) => {
     if (item.kind === "icon") {
@@ -2143,6 +2593,7 @@ export default function EditorPage() {
           return {
             button: {
               tag: item.tag ?? "",
+              teamSide: item.teamSide,
               x: scaleX(centerItemX),
               y: scaleY(centerItemY),
               text: item.label,
@@ -2156,6 +2607,7 @@ export default function EditorPage() {
           return {
             "icon-button": {
               tag: item.tag ?? "",
+              teamSide: item.teamSide,
               x: scaleX(centerItemX),
               y: scaleY(centerItemY),
               icon: item.iconName ?? "",
@@ -2171,6 +2623,7 @@ export default function EditorPage() {
           return {
             "text-input": {
               tag: item.tag ?? "",
+              teamSide: item.teamSide,
               x: scaleX(centerItemX),
               y: scaleY(centerItemY),
               label: item.label,
@@ -2184,6 +2637,7 @@ export default function EditorPage() {
           return {
             "toggle-switch": {
               tag: item.tag ?? "",
+              teamSide: item.teamSide,
               x: scaleX(centerItemX),
               y: scaleY(centerItemY),
               label: item.label,
@@ -2212,8 +2666,12 @@ export default function EditorPage() {
         case "swap":
           return {
             "swap-sides": {
+              teamSide: item.teamSide,
               x: scaleX(centerItemX),
               y: scaleY(centerItemY),
+              redSide: item.swapRedSide ?? "left",
+              blueSide: (item.swapRedSide ?? "left") === "left" ? "right" : "left",
+              activeSide: item.swapActiveSide ?? "left",
               width: scaleWidth(item.width),
               height: scaleHeight(item.height),
             },
@@ -2225,6 +2683,7 @@ export default function EditorPage() {
           const y2 = item.y + item.height;
           return {
             cover: {
+              teamSide: item.teamSide,
               x1: scaleX(x1),
               y1: scaleY(y1),
               x2: scaleX(x2),
@@ -2256,6 +2715,9 @@ export default function EditorPage() {
 
     const downloadable = {
       version: 2,
+      useCustomSideLayouts: isCustomSideLayoutsEnabled,
+      editorTeamSide,
+      previewTeamSide,
       payload: filteredPayload,
       background: {
         backendPointer: backgroundPointer,
@@ -2267,7 +2729,14 @@ export default function EditorPage() {
       payload: filteredPayload,
       json: JSON.stringify(downloadable, null, 2),
     };
-  }, [backgroundImage, items, latestUploadId]);
+  }, [
+    backgroundImage,
+    editorTeamSide,
+    isCustomSideLayoutsEnabled,
+    items,
+    latestUploadId,
+    previewTeamSide,
+  ]);
 
   const handleExport = React.useCallback(() => {
     const result = buildExportPayload();
@@ -2292,6 +2761,9 @@ export default function EditorPage() {
         aspectWidth,
         aspectHeight,
         backgroundImage,
+        useCustomSideLayouts: isCustomSideLayoutsEnabled,
+        editorTeamSide,
+        previewTeamSide,
       };
       const response = await fetch("/api/field-configs", {
         method: "POST",
@@ -2317,7 +2789,91 @@ export default function EditorPage() {
     } catch (error) {
       toast.error("Upload failed. Please try again.");
     }
-  }, [aspectHeight, aspectWidth, backgroundImage, items, uploadPayload]);
+  }, [
+    aspectHeight,
+    aspectWidth,
+    backgroundImage,
+    editorTeamSide,
+    isCustomSideLayoutsEnabled,
+    items,
+    previewTeamSide,
+    uploadPayload,
+  ]);
+
+  const applyImportedEditorState = React.useCallback(
+    (nextState: PersistedEditorState) => {
+      setItems(nextState.items);
+      setAspectWidth(nextState.aspectWidth || "16");
+      setAspectHeight(nextState.aspectHeight || "9");
+      setAspectWidthDraft(nextState.aspectWidth || "16");
+      setAspectHeightDraft(nextState.aspectHeight || "9");
+      setBackgroundImage(nextState.backgroundImage ?? null);
+      setIsCustomSideLayoutsEnabled(Boolean(nextState.useCustomSideLayouts));
+      setEditorTeamSide(nextState.editorTeamSide ?? "red");
+      setPreviewTeamSide(nextState.previewTeamSide ?? "red");
+      setSelectedItemId(null);
+      setStagingParentId(null);
+      setPreviewStageParentId(null);
+      setIsPreviewMode(false);
+      setLatestUploadId(null);
+    },
+    []
+  );
+
+  const handleBuildFromUploadedJson = React.useCallback(() => {
+    const rawText = importJsonDraft.trim();
+    if (!rawText) {
+      toast.error("Paste a JSON layout or upload a .json file first.");
+      return;
+    }
+
+    const canvasRect = canvasRef.current?.getBoundingClientRect();
+    if (!canvasRect || canvasRect.width <= 0 || canvasRect.height <= 0) {
+      toast.error("Canvas is not ready yet. Please try again.");
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(rawText) as unknown;
+      const nextState = parseImportedEditorState(
+        parsed,
+        canvasRect.width,
+        canvasRect.height
+      );
+      applyImportedEditorState(nextState);
+      setIsImportDialogOpen(false);
+      toast.success("Layout uploaded and applied.");
+    } catch (error) {
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : "Invalid JSON upload.";
+      toast.error(`Upload failed: ${message}`);
+    }
+  }, [applyImportedEditorState, importJsonDraft]);
+
+  const handleImportFileChange = React.useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result !== "string") {
+          toast.error("Unable to read the selected file.");
+          return;
+        }
+        setImportJsonDraft(reader.result);
+      };
+      reader.onerror = () => {
+        toast.error("Unable to read the selected file.");
+      };
+      reader.readAsText(file);
+
+      event.target.value = "";
+    },
+    []
+  );
 
   const handleDownloadExport = React.useCallback(() => {
     if (!exportJson) return;
@@ -2391,6 +2947,81 @@ export default function EditorPage() {
     setIsAspectDialogOpen(false);
   }, [aspectHeightDraft, aspectWidthDraft]);
 
+  const disableCustomSideLayoutsKeeping = React.useCallback(
+    (sideToKeep: TeamSide) => {
+      const nextItems = items
+        .filter((item) => {
+          if (item.kind === "mirror") return true;
+          if (!item.teamSide) return true;
+          return item.teamSide === sideToKeep;
+        })
+        .map((item) =>
+          item.kind === "mirror"
+            ? item
+            : {
+                ...item,
+                teamSide: undefined,
+              }
+        );
+
+      const remainingIds = new Set(nextItems.map((item) => item.id));
+
+      setItems(nextItems);
+      if (selectedItemId && !remainingIds.has(selectedItemId)) {
+        setSelectedItemId(null);
+      }
+      if (stagingParentId && !remainingIds.has(stagingParentId)) {
+        setStagingParentId(null);
+      }
+      if (previewStageParentId && !remainingIds.has(previewStageParentId)) {
+        setPreviewStageParentId(null);
+      }
+      setEditorTeamSide(sideToKeep);
+      setPreviewTeamSide(sideToKeep);
+      setIsCustomSideLayoutsEnabled(false);
+    },
+    [items, previewStageParentId, selectedItemId, stagingParentId]
+  );
+
+  const handleCustomSideLayoutsToggle = React.useCallback(() => {
+    if (isCustomSideLayoutsEnabled) {
+      if (hasRedCustomLayoutItems && hasBlueCustomLayoutItems) {
+        setCustomSideToKeep(editorTeamSide);
+        setIsDisableCustomSideDialogOpen(true);
+        return;
+      }
+
+      const sideToKeep: TeamSide = hasRedCustomLayoutItems
+        ? "red"
+        : hasBlueCustomLayoutItems
+          ? "blue"
+          : editorTeamSide;
+      disableCustomSideLayoutsKeeping(sideToKeep);
+      return;
+    }
+
+    setItems((prev) =>
+      prev
+        .map((item) =>
+          item.kind === "mirror" || item.teamSide
+            ? item
+            : {
+                ...item,
+                teamSide: editorTeamSide,
+              }
+        )
+        .filter((item) => item.kind !== "mirror")
+    );
+    setPreviewTeamSide(editorTeamSide);
+    setIsCustomSideLayoutsEnabled(true);
+  }, [
+    disableCustomSideLayoutsKeeping,
+    editorTeamSide,
+    hasBlueCustomLayoutItems,
+    hasRedCustomLayoutItems,
+    isCustomSideLayoutsEnabled,
+  ]);
+
   const handleBackgroundUpload = React.useCallback(
     (event: React.ChangeEvent<HTMLInputElement>) => {
       const file = event.target.files?.[0];
@@ -2413,8 +3044,19 @@ export default function EditorPage() {
       aspectWidth,
       aspectHeight,
       backgroundImage,
+      useCustomSideLayouts: isCustomSideLayoutsEnabled,
+      editorTeamSide,
+      previewTeamSide,
     };
-  }, [aspectHeight, aspectWidth, backgroundImage, items]);
+  }, [
+    aspectHeight,
+    aspectWidth,
+    backgroundImage,
+    editorTeamSide,
+    isCustomSideLayoutsEnabled,
+    items,
+    previewTeamSide,
+  ]);
 
   const buildDraftPayload = React.useCallback(() => {
     const editorState = buildEditorState();
@@ -2552,6 +3194,9 @@ export default function EditorPage() {
           setAspectWidth(restored.aspectWidth);
           setAspectHeight(restored.aspectHeight);
           setBackgroundImage(restored.backgroundImage);
+          setIsCustomSideLayoutsEnabled(Boolean(restored.useCustomSideLayouts));
+          setEditorTeamSide(restored.editorTeamSide ?? "red");
+          setPreviewTeamSide(restored.previewTeamSide ?? "red");
           setAutosaveUpdatedAt(result.config?.updatedAt ?? null);
           setLatestUploadId(result.config?.uploadId ?? null);
           setAutosaveState("saved");
@@ -3178,6 +3823,15 @@ export default function EditorPage() {
       }
 
       if (data?.type === "palette") {
+        if (isCustomSideLayoutsEnabled && data.assetKind === "mirror") {
+          setActiveType(null);
+          setPaletteSnapOffset({ x: 0, y: 0 });
+          setPalettePointerOffset({ x: 0, y: 0 });
+          palettePointerStartRef.current = null;
+          dragStartPointerRef.current = null;
+          return;
+        }
+
         if (data.assetKind === "mirror" && items.some((item) => item.kind === "mirror")) {
           setActiveType(null);
           setPaletteSnapOffset({ x: 0, y: 0 });
@@ -3290,6 +3944,12 @@ export default function EditorPage() {
             toggleOn: kind === "toggle" ? false : undefined,
             toggleTextAlign: kind === "toggle" ? "center" : undefined,
             toggleTextSize: kind === "toggle" ? 10 : undefined,
+            teamSide:
+              isCustomSideLayoutsEnabled && kind !== "mirror"
+                ? editorTeamSide
+                : undefined,
+            swapRedSide: kind === "swap" ? "left" : undefined,
+            swapActiveSide: kind === "swap" ? "left" : undefined,
             stageParentId: stagingParentId ?? undefined,
           },
         ]);
@@ -3307,8 +3967,10 @@ export default function EditorPage() {
       dragSnapOffset,
       isAlignmentAssistEnabled,
       isPreviewMode,
+      isCustomSideLayoutsEnabled,
       items,
       visibleItems,
+      editorTeamSide,
       stagingParentId,
       palettePointerOffset.x,
       palettePointerOffset.y,
@@ -3323,6 +3985,9 @@ export default function EditorPage() {
     setAspectHeight("9");
     setAspectWidthDraft("16");
     setAspectHeightDraft("9");
+    setIsCustomSideLayoutsEnabled(false);
+    setEditorTeamSide("red");
+    setPreviewTeamSide("red");
     setAlignmentGuides({ vertical: [], horizontal: [] });
     setDragSnapOffset({ itemId: null, x: 0, y: 0 });
     setPaletteSnapOffset({ x: 0, y: 0 });
@@ -3482,6 +4147,7 @@ export default function EditorPage() {
                     const next = !current;
                     if (next) {
                       setStagingParentId(null);
+                      setPreviewTeamSide(editorTeamSide);
                     } else {
                       setPreviewStageParentId(null);
                     }
@@ -3499,6 +4165,15 @@ export default function EditorPage() {
               >
                 <Save className="h-4 w-4" />
                 Save
+              </Button>
+              <Button
+                variant="outline"
+                type="button"
+                className="h-10 gap-2 rounded-lg border-white/15 bg-slate-900/60 px-4 text-white hover:bg-slate-800/80"
+                onClick={() => setIsImportDialogOpen(true)}
+              >
+                <Upload className="h-4 w-4" />
+                Upload
               </Button>
               <Button
                 ref={downloadButtonRef}
@@ -3590,7 +4265,10 @@ export default function EditorPage() {
               >
                 <PaletteButton onPalettePointerDown={handlePalettePointerDown} />
                 <PaletteIconButton onPalettePointerDown={handlePalettePointerDown} />
-                <PaletteMirrorButton onPalettePointerDown={handlePalettePointerDown} />
+                <PaletteMirrorButton
+                  onPalettePointerDown={handlePalettePointerDown}
+                  disabled={isCustomSideLayoutsEnabled}
+                />
                 <PaletteInputButton onPalettePointerDown={handlePalettePointerDown} />
                 <PaletteToggleButton onPalettePointerDown={handlePalettePointerDown} />
                 <PaletteCoverButton onPalettePointerDown={handlePalettePointerDown} />
@@ -3734,6 +4412,8 @@ export default function EditorPage() {
                         onStageContextMenu={handleStageContextMenu}
                         hasStages={stageRootIds.has(item.id)}
                         isPreviewPressed={previewPressedItemId === item.id}
+                        isCustomSideLayoutsEnabled={isCustomSideLayoutsEnabled}
+                        visibleTeamSide={currentVisibleTeamSide}
                         snapOffset={snapOffset}
                         isPreviewMode={isPreviewMode}
                       />
@@ -3746,9 +4426,10 @@ export default function EditorPage() {
             </div>
           </section>
 
+          <div className="flex h-[min(66vh,620px)] min-h-0 flex-col gap-3">
           <aside
             ref={propertiesPanelRef}
-            className="flex h-[min(66vh,620px)] min-h-0 flex-col overflow-y-auto rounded-2xl border border-white/[0.03] bg-slate-900/70 p-4 text-white shadow-2xl backdrop-blur [scrollbar-color:rgba(100,116,139,0.45)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-slate-600/50"
+            className="flex min-h-0 flex-1 flex-col overflow-y-auto rounded-2xl border border-white/[0.03] bg-slate-900/70 p-4 text-white shadow-2xl backdrop-blur [scrollbar-color:rgba(100,116,139,0.45)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-slate-600/50"
           >
             <div className="mb-5 px-1">
               <h2 className="text-3xl font-semibold tracking-tight">Properties</h2>
@@ -3909,6 +4590,75 @@ export default function EditorPage() {
                   >
                     {selectedIsStagingRoot ? "End staging" : "Add stage"}
                   </Button>
+                </div>
+              </div>
+            ) : selectedItem?.kind === "swap" ? (
+              <div className="grid gap-4">
+                {!isCustomSideLayoutsEnabled ? (
+                  <div className="grid gap-2">
+                    <Label className="text-sm text-white/80">Side colors</Label>
+                    <div className="grid grid-cols-2 gap-2 text-xs font-semibold uppercase tracking-[0.1em] text-white/65">
+                      <div className="text-center">Left</div>
+                      <div className="text-center">Right</div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        className={`h-11 rounded-md border text-xs font-semibold uppercase tracking-[0.08em] transition-colors ${
+                          (selectedItem.swapRedSide ?? "left") === "left"
+                            ? "border-red-400/70 bg-red-500/20 text-red-200"
+                            : "border-blue-400/70 bg-blue-500/20 text-blue-200"
+                        }`}
+                        onClick={() =>
+                          handleSelectedSwapRedSideChange(
+                            (selectedItem.swapRedSide ?? "left") === "left"
+                              ? "right"
+                              : "left"
+                          )
+                        }
+                      >
+                        {(selectedItem.swapRedSide ?? "left") === "left" ? "Red" : "Blue"}
+                      </button>
+                      <button
+                        type="button"
+                        className={`h-11 rounded-md border text-xs font-semibold uppercase tracking-[0.08em] transition-colors ${
+                          (selectedItem.swapRedSide ?? "left") === "right"
+                            ? "border-red-400/70 bg-red-500/20 text-red-200"
+                            : "border-blue-400/70 bg-blue-500/20 text-blue-200"
+                        }`}
+                        onClick={() =>
+                          handleSelectedSwapRedSideChange(
+                            (selectedItem.swapRedSide ?? "left") === "right"
+                              ? "left"
+                              : "right"
+                          )
+                        }
+                      >
+                        {(selectedItem.swapRedSide ?? "left") === "right" ? "Red" : "Blue"}
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="rounded-md border border-white/10 bg-slate-900/80 px-3 py-2 text-xs text-white/70">
+                    In custom side layout mode, swap outline color follows the side currently being edited.
+                  </div>
+                )}
+                <div className="grid gap-2">
+                  <Label className="text-sm text-white/80">Current outline color</Label>
+                  <div className="h-11 rounded-md border border-white/10 bg-slate-900/80 px-3 flex items-center gap-2 text-sm text-white/80">
+                    <span
+                      className={`inline-block h-2.5 w-2.5 rounded-full ${
+                        (selectedItem.swapActiveSide ?? "left") ===
+                        (selectedItem.swapRedSide ?? "left")
+                          ? "bg-red-400"
+                          : "bg-blue-400"
+                      }`}
+                    />
+                    {(selectedItem.swapActiveSide ?? "left") ===
+                    (selectedItem.swapRedSide ?? "left")
+                      ? "Red side active"
+                      : "Blue side active"}
+                  </div>
                 </div>
               </div>
             ) : selectedItem?.kind === "toggle" ? (
@@ -4111,6 +4861,31 @@ export default function EditorPage() {
               </Button>
             </div>
           </aside>
+          {isCustomSideLayoutsEnabled ? (
+            <div className="grid gap-2 rounded-2xl border border-white/[0.03] bg-slate-900/70 p-3 text-white shadow-2xl backdrop-blur">
+              <div className="text-xs font-semibold uppercase tracking-[0.14em] text-white/60">
+                Side editor
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                {(["red", "blue"] as const).map((side) => (
+                  <Button
+                    key={side}
+                    type="button"
+                    variant="outline"
+                    className={`h-9 border-white/15 bg-slate-900 text-xs text-white hover:bg-slate-800 ${
+                      editorTeamSide === side
+                        ? "ring-1 ring-blue-400/70"
+                        : ""
+                    }`}
+                    onClick={() => setEditorTeamSide(side)}
+                  >
+                    {side === "red" ? "Editing: Red" : "Editing: Blue"}
+                  </Button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          </div>
         </main>
 
         {isTutorialOpen ? (
@@ -4477,6 +5252,35 @@ export default function EditorPage() {
                 />
               </button>
             </div>
+            <div className="mt-3 flex items-center justify-between rounded-md border border-white/10 px-3 py-2">
+              <div className="grid gap-0.5">
+                <Label htmlFor="custom-side-layout-toggle">Custom side layouts</Label>
+                <p className="text-xs text-white/60">
+                  Edit separate Red/Blue arrangements without mirror line swapping
+                </p>
+              </div>
+              <button
+                id="custom-side-layout-toggle"
+                type="button"
+                role="switch"
+                aria-checked={isCustomSideLayoutsEnabled}
+                aria-label="Toggle custom side layouts"
+                onClick={handleCustomSideLayoutsToggle}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full border transition-colors ${
+                  isCustomSideLayoutsEnabled
+                    ? "border-white/60 bg-white/80"
+                    : "border-white/30 bg-white/10"
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-black transition-transform ${
+                    isCustomSideLayoutsEnabled
+                      ? "translate-x-6"
+                      : "translate-x-1"
+                  }`}
+                />
+              </button>
+            </div>
             <DialogFooter>
               <Button
                 variant="outline"
@@ -4487,6 +5291,71 @@ export default function EditorPage() {
               </Button>
               <Button className="bg-blue-600 text-white hover:bg-blue-500" onClick={handleSaveAspectRatio}>
                 Apply
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={isDisableCustomSideDialogOpen}
+          onOpenChange={(open) => setIsDisableCustomSideDialogOpen(open)}
+        >
+          <DialogContent className="border-white/10 bg-slate-950 text-white data-[state=closed]:slide-out-to-right-1/2 data-[state=open]:slide-in-from-right-1/2">
+            <DialogHeader>
+              <DialogTitle>Keep one side layout</DialogTitle>
+              <DialogDescription className="text-white/60">
+                Warning: turning off custom side layouts keeps only one layout.
+                Choose which side to keep. The other side&apos;s elements will be
+                deleted.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="grid gap-3">
+              <Label htmlFor="keep-side" className="text-white/85">
+                Side to keep
+              </Label>
+              <div id="keep-side" className="grid grid-cols-2 gap-2">
+                <Button
+                  type="button"
+                  variant={customSideToKeep === "red" ? "default" : "outline"}
+                  className={
+                    customSideToKeep === "red"
+                      ? "bg-rose-600 text-white hover:bg-rose-500"
+                      : "border-white/10 bg-slate-900 text-white hover:bg-slate-800"
+                  }
+                  onClick={() => setCustomSideToKeep("red")}
+                >
+                  Keep Red
+                </Button>
+                <Button
+                  type="button"
+                  variant={customSideToKeep === "blue" ? "default" : "outline"}
+                  className={
+                    customSideToKeep === "blue"
+                      ? "bg-blue-600 text-white hover:bg-blue-500"
+                      : "border-white/10 bg-slate-900 text-white hover:bg-slate-800"
+                  }
+                  onClick={() => setCustomSideToKeep("blue")}
+                >
+                  Keep Blue
+                </Button>
+              </div>
+            </div>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                className="border-white/10 bg-slate-900 text-white hover:bg-slate-800"
+                onClick={() => setIsDisableCustomSideDialogOpen(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                className="bg-amber-600 text-white hover:bg-amber-500"
+                onClick={() => {
+                  disableCustomSideLayoutsKeeping(customSideToKeep);
+                  setIsDisableCustomSideDialogOpen(false);
+                }}
+              >
+                Keep selected side
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -4686,6 +5555,65 @@ export default function EditorPage() {
               </Button>
               <Button onClick={handleUploadConfig} disabled={uploadPayload.length === 0}>
                 Upload config
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={isImportDialogOpen} onOpenChange={setIsImportDialogOpen}>
+          <DialogContent className="max-w-2xl border-white/10 bg-slate-950 text-white">
+            <DialogHeader>
+              <DialogTitle>Upload JSON layout</DialogTitle>
+              <DialogDescription className="text-white/60">
+                Upload a .json file or paste JSON, then build the field from it.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="grid gap-3">
+              <input
+                ref={importFileInputRef}
+                type="file"
+                accept=".json,application/json,text/json"
+                className="hidden"
+                onChange={handleImportFileChange}
+              />
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  variant="outline"
+                  type="button"
+                  className="border-white/10 bg-slate-900 text-white hover:bg-slate-800"
+                  onClick={() => importFileInputRef.current?.click()}
+                >
+                  Select JSON file
+                </Button>
+                <Button
+                  variant="outline"
+                  type="button"
+                  className="border-white/10 bg-slate-900 text-white hover:bg-slate-800"
+                  onClick={() => setImportJsonDraft("")}
+                >
+                  Clear
+                </Button>
+              </div>
+              <textarea
+                value={importJsonDraft}
+                onChange={(event) => setImportJsonDraft(event.target.value)}
+                placeholder="Paste JSON here"
+                className="min-h-[300px] w-full rounded-md border border-white/10 bg-black/80 p-3 font-mono text-sm text-white outline-none placeholder:text-white/30"
+              />
+            </div>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                className="border-white/10 bg-slate-900 text-white hover:bg-slate-800"
+                onClick={() => setIsImportDialogOpen(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                className="bg-blue-600 text-white hover:bg-blue-500"
+                onClick={handleBuildFromUploadedJson}
+              >
+                Upload and build field
               </Button>
             </DialogFooter>
           </DialogContent>
