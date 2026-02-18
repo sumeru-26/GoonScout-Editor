@@ -61,6 +61,12 @@ const MIRROR_SNAP_PX = 8;
 const GUIDE_SNAP_PX = 6;
 const AUTOSAVE_DELAY_MS = 1500;
 
+const areNumberArraysEqual = (left: number[], right: number[]) => {
+  if (left === right) return true;
+  if (left.length !== right.length) return false;
+  return left.every((value, index) => value === right[index]);
+};
+
 const gcd = (a: number, b: number): number => {
   let x = Math.abs(Math.round(a));
   let y = Math.abs(Math.round(b));
@@ -1402,6 +1408,34 @@ export default function EditorPage() {
     x: 0,
     y: 0,
   });
+  const alignmentGuidesRef = React.useRef({
+    vertical: [],
+    horizontal: [],
+  } as { vertical: number[]; horizontal: number[] });
+  const dragSnapOffsetRef = React.useRef<DragSnapOffset>({
+    itemId: null,
+    x: 0,
+    y: 0,
+  });
+  const paletteSnapOffsetRef = React.useRef({ x: 0, y: 0 });
+  const pendingDragUpdateRef = React.useRef<{
+    guides: { vertical: number[]; horizontal: number[] };
+    dragSnap: DragSnapOffset;
+    paletteSnap: { x: number; y: number };
+  } | null>(null);
+  const dragUpdateRafRef = React.useRef<number | null>(null);
+
+  React.useEffect(() => {
+    alignmentGuidesRef.current = alignmentGuides;
+  }, [alignmentGuides]);
+
+  React.useEffect(() => {
+    dragSnapOffsetRef.current = dragSnapOffset;
+  }, [dragSnapOffset]);
+
+  React.useEffect(() => {
+    paletteSnapOffsetRef.current = paletteSnapOffset;
+  }, [paletteSnapOffset]);
   const palettePointerStartRef = React.useRef<{
     kind: AssetKind;
     pointerX: number;
@@ -1445,6 +1479,74 @@ export default function EditorPage() {
     const length = historyRef.current.length;
     setCanUndo(index > 0);
     setCanRedo(index >= 0 && index < length - 1);
+  }, []);
+
+  const flushDragUpdates = React.useCallback(
+    (
+      nextGuides: { vertical: number[]; horizontal: number[] },
+      nextDragSnap: DragSnapOffset,
+      nextPaletteSnap: { x: number; y: number }
+    ) => {
+      if (
+        !areNumberArraysEqual(nextGuides.vertical, alignmentGuidesRef.current.vertical) ||
+        !areNumberArraysEqual(nextGuides.horizontal, alignmentGuidesRef.current.horizontal)
+      ) {
+        alignmentGuidesRef.current = nextGuides;
+        setAlignmentGuides(nextGuides);
+      }
+
+      if (
+        nextDragSnap.itemId !== dragSnapOffsetRef.current.itemId ||
+        nextDragSnap.x !== dragSnapOffsetRef.current.x ||
+        nextDragSnap.y !== dragSnapOffsetRef.current.y
+      ) {
+        dragSnapOffsetRef.current = nextDragSnap;
+        setDragSnapOffset(nextDragSnap);
+      }
+
+      if (
+        nextPaletteSnap.x !== paletteSnapOffsetRef.current.x ||
+        nextPaletteSnap.y !== paletteSnapOffsetRef.current.y
+      ) {
+        paletteSnapOffsetRef.current = nextPaletteSnap;
+        setPaletteSnapOffset(nextPaletteSnap);
+      }
+    },
+    []
+  );
+
+  const scheduleDragUpdate = React.useCallback(
+    (
+      nextGuides: { vertical: number[]; horizontal: number[] },
+      nextDragSnap: DragSnapOffset,
+      nextPaletteSnap: { x: number; y: number }
+    ) => {
+      pendingDragUpdateRef.current = {
+        guides: nextGuides,
+        dragSnap: nextDragSnap,
+        paletteSnap: nextPaletteSnap,
+      };
+
+      if (dragUpdateRafRef.current !== null) return;
+
+      dragUpdateRafRef.current = window.requestAnimationFrame(() => {
+        dragUpdateRafRef.current = null;
+        const pending = pendingDragUpdateRef.current;
+        if (!pending) return;
+        flushDragUpdates(pending.guides, pending.dragSnap, pending.paletteSnap);
+        pendingDragUpdateRef.current = null;
+      });
+    },
+    [flushDragUpdates]
+  );
+
+  React.useEffect(() => {
+    return () => {
+      if (dragUpdateRafRef.current !== null) {
+        window.cancelAnimationFrame(dragUpdateRafRef.current);
+        dragUpdateRafRef.current = null;
+      }
+    };
   }, []);
 
   const buildEditorSnapshot = React.useCallback((): EditorSnapshot => {
@@ -2129,16 +2231,20 @@ export default function EditorPage() {
   const handleDragMove = React.useCallback(
     (event: DragMoveEvent) => {
       if (isPreviewMode) {
-        setAlignmentGuides({ vertical: [], horizontal: [] });
-        setDragSnapOffset({ itemId: null, x: 0, y: 0 });
-        setPaletteSnapOffset({ x: 0, y: 0 });
+        scheduleDragUpdate(
+          { vertical: [], horizontal: [] },
+          { itemId: null, x: 0, y: 0 },
+          { x: 0, y: 0 }
+        );
         return;
       }
 
       if (!isAlignmentAssistEnabled) {
-        setAlignmentGuides({ vertical: [], horizontal: [] });
-        setDragSnapOffset({ itemId: null, x: 0, y: 0 });
-        setPaletteSnapOffset({ x: 0, y: 0 });
+        scheduleDragUpdate(
+          { vertical: [], horizontal: [] },
+          { itemId: null, x: 0, y: 0 },
+          { x: 0, y: 0 }
+        );
         return;
       }
 
@@ -2188,9 +2294,11 @@ export default function EditorPage() {
         adjustedFinalTop < canvasRect.bottom;
 
       if (!isInsideCanvas) {
-        setAlignmentGuides({ vertical: [], horizontal: [] });
-        setDragSnapOffset({ itemId: null, x: 0, y: 0 });
-        setPaletteSnapOffset({ x: 0, y: 0 });
+        scheduleDragUpdate(
+          { vertical: [], horizontal: [] },
+          { itemId: null, x: 0, y: 0 },
+          { x: 0, y: 0 }
+        );
         return;
       }
 
@@ -2236,10 +2344,10 @@ export default function EditorPage() {
             horizontal.add(centerY);
         });
 
-      setAlignmentGuides({
+      const nextGuides = {
         vertical: Array.from(vertical),
         horizontal: Array.from(horizontal),
-      });
+      };
 
       if (data?.type === "canvas" && data.itemId && activeItem) {
         let snappedX = x;
@@ -2288,17 +2396,18 @@ export default function EditorPage() {
             });
           });
 
-        setDragSnapOffset({
-          itemId: data.itemId,
-          x: snappedX - x,
-          y: snappedY - y,
-        });
-        setPaletteSnapOffset({ x: 0, y: 0 });
+        scheduleDragUpdate(
+          nextGuides,
+          { itemId: data.itemId, x: snappedX - x, y: snappedY - y },
+          { x: 0, y: 0 }
+        );
       } else if (data?.type === "palette") {
         if (paletteKind === "icon" || paletteKind === "toggle") {
-          setAlignmentGuides({ vertical: [], horizontal: [] });
-          setPaletteSnapOffset({ x: 0, y: 0 });
-          setDragSnapOffset({ itemId: null, x: 0, y: 0 });
+          scheduleDragUpdate(
+            { vertical: [], horizontal: [] },
+            { itemId: null, x: 0, y: 0 },
+            { x: 0, y: 0 }
+          );
           return;
         }
 
@@ -2348,11 +2457,17 @@ export default function EditorPage() {
             });
           });
 
-        setPaletteSnapOffset({ x: snappedX - x, y: snappedY - y });
-        setDragSnapOffset({ itemId: null, x: 0, y: 0 });
+        scheduleDragUpdate(
+          nextGuides,
+          { itemId: null, x: 0, y: 0 },
+          { x: snappedX - x, y: snappedY - y }
+        );
       } else {
-        setDragSnapOffset({ itemId: null, x: 0, y: 0 });
-        setPaletteSnapOffset({ x: 0, y: 0 });
+        scheduleDragUpdate(
+          nextGuides,
+          { itemId: null, x: 0, y: 0 },
+          { x: 0, y: 0 }
+        );
       }
     },
     [
@@ -2361,6 +2476,7 @@ export default function EditorPage() {
       items,
       palettePointerOffset.x,
       palettePointerOffset.y,
+      scheduleDragUpdate,
       visibleItems,
     ]
   );
