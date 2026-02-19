@@ -76,7 +76,7 @@ model FieldConfig {
   updatedAt DateTime @updatedAt @map("updated_at")
   uploadId  String   @default(uuid()) @db.Uuid @map("upload_id")
   userId    String   @map("user_id")
-  contentHash String @db.VarChar(64) @map("content_hash")
+  contentHash String @default(dbgenerated("public.next_field_config_code_8()")) @db.VarChar(8) @map("content_hash")
   backgroundImage String? @db.Text @map("background_image")
   isDraft   Boolean  @default(true) @map("is_draft")
   payload   Json

@@ -1,9 +1,26 @@
 import { NextResponse } from "next/server";
 import { headers } from "next/headers";
-import { createHash } from "node:crypto";
+import { randomUUID } from "node:crypto";
 
 import { auth } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
+import { db } from "@/lib/db";
+import { sql } from "kysely";
+
+type FieldConfigRow = {
+  id: string;
+  upload_id: string;
+  user_id: string;
+  payload: unknown;
+  background_image: string | null;
+  content_hash: string;
+  is_draft: boolean;
+  created_at: Date;
+  updated_at: Date;
+};
+
+
+const isObjectRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
 
 const stableStringify = (value: unknown): string => {
   if (value === null || typeof value !== "object") {
@@ -24,14 +41,137 @@ const stableStringify = (value: unknown): string => {
     .join(",")}}`;
 };
 
-const buildContentHash = (input: {
+const buildDraftFingerprint = (input: {
   payload: unknown;
   editorState: unknown;
   backgroundImage: string | null;
   isDraft: boolean;
+}) => stableStringify(input);
+
+const buildShareCode8 = () =>
+  `${Math.floor(Math.random() * 90_000_000) + 10_000_000}`;
+
+const selectLatestByUserAndDraft = async (input: {
+  userId: string;
+  isDraft: boolean;
 }) => {
-  const normalized = stableStringify(input);
-  return createHash("sha256").update(normalized).digest("hex");
+  const result = await sql<FieldConfigRow>`
+    select
+      id,
+      upload_id,
+      user_id,
+      payload,
+      background_image,
+      content_hash,
+      is_draft,
+      created_at,
+      updated_at
+    from public.field_configs
+    where user_id = ${input.userId}
+      and is_draft = ${input.isDraft}
+    order by updated_at desc
+    limit 1
+  `.execute(db);
+
+  return result.rows[0] ?? null;
+};
+
+const updateFieldConfigDraft = async (input: {
+  id: string;
+  payload: unknown;
+  backgroundImage: string | null;
+}) => {
+  const payloadJson = JSON.stringify(input.payload);
+
+  const result = await sql<FieldConfigRow>`
+    update public.field_configs
+    set
+      payload = ${payloadJson}::jsonb,
+      background_image = ${input.backgroundImage},
+      is_draft = true,
+      updated_at = now()
+    where id = ${input.id}::uuid
+    returning
+      id,
+      upload_id,
+      user_id,
+      payload,
+      background_image,
+      content_hash,
+      is_draft,
+      created_at,
+      updated_at
+  `.execute(db);
+
+  return result.rows[0] ?? null;
+};
+
+const createFieldConfigWithRetry = async (input: {
+  userId: string;
+  payload: unknown;
+  backgroundImage: string | null;
+  isDraft: boolean;
+}) => {
+  const maxAttempts = 5;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const payloadJson = JSON.stringify(input.payload);
+      const result = await sql<FieldConfigRow>`
+        insert into public.field_configs (
+          id,
+          upload_id,
+          user_id,
+          payload,
+          background_image,
+          content_hash,
+          is_draft
+        )
+        values (
+          ${randomUUID()}::uuid,
+          ${randomUUID()}::uuid,
+          ${input.userId},
+          ${payloadJson}::jsonb,
+          ${input.backgroundImage},
+          ${buildShareCode8()},
+          ${input.isDraft}
+        )
+        returning
+          id,
+          upload_id,
+          user_id,
+          payload,
+          background_image,
+          content_hash,
+          is_draft,
+          created_at,
+          updated_at
+      `.execute(db);
+
+      const created = result.rows[0];
+      if (!created) {
+        throw new Error("Failed to create field config.");
+      }
+
+      return created;
+    } catch (error) {
+      const pgCode =
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        typeof (error as { code?: unknown }).code === "string"
+          ? (error as { code: string }).code
+          : null;
+
+      const isUniqueConflict = pgCode === "23505";
+
+      if (!isUniqueConflict || attempt === maxAttempts) {
+        throw error;
+      }
+    }
+  }
+
+  throw new Error("Unable to generate a unique share code.");
 };
 
 const resolveAuthenticatedUserId = async () => {
@@ -58,101 +198,105 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Invalid payload." }, { status: 400 });
     }
 
-    const contentHash = buildContentHash({
-      payload,
-      editorState,
-      backgroundImage,
-      isDraft,
-    });
-
     if (isDraft) {
-      const draft = await prisma.fieldConfig.findFirst({
-        where: { userId, isDraft: true },
-        orderBy: { updatedAt: "desc" },
+      const incomingDraftFingerprint = buildDraftFingerprint({
+        payload,
+        editorState,
+        backgroundImage,
+        isDraft: true,
       });
 
-      if (draft && draft.contentHash === contentHash) {
+      const draft = await selectLatestByUserAndDraft({ userId, isDraft: true });
+
+      if (draft) {
+        const draftPayloadRecord = isObjectRecord(draft.payload)
+          ? draft.payload
+          : null;
+        const existingEditorState = draftPayloadRecord?.editorState ?? draft.payload;
+        const existingDraftFingerprint = buildDraftFingerprint({
+          payload: draft.payload,
+          editorState: existingEditorState,
+          backgroundImage: draft.background_image,
+          isDraft: draft.is_draft,
+        });
+
+        if (existingDraftFingerprint === incomingDraftFingerprint) {
         return NextResponse.json(
           {
             id: draft.id,
-            uploadId: draft.uploadId,
-            contentHash: draft.contentHash,
-            isDraft: draft.isDraft,
-            createdAt: draft.createdAt,
-            updatedAt: draft.updatedAt,
+            uploadId: draft.upload_id,
+            contentHash: draft.content_hash,
+            isDraft: draft.is_draft,
+            createdAt: draft.created_at,
+            updatedAt: draft.updated_at,
             deduped: true,
           },
           { status: 200 }
         );
       }
+      }
 
       if (draft) {
-        const updated = await prisma.fieldConfig.update({
-          where: { id: draft.id },
-          data: {
-            payload,
-            backgroundImage,
-            contentHash,
-            isDraft: true,
-          },
+        const updated = await updateFieldConfigDraft({
+          id: draft.id,
+          payload,
+          backgroundImage,
         });
+
+        if (!updated) {
+          throw new Error("Draft update failed.");
+        }
 
         return NextResponse.json(
           {
             id: updated.id,
-            uploadId: updated.uploadId,
-            contentHash: updated.contentHash,
-            isDraft: updated.isDraft,
-            createdAt: updated.createdAt,
-            updatedAt: updated.updatedAt,
+            uploadId: updated.upload_id,
+            contentHash: updated.content_hash,
+            isDraft: updated.is_draft,
+            createdAt: updated.created_at,
+            updatedAt: updated.updated_at,
             deduped: false,
           },
           { status: 200 }
         );
       }
 
-      const createdDraft = await prisma.fieldConfig.create({
-        data: {
-          userId,
-          payload,
-          backgroundImage,
-          contentHash,
-          isDraft: true,
-        },
+      const createdDraft = await createFieldConfigWithRetry({
+        userId,
+        payload,
+        backgroundImage,
+        isDraft: true,
       });
 
       return NextResponse.json(
         {
           id: createdDraft.id,
-          uploadId: createdDraft.uploadId,
-          contentHash: createdDraft.contentHash,
-          isDraft: createdDraft.isDraft,
-          createdAt: createdDraft.createdAt,
-          updatedAt: createdDraft.updatedAt,
+          uploadId: createdDraft.upload_id,
+          contentHash: createdDraft.content_hash,
+          isDraft: createdDraft.is_draft,
+          createdAt: createdDraft.created_at,
+          updatedAt: createdDraft.updated_at,
           deduped: false,
         },
         { status: 201 }
       );
     }
 
-    const created = await prisma.fieldConfig.create({
-      data: {
-        userId,
-        payload,
-        backgroundImage,
-        contentHash,
-        isDraft: false,
-      },
+    const created = await createFieldConfigWithRetry({
+      userId,
+      payload,
+      backgroundImage,
+      isDraft: false,
     });
 
     return NextResponse.json(
       {
         id: created.id,
-        uploadId: created.uploadId,
-        contentHash: created.contentHash,
-        isDraft: created.isDraft,
-        createdAt: created.createdAt,
-        updatedAt: created.updatedAt,
+        uploadId: created.upload_id,
+        contentHash: created.content_hash,
+        isDraft: created.is_draft,
+        createdAt: created.created_at,
+        updatedAt: created.updated_at,
         deduped: false,
       },
       { status: 201 }
@@ -172,15 +316,8 @@ export async function GET() {
       return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
     }
 
-    const latestDraft = await prisma.fieldConfig.findFirst({
-      where: { userId, isDraft: true },
-      orderBy: { updatedAt: "desc" },
-    });
-
-    const latestFinal = await prisma.fieldConfig.findFirst({
-      where: { userId, isDraft: false },
-      orderBy: { updatedAt: "desc" },
-    });
+    const latestDraft = await selectLatestByUserAndDraft({ userId, isDraft: true });
+    const latestFinal = await selectLatestByUserAndDraft({ userId, isDraft: false });
 
     const latest = latestDraft ?? latestFinal;
 
@@ -192,14 +329,14 @@ export async function GET() {
       {
         config: {
           id: latest.id,
-          uploadId: latest.uploadId,
-          userId: latest.userId,
+          uploadId: latest.upload_id,
+          userId: latest.user_id,
           payload: latest.payload,
-          backgroundImage: latest.backgroundImage,
-          contentHash: latest.contentHash,
-          isDraft: latest.isDraft,
-          createdAt: latest.createdAt,
-          updatedAt: latest.updatedAt,
+          backgroundImage: latest.background_image,
+          contentHash: latest.content_hash,
+          isDraft: latest.is_draft,
+          createdAt: latest.created_at,
+          updatedAt: latest.updated_at,
         },
       },
       { status: 200 }
