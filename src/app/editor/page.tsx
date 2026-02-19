@@ -59,6 +59,7 @@ const ICON_CELL_SIZE = 48;
 const ICON_CELL_OFFSET = 4;
 const MIRROR_SNAP_PX = 8;
 const GUIDE_SNAP_PX = 6;
+const SNAP_RELEASE_PX = 12;
 const AUTOSAVE_DELAY_MS = 1500;
 
 const areNumberArraysEqual = (left: number[], right: number[]) => {
@@ -147,6 +148,14 @@ type DragSnapOffset = {
   itemId: string | null;
   x: number;
   y: number;
+};
+
+type DragMoveSnapshot = {
+  deltaX: number;
+  deltaY: number;
+  activeData: DragData | undefined;
+  initialRect: { left: number; top: number; width: number; height: number } | null;
+  translatedRect: { left: number; top: number } | null;
 };
 
 type PersistedEditorState = {
@@ -1267,6 +1276,55 @@ function CanvasToggle({
   );
 }
 
+const areSnapOffsetsEqual = (
+  prev: { x: number; y: number } | undefined,
+  next: { x: number; y: number } | undefined
+) => {
+  if (!prev && !next) return true;
+  if (!prev || !next) return false;
+  return prev.x === next.x && prev.y === next.y;
+};
+
+const MemoCanvasButton = React.memo(
+  CanvasButton,
+  (prev, next) =>
+    prev.item === next.item &&
+    prev.hasStages === next.hasStages &&
+    prev.isPreviewPressed === next.isPreviewPressed &&
+    prev.isCustomSideLayoutsEnabled === next.isCustomSideLayoutsEnabled &&
+    prev.visibleTeamSide === next.visibleTeamSide &&
+    prev.isPreviewMode === next.isPreviewMode &&
+    areSnapOffsetsEqual(prev.snapOffset, next.snapOffset)
+);
+const MemoCanvasMirrorLine = React.memo(
+  CanvasMirrorLine,
+  (prev, next) =>
+    prev.item === next.item &&
+    prev.isPreviewMode === next.isPreviewMode &&
+    areSnapOffsetsEqual(prev.snapOffset, next.snapOffset)
+);
+const MemoCanvasCover = React.memo(
+  CanvasCover,
+  (prev, next) =>
+    prev.item === next.item &&
+    prev.isPreviewMode === next.isPreviewMode &&
+    areSnapOffsetsEqual(prev.snapOffset, next.snapOffset)
+);
+const MemoCanvasInput = React.memo(
+  CanvasInput,
+  (prev, next) =>
+    prev.item === next.item &&
+    prev.isPreviewMode === next.isPreviewMode &&
+    areSnapOffsetsEqual(prev.snapOffset, next.snapOffset)
+);
+const MemoCanvasToggle = React.memo(
+  CanvasToggle,
+  (prev, next) =>
+    prev.item === next.item &&
+    prev.isPreviewMode === next.isPreviewMode &&
+    areSnapOffsetsEqual(prev.snapOffset, next.snapOffset)
+);
+
 export default function EditorPage() {
   const router = useRouter();
   const { data: sessionData } = authClient.useSession();
@@ -1377,6 +1435,8 @@ export default function EditorPage() {
     React.useState(false);
   const autosaveBadgeTimeoutRef = React.useRef<number | null>(null);
   const [latestUploadId, setLatestUploadId] = React.useState<string | null>(null);
+  const [isInteractingWithCanvas, setIsInteractingWithCanvas] =
+    React.useState(false);
   const isRestoringRef = React.useRef(false);
   const hasRestoredRef = React.useRef(false);
 
@@ -1412,18 +1472,20 @@ export default function EditorPage() {
     vertical: [],
     horizontal: [],
   } as { vertical: number[]; horizontal: number[] });
+  const snapLockRef = React.useRef<{
+    itemId: string | null;
+    type: DragType | null;
+    x: number | null;
+    y: number | null;
+  }>({ itemId: null, type: null, x: null, y: null });
   const dragSnapOffsetRef = React.useRef<DragSnapOffset>({
     itemId: null,
     x: 0,
     y: 0,
   });
   const paletteSnapOffsetRef = React.useRef({ x: 0, y: 0 });
-  const pendingDragUpdateRef = React.useRef<{
-    guides: { vertical: number[]; horizontal: number[] };
-    dragSnap: DragSnapOffset;
-    paletteSnap: { x: number; y: number };
-  } | null>(null);
-  const dragUpdateRafRef = React.useRef<number | null>(null);
+  const dragMoveSnapshotRef = React.useRef<DragMoveSnapshot | null>(null);
+  const dragMoveRafRef = React.useRef<number | null>(null);
 
   React.useEffect(() => {
     alignmentGuidesRef.current = alignmentGuides;
@@ -1457,6 +1519,20 @@ export default function EditorPage() {
     originX: number;
     originY: number;
   } | null>(null);
+  const resizeMoveSnapshotRef = React.useRef<{ x: number; y: number } | null>(
+    null
+  );
+  const resizeMoveRafRef = React.useRef<number | null>(null);
+  const resizeSnapLockRef = React.useRef<{
+    id: string | null;
+    mode: "resize" | null;
+    x: number | null;
+    y: number | null;
+  }>({ id: null, mode: null, x: null, y: null });
+  const interactionCanvasSizeRef = React.useRef<{
+    width: number;
+    height: number;
+  } | null>(null);
   const mirrorHandleRef = React.useRef<{
     id: string;
     handle: "start" | "end";
@@ -1480,6 +1556,44 @@ export default function EditorPage() {
     setCanUndo(index > 0);
     setCanRedo(index >= 0 && index < length - 1);
   }, []);
+
+  const currentVisibleTeamSide = isPreviewMode ? previewTeamSide : editorTeamSide;
+
+  const sideScopedItems = React.useMemo(() => {
+    if (!isCustomSideLayoutsEnabled) return items;
+    return items.filter((item) => {
+      if (item.kind === "mirror") return true;
+      return item.teamSide === currentVisibleTeamSide;
+    });
+  }, [currentVisibleTeamSide, isCustomSideLayoutsEnabled, items]);
+
+  const visibleItems = React.useMemo(() => {
+    if (stagingParentId) {
+      return sideScopedItems.filter(
+        (item) => item.id === stagingParentId || item.stageParentId === stagingParentId
+      );
+    }
+
+    if (isPreviewMode && previewStageParentId) {
+      return sideScopedItems.filter(
+        (item) =>
+          item.id === previewStageParentId || item.stageParentId === previewStageParentId
+      );
+    }
+
+    return sideScopedItems.filter((item) => !item.stageParentId);
+  }, [isPreviewMode, previewStageParentId, sideScopedItems, stagingParentId]);
+
+  const visibleItemsRef = React.useRef<CanvasItem[]>(visibleItems);
+  const isAlignmentAssistEnabledRef = React.useRef(isAlignmentAssistEnabled);
+
+  React.useEffect(() => {
+    visibleItemsRef.current = visibleItems;
+  }, [visibleItems]);
+
+  React.useEffect(() => {
+    isAlignmentAssistEnabledRef.current = isAlignmentAssistEnabled;
+  }, [isAlignmentAssistEnabled]);
 
   const flushDragUpdates = React.useCallback(
     (
@@ -1515,36 +1629,324 @@ export default function EditorPage() {
     []
   );
 
-  const scheduleDragUpdate = React.useCallback(
-    (
-      nextGuides: { vertical: number[]; horizontal: number[] },
-      nextDragSnap: DragSnapOffset,
-      nextPaletteSnap: { x: number; y: number }
-    ) => {
-      pendingDragUpdateRef.current = {
-        guides: nextGuides,
-        dragSnap: nextDragSnap,
-        paletteSnap: nextPaletteSnap,
+  const processDragMove = React.useCallback(
+    (snapshot: DragMoveSnapshot) => {
+      const resolveSnapLock = (
+        rawValue: number,
+        candidateValue: number,
+        candidateDiff: number,
+        lockedValue: number | null
+      ) => {
+        if (lockedValue !== null) {
+          if (Math.abs(rawValue - lockedValue) <= SNAP_RELEASE_PX) {
+            return { value: lockedValue, lock: lockedValue };
+          }
+        }
+
+        if (candidateDiff <= GUIDE_SNAP_PX) {
+          return { value: candidateValue, lock: candidateValue };
+        }
+
+        return { value: rawValue, lock: null };
       };
 
-      if (dragUpdateRafRef.current !== null) return;
+      if (isPreviewMode || !isAlignmentAssistEnabled) {
+        flushDragUpdates(
+          { vertical: [], horizontal: [] },
+          { itemId: null, x: 0, y: 0 },
+          { x: 0, y: 0 }
+        );
+        snapLockRef.current = { itemId: null, type: null, x: null, y: null };
+        return;
+      }
 
-      dragUpdateRafRef.current = window.requestAnimationFrame(() => {
-        dragUpdateRafRef.current = null;
-        const pending = pendingDragUpdateRef.current;
+      const canvasRect = canvasRef.current?.getBoundingClientRect();
+      if (!canvasRect) return;
+
+      const data = snapshot.activeData;
+      const initialRect = snapshot.initialRect;
+      const translatedRect = snapshot.translatedRect;
+
+      if (!initialRect) return;
+
+      const finalLeft = translatedRect?.left ?? initialRect.left + snapshot.deltaX;
+      const finalTop = translatedRect?.top ?? initialRect.top + snapshot.deltaY;
+      const adjustedFinalLeft =
+        data?.type === "palette" ? finalLeft + palettePointerOffset.x : finalLeft;
+      const adjustedFinalTop =
+        data?.type === "palette" ? finalTop + palettePointerOffset.y : finalTop;
+
+      const activeItem =
+        data?.type === "canvas" && data.itemId
+          ? items.find((item) => item.id === data.itemId)
+          : null;
+      const paletteKind = data?.type === "palette" ? data.assetKind : undefined;
+      const paletteSize =
+        paletteKind === "icon"
+          ? ICON_BUTTON_SIZE
+          : paletteKind === "mirror"
+            ? MIRROR_LINE_SIZE
+            : paletteKind === "cover"
+              ? COVER_SIZE
+              : paletteKind === "input"
+                ? INPUT_SIZE
+                : paletteKind === "toggle"
+                  ? TOGGLE_SIZE
+                  : paletteKind === "swap"
+                    ? BUTTON_SIZE
+                    : BUTTON_SIZE;
+      const activeWidth = activeItem?.width ?? paletteSize.width;
+      const activeHeight = activeItem?.height ?? paletteSize.height;
+
+      const isInsideCanvas =
+        adjustedFinalLeft + activeWidth > canvasRect.left &&
+        adjustedFinalLeft < canvasRect.right &&
+        adjustedFinalTop + activeHeight > canvasRect.top &&
+        adjustedFinalTop < canvasRect.bottom;
+
+      if (!isInsideCanvas) {
+        flushDragUpdates(
+          { vertical: [], horizontal: [] },
+          { itemId: null, x: 0, y: 0 },
+          { x: 0, y: 0 }
+        );
+        snapLockRef.current = { itemId: null, type: null, x: null, y: null };
+        return;
+      }
+
+      const x = adjustedFinalLeft - canvasRect.left;
+      const y = adjustedFinalTop - canvasRect.top;
+
+      const activeLeft = x;
+      const activeRight = x + activeWidth;
+      const activeCenterX = x + activeWidth / 2;
+      const activeTop = y;
+      const activeBottom = y + activeHeight;
+      const activeCenterY = y + activeHeight / 2;
+
+      const vertical = new Set<number>();
+      const horizontal = new Set<number>();
+
+      visibleItems
+        .filter((item) => item.kind !== "mirror")
+        .forEach((item) => {
+          if (data?.type === "canvas" && item.id === data.itemId) return;
+          const left = item.x;
+          const right = item.x + item.width;
+          const centerX = item.x + item.width / 2;
+          const top = item.y;
+          const bottom = item.y + item.height;
+          const centerY = item.y + item.height / 2;
+
+          if (Math.abs(activeLeft - left) <= GUIDE_SNAP_PX) vertical.add(left);
+          if (Math.abs(activeRight - right) <= GUIDE_SNAP_PX) vertical.add(right);
+          if (Math.abs(activeLeft - right) <= GUIDE_SNAP_PX) vertical.add(right);
+          if (Math.abs(activeRight - left) <= GUIDE_SNAP_PX) vertical.add(left);
+          if (Math.abs(activeCenterX - centerX) <= GUIDE_SNAP_PX)
+            vertical.add(centerX);
+
+          if (Math.abs(activeTop - top) <= GUIDE_SNAP_PX) horizontal.add(top);
+          if (Math.abs(activeBottom - bottom) <= GUIDE_SNAP_PX)
+            horizontal.add(bottom);
+          if (Math.abs(activeTop - bottom) <= GUIDE_SNAP_PX)
+            horizontal.add(bottom);
+          if (Math.abs(activeBottom - top) <= GUIDE_SNAP_PX)
+            horizontal.add(top);
+          if (Math.abs(activeCenterY - centerY) <= GUIDE_SNAP_PX)
+            horizontal.add(centerY);
+        });
+
+      const nextGuides = {
+        vertical: Array.from(vertical),
+        horizontal: Array.from(horizontal),
+      };
+
+      if (data?.type === "canvas" && data.itemId && activeItem) {
+        let snappedX = x;
+        let snappedY = y;
+        let bestXDiff = GUIDE_SNAP_PX + 1;
+        let bestYDiff = GUIDE_SNAP_PX + 1;
+
+        visibleItems
+          .filter((item) => item.kind !== "mirror" && item.id !== data.itemId)
+          .forEach((item) => {
+            const left = item.x;
+            const right = item.x + item.width;
+            const centerX = item.x + item.width / 2;
+            const top = item.y;
+            const bottom = item.y + item.height;
+            const centerY = item.y + item.height / 2;
+
+            const candidatesX = [
+              { diff: Math.abs(activeLeft - left), value: left },
+              { diff: Math.abs(activeRight - right), value: right - activeWidth },
+              { diff: Math.abs(activeLeft - right), value: right },
+              { diff: Math.abs(activeRight - left), value: left - activeWidth },
+              { diff: Math.abs(activeCenterX - centerX), value: centerX - activeWidth / 2 },
+            ];
+
+            candidatesX.forEach((candidate) => {
+              if (candidate.diff <= GUIDE_SNAP_PX && candidate.diff < bestXDiff) {
+                bestXDiff = candidate.diff;
+                snappedX = candidate.value;
+              }
+            });
+
+            const candidatesY = [
+              { diff: Math.abs(activeTop - top), value: top },
+              { diff: Math.abs(activeBottom - bottom), value: bottom - activeHeight },
+              { diff: Math.abs(activeTop - bottom), value: bottom },
+              { diff: Math.abs(activeBottom - top), value: top - activeHeight },
+              { diff: Math.abs(activeCenterY - centerY), value: centerY - activeHeight / 2 },
+            ];
+
+            candidatesY.forEach((candidate) => {
+              if (candidate.diff <= GUIDE_SNAP_PX && candidate.diff < bestYDiff) {
+                bestYDiff = candidate.diff;
+                snappedY = candidate.value;
+              }
+            });
+          });
+
+        const existingLock = snapLockRef.current;
+        const lockedX =
+          existingLock.type === "canvas" && existingLock.itemId === data.itemId
+            ? existingLock.x
+            : null;
+        const lockedY =
+          existingLock.type === "canvas" && existingLock.itemId === data.itemId
+            ? existingLock.y
+            : null;
+
+        const resolvedX = resolveSnapLock(x, snappedX, bestXDiff, lockedX);
+        const resolvedY = resolveSnapLock(y, snappedY, bestYDiff, lockedY);
+        snapLockRef.current = {
+          itemId: data.itemId,
+          type: "canvas",
+          x: resolvedX.lock,
+          y: resolvedY.lock,
+        };
+
+        flushDragUpdates(
+          nextGuides,
+          { itemId: data.itemId, x: resolvedX.value - x, y: resolvedY.value - y },
+          { x: 0, y: 0 }
+        );
+      } else if (data?.type === "palette") {
+        if (paletteKind === "icon" || paletteKind === "toggle") {
+          flushDragUpdates(
+            { vertical: [], horizontal: [] },
+            { itemId: null, x: 0, y: 0 },
+            { x: 0, y: 0 }
+          );
+          snapLockRef.current = { itemId: null, type: "palette", x: null, y: null };
+          return;
+        }
+
+        let snappedX = x;
+        let snappedY = y;
+        let bestXDiff = GUIDE_SNAP_PX + 1;
+        let bestYDiff = GUIDE_SNAP_PX + 1;
+
+        visibleItems
+          .filter((item) => item.kind !== "mirror")
+          .forEach((item) => {
+            const left = item.x;
+            const right = item.x + item.width;
+            const centerX = item.x + item.width / 2;
+            const top = item.y;
+            const bottom = item.y + item.height;
+            const centerY = item.y + item.height / 2;
+
+            const candidatesX = [
+              { diff: Math.abs(activeLeft - left), value: left },
+              { diff: Math.abs(activeRight - right), value: right - activeWidth },
+              { diff: Math.abs(activeLeft - right), value: right },
+              { diff: Math.abs(activeRight - left), value: left - activeWidth },
+              { diff: Math.abs(activeCenterX - centerX), value: centerX - activeWidth / 2 },
+            ];
+
+            candidatesX.forEach((candidate) => {
+              if (candidate.diff <= GUIDE_SNAP_PX && candidate.diff < bestXDiff) {
+                bestXDiff = candidate.diff;
+                snappedX = candidate.value;
+              }
+            });
+
+            const candidatesY = [
+              { diff: Math.abs(activeTop - top), value: top },
+              { diff: Math.abs(activeBottom - bottom), value: bottom - activeHeight },
+              { diff: Math.abs(activeTop - bottom), value: bottom },
+              { diff: Math.abs(activeBottom - top), value: top - activeHeight },
+              { diff: Math.abs(activeCenterY - centerY), value: centerY - activeHeight / 2 },
+            ];
+
+            candidatesY.forEach((candidate) => {
+              if (candidate.diff <= GUIDE_SNAP_PX && candidate.diff < bestYDiff) {
+                bestYDiff = candidate.diff;
+                snappedY = candidate.value;
+              }
+            });
+          });
+
+        const existingLock = snapLockRef.current;
+        const lockedX = existingLock.type === "palette" ? existingLock.x : null;
+        const lockedY = existingLock.type === "palette" ? existingLock.y : null;
+        const resolvedX = resolveSnapLock(x, snappedX, bestXDiff, lockedX);
+        const resolvedY = resolveSnapLock(y, snappedY, bestYDiff, lockedY);
+        snapLockRef.current = {
+          itemId: null,
+          type: "palette",
+          x: resolvedX.lock,
+          y: resolvedY.lock,
+        };
+
+        flushDragUpdates(
+          nextGuides,
+          { itemId: null, x: 0, y: 0 },
+          { x: resolvedX.value - x, y: resolvedY.value - y }
+        );
+      } else {
+        flushDragUpdates(
+          nextGuides,
+          { itemId: null, x: 0, y: 0 },
+          { x: 0, y: 0 }
+        );
+        snapLockRef.current = { itemId: null, type: null, x: null, y: null };
+      }
+    },
+    [
+      flushDragUpdates,
+      isAlignmentAssistEnabled,
+      isPreviewMode,
+      items,
+      palettePointerOffset.x,
+      palettePointerOffset.y,
+      visibleItems,
+    ]
+  );
+
+  const scheduleDragMove = React.useCallback(
+    (snapshot: DragMoveSnapshot) => {
+      dragMoveSnapshotRef.current = snapshot;
+      if (dragMoveRafRef.current !== null) return;
+
+      dragMoveRafRef.current = window.requestAnimationFrame(() => {
+        dragMoveRafRef.current = null;
+        const pending = dragMoveSnapshotRef.current;
         if (!pending) return;
-        flushDragUpdates(pending.guides, pending.dragSnap, pending.paletteSnap);
-        pendingDragUpdateRef.current = null;
+        dragMoveSnapshotRef.current = null;
+        processDragMove(pending);
       });
     },
-    [flushDragUpdates]
+    [processDragMove]
   );
 
   React.useEffect(() => {
     return () => {
-      if (dragUpdateRafRef.current !== null) {
-        window.cancelAnimationFrame(dragUpdateRafRef.current);
-        dragUpdateRafRef.current = null;
+      if (dragMoveRafRef.current !== null) {
+        window.cancelAnimationFrame(dragMoveRafRef.current);
+        dragMoveRafRef.current = null;
       }
     };
   }, []);
@@ -1582,16 +1984,6 @@ export default function EditorPage() {
     );
   }, [items]);
 
-  const currentVisibleTeamSide = isPreviewMode ? previewTeamSide : editorTeamSide;
-
-  const sideScopedItems = React.useMemo(() => {
-    if (!isCustomSideLayoutsEnabled) return items;
-    return items.filter((item) => {
-      if (item.kind === "mirror") return true;
-      return item.teamSide === currentVisibleTeamSide;
-    });
-  }, [currentVisibleTeamSide, isCustomSideLayoutsEnabled, items]);
-
   const hasRedCustomLayoutItems = React.useMemo(
     () =>
       items.some((item) => item.kind !== "mirror" && item.teamSide === "red"),
@@ -1603,23 +1995,6 @@ export default function EditorPage() {
       items.some((item) => item.kind !== "mirror" && item.teamSide === "blue"),
     [items]
   );
-
-  const visibleItems = React.useMemo(() => {
-    if (stagingParentId) {
-      return sideScopedItems.filter(
-        (item) => item.id === stagingParentId || item.stageParentId === stagingParentId
-      );
-    }
-
-    if (isPreviewMode && previewStageParentId) {
-      return sideScopedItems.filter(
-        (item) =>
-          item.id === previewStageParentId || item.stageParentId === previewStageParentId
-      );
-    }
-
-    return sideScopedItems.filter((item) => !item.stageParentId);
-  }, [isPreviewMode, previewStageParentId, sideScopedItems, stagingParentId]);
 
   const isStageBlurActive =
     Boolean(stagingParentId) || (isPreviewMode && Boolean(previewStageParentId));
@@ -2025,7 +2400,7 @@ export default function EditorPage() {
   }, [applyEditorSnapshot, updateHistoryAvailability]);
 
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 6 } })
+    useSensor(PointerSensor, { activationConstraint: { distance: 1 } })
   );
 
   const { isOver, setNodeRef: setDroppableRef } = useDroppable({
@@ -2108,8 +2483,15 @@ export default function EditorPage() {
   const handleDragStart = React.useCallback(
     (event: DragStartEvent) => {
       if (isPreviewMode) return;
+      setIsInteractingWithCanvas(true);
       dragStartPointerRef.current = getClientPointFromEvent(event.activatorEvent);
       const data = event.active.data.current as DragData | undefined;
+      snapLockRef.current = {
+        itemId: data?.itemId ?? null,
+        type: data?.type ?? null,
+        x: null,
+        y: null,
+      };
       setActiveType(data?.type ?? null);
       setDragSnapOffset({ itemId: data?.itemId ?? null, x: 0, y: 0 });
       setPaletteSnapOffset({ x: 0, y: 0 });
@@ -2230,261 +2612,64 @@ export default function EditorPage() {
 
   const handleDragMove = React.useCallback(
     (event: DragMoveEvent) => {
-      if (isPreviewMode) {
-        scheduleDragUpdate(
-          { vertical: [], horizontal: [] },
-          { itemId: null, x: 0, y: 0 },
-          { x: 0, y: 0 }
-        );
-        return;
-      }
+      if (isPreviewMode || !isAlignmentAssistEnabled) {
+        const hasDragArtifacts =
+          alignmentGuidesRef.current.vertical.length > 0 ||
+          alignmentGuidesRef.current.horizontal.length > 0 ||
+          dragSnapOffsetRef.current.itemId !== null ||
+          dragSnapOffsetRef.current.x !== 0 ||
+          dragSnapOffsetRef.current.y !== 0 ||
+          paletteSnapOffsetRef.current.x !== 0 ||
+          paletteSnapOffsetRef.current.y !== 0;
 
-      if (!isAlignmentAssistEnabled) {
-        scheduleDragUpdate(
-          { vertical: [], horizontal: [] },
-          { itemId: null, x: 0, y: 0 },
-          { x: 0, y: 0 }
-        );
-        return;
-      }
-
-      const canvasRect = canvasRef.current?.getBoundingClientRect();
-      if (!canvasRect) return;
-
-      const data = event.active.data.current as DragData | undefined;
-      const initialRect = event.active.rect.current.initial;
-      const translatedRect = event.active.rect.current.translated;
-
-      if (!initialRect) return;
-
-      const finalLeft =
-        translatedRect?.left ?? initialRect.left + event.delta.x;
-      const finalTop = translatedRect?.top ?? initialRect.top + event.delta.y;
-      const adjustedFinalLeft =
-        data?.type === "palette" ? finalLeft + palettePointerOffset.x : finalLeft;
-      const adjustedFinalTop =
-        data?.type === "palette" ? finalTop + palettePointerOffset.y : finalTop;
-
-      const activeItem =
-        data?.type === "canvas" && data.itemId
-          ? items.find((item) => item.id === data.itemId)
-          : null;
-      const paletteKind = data?.type === "palette" ? data.assetKind : undefined;
-      const paletteSize =
-        paletteKind === "icon"
-          ? ICON_BUTTON_SIZE
-          : paletteKind === "mirror"
-            ? MIRROR_LINE_SIZE
-            : paletteKind === "cover"
-              ? COVER_SIZE
-              : paletteKind === "input"
-                ? INPUT_SIZE
-              : paletteKind === "toggle"
-                ? TOGGLE_SIZE
-              : paletteKind === "swap"
-                ? BUTTON_SIZE
-                : BUTTON_SIZE;
-      const activeWidth = activeItem?.width ?? paletteSize.width;
-      const activeHeight = activeItem?.height ?? paletteSize.height;
-
-      const isInsideCanvas =
-        adjustedFinalLeft + activeWidth > canvasRect.left &&
-        adjustedFinalLeft < canvasRect.right &&
-        adjustedFinalTop + activeHeight > canvasRect.top &&
-        adjustedFinalTop < canvasRect.bottom;
-
-      if (!isInsideCanvas) {
-        scheduleDragUpdate(
-          { vertical: [], horizontal: [] },
-          { itemId: null, x: 0, y: 0 },
-          { x: 0, y: 0 }
-        );
-        return;
-      }
-
-      const x = adjustedFinalLeft - canvasRect.left;
-      const y = adjustedFinalTop - canvasRect.top;
-
-      const activeLeft = x;
-      const activeRight = x + activeWidth;
-      const activeCenterX = x + activeWidth / 2;
-      const activeTop = y;
-      const activeBottom = y + activeHeight;
-      const activeCenterY = y + activeHeight / 2;
-
-      const vertical = new Set<number>();
-      const horizontal = new Set<number>();
-
-      visibleItems
-        .filter((item) => item.kind !== "mirror")
-        .forEach((item) => {
-          if (data?.type === "canvas" && item.id === data.itemId) return;
-          const left = item.x;
-          const right = item.x + item.width;
-          const centerX = item.x + item.width / 2;
-          const top = item.y;
-          const bottom = item.y + item.height;
-          const centerY = item.y + item.height / 2;
-
-          if (Math.abs(activeLeft - left) <= GUIDE_SNAP_PX) vertical.add(left);
-          if (Math.abs(activeRight - right) <= GUIDE_SNAP_PX) vertical.add(right);
-          if (Math.abs(activeLeft - right) <= GUIDE_SNAP_PX) vertical.add(right);
-          if (Math.abs(activeRight - left) <= GUIDE_SNAP_PX) vertical.add(left);
-          if (Math.abs(activeCenterX - centerX) <= GUIDE_SNAP_PX)
-            vertical.add(centerX);
-
-          if (Math.abs(activeTop - top) <= GUIDE_SNAP_PX) horizontal.add(top);
-          if (Math.abs(activeBottom - bottom) <= GUIDE_SNAP_PX)
-            horizontal.add(bottom);
-          if (Math.abs(activeTop - bottom) <= GUIDE_SNAP_PX)
-            horizontal.add(bottom);
-          if (Math.abs(activeBottom - top) <= GUIDE_SNAP_PX)
-            horizontal.add(top);
-          if (Math.abs(activeCenterY - centerY) <= GUIDE_SNAP_PX)
-            horizontal.add(centerY);
-        });
-
-      const nextGuides = {
-        vertical: Array.from(vertical),
-        horizontal: Array.from(horizontal),
-      };
-
-      if (data?.type === "canvas" && data.itemId && activeItem) {
-        let snappedX = x;
-        let snappedY = y;
-        let bestXDiff = GUIDE_SNAP_PX + 1;
-        let bestYDiff = GUIDE_SNAP_PX + 1;
-
-        visibleItems
-          .filter((item) => item.kind !== "mirror" && item.id !== data.itemId)
-          .forEach((item) => {
-            const left = item.x;
-            const right = item.x + item.width;
-            const centerX = item.x + item.width / 2;
-            const top = item.y;
-            const bottom = item.y + item.height;
-            const centerY = item.y + item.height / 2;
-
-            const candidatesX = [
-              { diff: Math.abs(activeLeft - left), value: left },
-              { diff: Math.abs(activeRight - right), value: right - activeWidth },
-              { diff: Math.abs(activeLeft - right), value: right },
-              { diff: Math.abs(activeRight - left), value: left - activeWidth },
-              { diff: Math.abs(activeCenterX - centerX), value: centerX - activeWidth / 2 },
-            ];
-
-            candidatesX.forEach((candidate) => {
-              if (candidate.diff <= GUIDE_SNAP_PX && candidate.diff < bestXDiff) {
-                bestXDiff = candidate.diff;
-                snappedX = candidate.value;
-              }
-            });
-
-            const candidatesY = [
-              { diff: Math.abs(activeTop - top), value: top },
-              { diff: Math.abs(activeBottom - bottom), value: bottom - activeHeight },
-              { diff: Math.abs(activeTop - bottom), value: bottom },
-              { diff: Math.abs(activeBottom - top), value: top - activeHeight },
-              { diff: Math.abs(activeCenterY - centerY), value: centerY - activeHeight / 2 },
-            ];
-
-            candidatesY.forEach((candidate) => {
-              if (candidate.diff <= GUIDE_SNAP_PX && candidate.diff < bestYDiff) {
-                bestYDiff = candidate.diff;
-                snappedY = candidate.value;
-              }
-            });
-          });
-
-        scheduleDragUpdate(
-          nextGuides,
-          { itemId: data.itemId, x: snappedX - x, y: snappedY - y },
-          { x: 0, y: 0 }
-        );
-      } else if (data?.type === "palette") {
-        if (paletteKind === "icon" || paletteKind === "toggle") {
-          scheduleDragUpdate(
+        if (hasDragArtifacts) {
+          flushDragUpdates(
             { vertical: [], horizontal: [] },
             { itemId: null, x: 0, y: 0 },
             { x: 0, y: 0 }
           );
-          return;
         }
-
-        let snappedX = x;
-        let snappedY = y;
-        let bestXDiff = GUIDE_SNAP_PX + 1;
-        let bestYDiff = GUIDE_SNAP_PX + 1;
-
-        visibleItems
-          .filter((item) => item.kind !== "mirror")
-          .forEach((item) => {
-            const left = item.x;
-            const right = item.x + item.width;
-            const centerX = item.x + item.width / 2;
-            const top = item.y;
-            const bottom = item.y + item.height;
-            const centerY = item.y + item.height / 2;
-
-            const candidatesX = [
-              { diff: Math.abs(activeLeft - left), value: left },
-              { diff: Math.abs(activeRight - right), value: right - activeWidth },
-              { diff: Math.abs(activeLeft - right), value: right },
-              { diff: Math.abs(activeRight - left), value: left - activeWidth },
-              { diff: Math.abs(activeCenterX - centerX), value: centerX - activeWidth / 2 },
-            ];
-
-            candidatesX.forEach((candidate) => {
-              if (candidate.diff <= GUIDE_SNAP_PX && candidate.diff < bestXDiff) {
-                bestXDiff = candidate.diff;
-                snappedX = candidate.value;
-              }
-            });
-
-            const candidatesY = [
-              { diff: Math.abs(activeTop - top), value: top },
-              { diff: Math.abs(activeBottom - bottom), value: bottom - activeHeight },
-              { diff: Math.abs(activeTop - bottom), value: bottom },
-              { diff: Math.abs(activeBottom - top), value: top - activeHeight },
-              { diff: Math.abs(activeCenterY - centerY), value: centerY - activeHeight / 2 },
-            ];
-
-            candidatesY.forEach((candidate) => {
-              if (candidate.diff <= GUIDE_SNAP_PX && candidate.diff < bestYDiff) {
-                bestYDiff = candidate.diff;
-                snappedY = candidate.value;
-              }
-            });
-          });
-
-        scheduleDragUpdate(
-          nextGuides,
-          { itemId: null, x: 0, y: 0 },
-          { x: snappedX - x, y: snappedY - y }
-        );
-      } else {
-        scheduleDragUpdate(
-          nextGuides,
-          { itemId: null, x: 0, y: 0 },
-          { x: 0, y: 0 }
-        );
+        return;
       }
+
+      const initialRect = event.active.rect.current.initial;
+      const translatedRect = event.active.rect.current.translated;
+
+      scheduleDragMove({
+        deltaX: event.delta.x,
+        deltaY: event.delta.y,
+        activeData: event.active.data.current as DragData | undefined,
+        initialRect: initialRect
+          ? {
+              left: initialRect.left,
+              top: initialRect.top,
+              width: initialRect.width,
+              height: initialRect.height,
+            }
+          : null,
+        translatedRect: translatedRect
+          ? { left: translatedRect.left, top: translatedRect.top }
+          : null,
+      });
     },
-    [
-      isAlignmentAssistEnabled,
-      isPreviewMode,
-      items,
-      palettePointerOffset.x,
-      palettePointerOffset.y,
-      scheduleDragUpdate,
-      visibleItems,
-    ]
+    [flushDragUpdates, isAlignmentAssistEnabled, isPreviewMode, scheduleDragMove]
   );
 
   const handleResizeStart = React.useCallback(
     (event: React.PointerEvent, item: CanvasItem) => {
       event.stopPropagation();
       event.preventDefault();
+      setIsInteractingWithCanvas(true);
+      const canvasRect = canvasRef.current?.getBoundingClientRect();
+      interactionCanvasSizeRef.current = canvasRect
+        ? { width: canvasRect.width, height: canvasRect.height }
+        : null;
+      resizeSnapLockRef.current = {
+        id: item.id,
+        mode: "resize",
+        x: null,
+        y: null,
+      };
       resizingRef.current = {
         id: item.id,
         startX: event.clientX,
@@ -2503,6 +2688,12 @@ export default function EditorPage() {
     (event: React.PointerEvent, item: CanvasItem, handle: "start" | "end") => {
       event.stopPropagation();
       event.preventDefault();
+      setIsInteractingWithCanvas(true);
+      const canvasRect = canvasRef.current?.getBoundingClientRect();
+      interactionCanvasSizeRef.current = canvasRect
+        ? { width: canvasRect.width, height: canvasRect.height }
+        : null;
+      resizeSnapLockRef.current = { id: null, mode: null, x: null, y: null };
       const startX = item.startX ?? item.x;
       const startY = item.startY ?? item.y;
       const endX = item.endX ?? item.x + item.width;
@@ -3212,6 +3403,10 @@ export default function EditorPage() {
   }, [backgroundImage, buildDraftPayload, sessionData?.user?.id]);
 
   React.useEffect(() => {
+    if (isInteractingWithCanvas) {
+      return;
+    }
+
     const snapshot = buildEditorSnapshot();
     const snapshotKey = JSON.stringify(snapshot);
 
@@ -3236,7 +3431,7 @@ export default function EditorPage() {
     historyIndexRef.current = nextHistory.length - 1;
     lastSnapshotKeyRef.current = snapshotKey;
     updateHistoryAvailability();
-  }, [buildEditorSnapshot, updateHistoryAvailability]);
+  }, [buildEditorSnapshot, isInteractingWithCanvas, updateHistoryAvailability]);
 
   React.useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -3339,6 +3534,7 @@ export default function EditorPage() {
   React.useEffect(() => {
     if (!sessionData?.user?.id) return;
     if (!hasRestoredRef.current || isRestoringRef.current) return;
+    if (isInteractingWithCanvas) return;
 
     const timer = window.setTimeout(() => {
       void persistDraft();
@@ -3349,6 +3545,7 @@ export default function EditorPage() {
     aspectHeight,
     aspectWidth,
     backgroundImage,
+    isInteractingWithCanvas,
     items,
     persistDraft,
     sessionData?.user?.id,
@@ -3548,38 +3745,84 @@ export default function EditorPage() {
   const visibleIcons = filteredIconNames.slice(startIndex, endIndex);
 
   React.useEffect(() => {
-    const handlePointerMove = (event: PointerEvent) => {
+    const processResizeFrame = (clientX: number, clientY: number) => {
+      const resolveSnapLock = (
+        rawEdge: number,
+        candidateEdge: number,
+        candidateDiff: number,
+        lockedEdge: number | null
+      ) => {
+        if (lockedEdge !== null && Math.abs(rawEdge - lockedEdge) <= SNAP_RELEASE_PX) {
+          return { value: lockedEdge, lock: lockedEdge };
+        }
+
+        if (candidateDiff <= GUIDE_SNAP_PX) {
+          return { value: candidateEdge, lock: candidateEdge };
+        }
+
+        return { value: rawEdge, lock: null };
+      };
+
       const resize = resizingRef.current;
       const mirror = mirrorHandleRef.current;
 
-      const canvasRect = canvasRef.current?.getBoundingClientRect();
-      if (!canvasRect) return;
+      if (!resize && !mirror) return;
+
+      const canvasSize =
+        interactionCanvasSizeRef.current ??
+        (() => {
+          const rect = canvasRef.current?.getBoundingClientRect();
+          if (!rect) return null;
+          const next = { width: rect.width, height: rect.height };
+          interactionCanvasSizeRef.current = next;
+          return next;
+        })();
+
+      if (!canvasSize) return;
 
       if (resize) {
-        const maxWidth = Math.max(64, canvasRect.width - resize.originX);
-        const maxHeight = Math.max(36, canvasRect.height - resize.originY);
+        const maxWidth = Math.max(64, canvasSize.width - resize.originX);
+        const maxHeight = Math.max(36, canvasSize.height - resize.originY);
 
         const rawWidth = Math.max(
           64,
-          Math.min(resize.startWidth + (event.clientX - resize.startX), maxWidth)
+          Math.min(resize.startWidth + (clientX - resize.startX), maxWidth)
         );
         const rawHeight = Math.max(
           36,
-          Math.min(
-            resize.startHeight + (event.clientY - resize.startY),
-            maxHeight
-          )
+          Math.min(resize.startHeight + (clientY - resize.startY), maxHeight)
         );
 
-        if (!isAlignmentAssistEnabled) {
-          setAlignmentGuides({ vertical: [], horizontal: [] });
-          setItems((prev) =>
-            prev.map((item) =>
-              item.id === resize.id
-                ? { ...item, width: rawWidth, height: rawHeight }
-                : item
-            )
-          );
+        if (!isAlignmentAssistEnabledRef.current) {
+          resizeSnapLockRef.current = {
+            id: resize.id,
+            mode: "resize",
+            x: null,
+            y: null,
+          };
+
+          if (
+            alignmentGuidesRef.current.vertical.length > 0 ||
+            alignmentGuidesRef.current.horizontal.length > 0
+          ) {
+            const emptyGuides = { vertical: [], horizontal: [] } as {
+              vertical: number[];
+              horizontal: number[];
+            };
+            alignmentGuidesRef.current = emptyGuides;
+            setAlignmentGuides(emptyGuides);
+          }
+
+          setItems((prev) => {
+            let didChange = false;
+            const next = prev.map((item) => {
+              if (item.id !== resize.id) return item;
+              if (item.width === rawWidth && item.height === rawHeight) return item;
+              didChange = true;
+              return { ...item, width: rawWidth, height: rawHeight };
+            });
+            return didChange ? next : prev;
+          });
           return;
         }
 
@@ -3596,7 +3839,7 @@ export default function EditorPage() {
         const vertical = new Set<number>();
         const horizontal = new Set<number>();
 
-        visibleItems
+        visibleItemsRef.current
           .filter((item) => item.id !== resize.id && item.kind !== "mirror")
           .forEach((item) => {
             const left = item.x;
@@ -3639,37 +3882,80 @@ export default function EditorPage() {
             });
           });
 
+        const existingLock = resizeSnapLockRef.current;
+        const lockedX =
+          existingLock.mode === "resize" && existingLock.id === resize.id
+            ? existingLock.x
+            : null;
+        const lockedY =
+          existingLock.mode === "resize" && existingLock.id === resize.id
+            ? existingLock.y
+            : null;
+        const resolvedRight = resolveSnapLock(
+          activeRight,
+          snappedRight,
+          bestXDiff,
+          lockedX
+        );
+        const resolvedBottom = resolveSnapLock(
+          activeBottom,
+          snappedBottom,
+          bestYDiff,
+          lockedY
+        );
+        resizeSnapLockRef.current = {
+          id: resize.id,
+          mode: "resize",
+          x: resolvedRight.lock,
+          y: resolvedBottom.lock,
+        };
+
         const nextWidth = Math.max(
           64,
-          Math.min(snappedRight - activeLeft, maxWidth)
+          Math.min(resolvedRight.value - activeLeft, maxWidth)
         );
         const nextHeight = Math.max(
           36,
-          Math.min(snappedBottom - activeTop, maxHeight)
+          Math.min(resolvedBottom.value - activeTop, maxHeight)
         );
 
-        setAlignmentGuides({
+        const nextGuides = {
           vertical: Array.from(vertical),
           horizontal: Array.from(horizontal),
-        });
+        };
 
-        setItems((prev) =>
-          prev.map((item) =>
-            item.id === resize.id
-              ? { ...item, width: nextWidth, height: nextHeight }
-              : item
+        if (
+          !areNumberArraysEqual(nextGuides.vertical, alignmentGuidesRef.current.vertical) ||
+          !areNumberArraysEqual(
+            nextGuides.horizontal,
+            alignmentGuidesRef.current.horizontal
           )
-        );
+        ) {
+          alignmentGuidesRef.current = nextGuides;
+          setAlignmentGuides(nextGuides);
+        }
+
+        setItems((prev) => {
+          let didChange = false;
+          const next = prev.map((item) => {
+            if (item.id !== resize.id) return item;
+            if (item.width === nextWidth && item.height === nextHeight) return item;
+            didChange = true;
+            return { ...item, width: nextWidth, height: nextHeight };
+          });
+          return didChange ? next : prev;
+        });
       }
 
       if (mirror) {
-        const dx = event.clientX - mirror.startX;
-        const dy = event.clientY - mirror.startY;
+        resizeSnapLockRef.current = { id: null, mode: null, x: null, y: null };
+        const dx = clientX - mirror.startX;
+        const dy = clientY - mirror.startY;
         const clamp = (value: number, min: number, max: number) =>
           Math.min(max, Math.max(min, value));
 
-        const maxX = canvasRect.width;
-        const maxY = canvasRect.height;
+        const maxX = canvasSize.width;
+        const maxY = canvasSize.height;
 
         let startX = mirror.originStartX;
         let startY = mirror.originStartY;
@@ -3701,29 +3987,59 @@ export default function EditorPage() {
         const nextWidth = Math.max(1, Math.abs(endX - startX));
         const nextHeight = Math.max(1, Math.abs(endY - startY));
 
-        setItems((prev) =>
-          prev.map((item) =>
-            item.id === mirror.id
-              ? {
-                  ...item,
-                  x: nextX,
-                  y: nextY,
-                  width: nextWidth,
-                  height: nextHeight,
-                  startX,
-                  startY,
-                  endX,
-                  endY,
-                }
-              : item
-          )
-        );
+        setItems((prev) => {
+          let didChange = false;
+          const next = prev.map((item) => {
+            if (item.id !== mirror.id) return item;
+            if (
+              item.x === nextX &&
+              item.y === nextY &&
+              item.width === nextWidth &&
+              item.height === nextHeight &&
+              (item.startX ?? item.x) === startX &&
+              (item.startY ?? item.y) === startY &&
+              (item.endX ?? item.x + item.width) === endX &&
+              (item.endY ?? item.y + item.height) === endY
+            ) {
+              return item;
+            }
+            didChange = true;
+            return {
+              ...item,
+              x: nextX,
+              y: nextY,
+              width: nextWidth,
+              height: nextHeight,
+              startX,
+              startY,
+              endX,
+              endY,
+            };
+          });
+          return didChange ? next : prev;
+        });
       }
+    };
+
+    const handlePointerMove = (event: PointerEvent) => {
+      resizeMoveSnapshotRef.current = { x: event.clientX, y: event.clientY };
+      if (resizeMoveRafRef.current !== null) return;
+
+      resizeMoveRafRef.current = window.requestAnimationFrame(() => {
+        resizeMoveRafRef.current = null;
+        const snapshot = resizeMoveSnapshotRef.current;
+        if (!snapshot) return;
+        resizeMoveSnapshotRef.current = null;
+        processResizeFrame(snapshot.x, snapshot.y);
+      });
     };
 
     const handlePointerUp = () => {
       resizingRef.current = null;
       mirrorHandleRef.current = null;
+      setIsInteractingWithCanvas(false);
+      resizeSnapLockRef.current = { id: null, mode: null, x: null, y: null };
+      interactionCanvasSizeRef.current = null;
       setAlignmentGuides({ vertical: [], horizontal: [] });
     };
 
@@ -3733,11 +4049,25 @@ export default function EditorPage() {
     return () => {
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerUp);
+      if (resizeMoveRafRef.current !== null) {
+        window.cancelAnimationFrame(resizeMoveRafRef.current);
+        resizeMoveRafRef.current = null;
+      }
+      resizeSnapLockRef.current = { id: null, mode: null, x: null, y: null };
+      interactionCanvasSizeRef.current = null;
     };
-  }, [isAlignmentAssistEnabled, items, visibleItems]);
+  }, []);
 
   const handleDragEnd = React.useCallback(
     (event: DragEndEvent) => {
+      setIsInteractingWithCanvas(false);
+      if (dragMoveRafRef.current !== null) {
+        window.cancelAnimationFrame(dragMoveRafRef.current);
+        dragMoveRafRef.current = null;
+      }
+      dragMoveSnapshotRef.current = null;
+      snapLockRef.current = { itemId: null, type: null, x: null, y: null };
+
       if (isPreviewMode) {
         setActiveType(null);
         setAlignmentGuides({ vertical: [], horizontal: [] });
@@ -4477,7 +4807,7 @@ export default function EditorPage() {
                         : undefined;
 
                     return item.kind === "mirror" ? (
-                      <CanvasMirrorLine
+                      <MemoCanvasMirrorLine
                         key={item.id}
                         item={item}
                         onHandleStart={handleMirrorHandleStart}
@@ -4486,7 +4816,7 @@ export default function EditorPage() {
                         isPreviewMode={isPreviewMode}
                       />
                     ) : item.kind === "cover" ? (
-                      <CanvasCover
+                      <MemoCanvasCover
                         key={item.id}
                         item={item}
                         onResizeStart={handleResizeStart}
@@ -4495,7 +4825,7 @@ export default function EditorPage() {
                         isPreviewMode={isPreviewMode}
                       />
                     ) : item.kind === "input" ? (
-                      <CanvasInput
+                      <MemoCanvasInput
                         key={item.id}
                         item={item}
                         onResizeStart={handleResizeStart}
@@ -4505,7 +4835,7 @@ export default function EditorPage() {
                         isPreviewMode={isPreviewMode}
                       />
                     ) : item.kind === "toggle" ? (
-                      <CanvasToggle
+                      <MemoCanvasToggle
                         key={item.id}
                         item={item}
                         onResizeStart={handleResizeStart}
@@ -4515,7 +4845,7 @@ export default function EditorPage() {
                         isPreviewMode={isPreviewMode}
                       />
                     ) : (
-                      <CanvasButton
+                      <MemoCanvasButton
                         key={item.id}
                         item={item}
                         onResizeStart={handleResizeStart}
