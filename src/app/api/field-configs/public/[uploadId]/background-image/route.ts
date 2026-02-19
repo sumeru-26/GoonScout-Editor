@@ -1,6 +1,13 @@
 import { NextResponse } from "next/server";
+import { sql } from "kysely";
 
-import { prisma } from "@/lib/prisma";
+import { db } from "@/lib/db";
+
+type PublicBackgroundImageRow = {
+  upload_id: string;
+  background_image: string | null;
+  updated_at: Date;
+};
 
 type RouteContext = {
   params: Promise<{ uploadId: string }>;
@@ -15,14 +22,17 @@ export async function GET(_: Request, context: RouteContext) {
       return NextResponse.json({ error: "Invalid upload id." }, { status: 400 });
     }
 
-    const config = await prisma.fieldConfig.findUnique({
-      where: { uploadId: normalizedUploadId },
-      select: {
-        uploadId: true,
-        backgroundImage: true,
-        updatedAt: true,
-      },
-    });
+    const result = await sql<PublicBackgroundImageRow>`
+      select
+        upload_id,
+        background_image,
+        updated_at
+      from public.field_configs
+      where upload_id = ${normalizedUploadId}::uuid
+      limit 1
+    `.execute(db);
+
+    const config = result.rows[0] ?? null;
 
     if (!config) {
       return NextResponse.json({ error: "Config not found." }, { status: 404 });
@@ -30,9 +40,9 @@ export async function GET(_: Request, context: RouteContext) {
 
     return NextResponse.json(
       {
-        uploadId: config.uploadId,
-        backgroundImage: config.backgroundImage,
-        updatedAt: config.updatedAt,
+        uploadId: config.upload_id,
+        backgroundImage: config.background_image,
+        updatedAt: config.updated_at,
       },
       { status: 200 }
     );
