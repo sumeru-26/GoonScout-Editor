@@ -45,7 +45,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { authClient } from "@/lib/auth-client";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 const BUTTON_SIZE = { width: 104, height: 44 } as const;
 const ICON_BUTTON_SIZE = { width: 40, height: 40 } as const;
@@ -131,6 +131,7 @@ type CanvasItem = {
   toggleTextAlign?: "left" | "center" | "right";
   toggleTextSize?: number;
   teamSide?: TeamSide;
+  increment?: number;
   swapRedSide?: "left" | "right";
   swapActiveSide?: "left" | "right";
   stageParentId?: string;
@@ -202,6 +203,8 @@ type TutorialStep = {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
+const normalizeTag = (value: string) => value.replace(/\s+/g, "").trim();
+
 const parsePersistedEditorState = (
   payload: unknown
 ): PersistedEditorState | null => {
@@ -250,6 +253,13 @@ const parseImportedEditorState = (
       ...restored,
       items: restored.items.map((item) => ({
         ...item,
+        tag: typeof item.tag === "string" ? normalizeTag(item.tag) : item.tag,
+        increment:
+          item.kind === "text" || item.kind === "icon"
+            ? typeof item.increment === "number" && Number.isFinite(item.increment)
+              ? item.increment
+              : 1
+            : undefined,
         teamSide:
           item.teamSide === "red" || item.teamSide === "blue"
             ? item.teamSide
@@ -305,7 +315,7 @@ const parseImportedEditorState = (
       value === "red" || value === "blue" ? value : undefined;
 
     const readTag = (value: unknown) =>
-      typeof value === "string" ? value.trim() : "";
+      typeof value === "string" ? normalizeTag(value) : "";
 
     const readStageParentTag = (value: unknown) =>
       typeof value === "string" ? value.trim() : "";
@@ -334,6 +344,10 @@ const parseImportedEditorState = (
         width,
         height,
         label: typeof data.text === "string" ? data.text : "Button",
+        increment:
+          typeof data.increment === "number" && Number.isFinite(data.increment)
+            ? data.increment
+            : 1,
         tag,
         teamSide: toTeamSide(data.teamSide),
       };
@@ -360,6 +374,10 @@ const parseImportedEditorState = (
         outlineColor:
           typeof data.outline === "string" ? data.outline : "#ffffff",
         fillColor: typeof data.fill === "string" ? data.fill : "transparent",
+        increment:
+          typeof data.increment === "number" && Number.isFinite(data.increment)
+            ? data.increment
+            : 1,
         tag,
         teamSide: toTeamSide(data.teamSide),
       };
@@ -1290,6 +1308,7 @@ const MemoCanvasButton = React.memo(
   (prev, next) =>
     prev.item === next.item &&
     prev.hasStages === next.hasStages &&
+    prev.onStageContextMenu === next.onStageContextMenu &&
     prev.isPreviewPressed === next.isPreviewPressed &&
     prev.isCustomSideLayoutsEnabled === next.isCustomSideLayoutsEnabled &&
     prev.visibleTeamSide === next.visibleTeamSide &&
@@ -1327,6 +1346,9 @@ const MemoCanvasToggle = React.memo(
 
 export default function EditorPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const requestedUploadId = searchParams.get("uploadId")?.trim() ?? "";
+  const shouldStartBlank = searchParams.get("new") === "1";
   const { data: sessionData } = authClient.useSession();
   const userName = sessionData?.user?.name ?? "Scout";
   const userImage = sessionData?.user?.image ?? null;
@@ -2141,12 +2163,13 @@ export default function EditorPage() {
   const handleSelectedTagChange = React.useCallback(
     (value: string) => {
       if (!selectedItemId) return;
+      const normalizedTag = normalizeTag(value);
       setItems((prev) =>
         prev.map((item) =>
           item.id === selectedItemId
             ? {
                 ...item,
-                tag: value,
+                tag: normalizedTag,
               }
             : item
         )
@@ -2216,6 +2239,24 @@ export default function EditorPage() {
             ? {
                 ...item,
                 fillColor: value,
+              }
+            : item
+        )
+      );
+    },
+    [selectedItemId]
+  );
+
+  const handleSelectedIncrementChange = React.useCallback(
+    (value: number) => {
+      if (!selectedItemId) return;
+      if (!Number.isFinite(value)) return;
+      setItems((prev) =>
+        prev.map((item) =>
+          item.id === selectedItemId && (item.kind === "text" || item.kind === "icon")
+            ? {
+                ...item,
+                increment: value,
               }
             : item
         )
@@ -2305,22 +2346,30 @@ export default function EditorPage() {
     );
   }, []);
 
-  const handleStartStaging = React.useCallback(() => {
-    if (!selectedItem) return;
-    if (selectedItem.kind !== "text" && selectedItem.kind !== "icon") return;
-    setStagingParentId(selectedItem.id);
+  const enterStagingForItemId = React.useCallback((itemId: string) => {
+    setStagingParentId(itemId);
     setPreviewStageParentId(null);
     setIsPreviewMode(false);
-    setSelectedItemId(selectedItem.id);
-  }, [selectedItem]);
+    setSelectedItemId(itemId);
+  }, []);
 
-  const handleEndStaging = React.useCallback(() => {
+  const stepOutOfStaging = React.useCallback(() => {
     setStagingParentId((current) => {
       if (!current) return null;
       const active = items.find((item) => item.id === current);
       return active?.stageParentId ?? null;
     });
   }, [items]);
+
+  const handleStartStaging = React.useCallback(() => {
+    if (!selectedItem) return;
+    if (selectedItem.kind !== "text" && selectedItem.kind !== "icon") return;
+    enterStagingForItemId(selectedItem.id);
+  }, [enterStagingForItemId, selectedItem]);
+
+  const handleEndStaging = React.useCallback(() => {
+    stepOutOfStaging();
+  }, [stepOutOfStaging]);
 
   const handleStageContextMenu = React.useCallback(
     (itemId: string) => {
@@ -2329,15 +2378,12 @@ export default function EditorPage() {
       if (target.kind !== "text" && target.kind !== "icon") return;
       if (!items.some((item) => item.stageParentId === itemId)) return;
       if (stagingParentId === itemId) {
-        setStagingParentId(target.stageParentId ?? null);
+        stepOutOfStaging();
         return;
       }
-      setStagingParentId(itemId);
-      setPreviewStageParentId(null);
-      setIsPreviewMode(false);
-      setSelectedItemId(itemId);
+      enterStagingForItemId(itemId);
     },
-    [items, stagingParentId]
+    [enterStagingForItemId, items, stagingParentId, stepOutOfStaging]
   );
 
   const handlePreviewStageToggle = React.useCallback((itemId: string) => {
@@ -2814,7 +2860,7 @@ export default function EditorPage() {
   const handleSaveLabel = React.useCallback(() => {
     if (!editingId) return;
     const trimmed = labelDraft.trim();
-    const tag = tagDraft.trim();
+    const tag = normalizeTag(tagDraft);
     if (!trimmed) return;
     setItems((prev) =>
       prev.map((entry) =>
@@ -2828,7 +2874,7 @@ export default function EditorPage() {
     if (!inputEditingId) return;
     const label = inputLabelDraft.trim();
     const placeholder = inputPlaceholderDraft.trim();
-    const tag = inputTagDraft.trim();
+    const tag = normalizeTag(inputTagDraft);
     if (!label) return;
     setItems((prev) =>
       prev.map((entry) =>
@@ -2845,7 +2891,7 @@ export default function EditorPage() {
     if (!canvasRect) return null;
 
     const tagById = new Map(
-      items.map((item) => [item.id, (item.tag ?? "").trim()] as const)
+      items.map((item) => [item.id, normalizeTag(item.tag ?? "")] as const)
     );
     const stagedParentIds = new Set(
       items
@@ -2856,10 +2902,15 @@ export default function EditorPage() {
     const taggedItems = items.filter((item) =>
       ["text", "icon", "input", "toggle"].includes(item.kind)
     );
-    const tags = taggedItems.map((item) => (item.tag ?? "").trim());
+    const tags = taggedItems.map((item) => normalizeTag(item.tag ?? ""));
 
     if (tags.some((tag) => tag.length === 0)) {
       toast.error("Make sure to set all tags!");
+      return null;
+    }
+
+    if (tags.some((tag) => /\s/.test(tag))) {
+      toast.error("Tags cannot contain spaces.");
       return null;
     }
 
@@ -2901,6 +2952,7 @@ export default function EditorPage() {
             button: {
               tag: item.tag ?? "",
               teamSide: item.teamSide,
+              increment: item.increment ?? 1,
               x: scaleX(centerItemX),
               y: scaleY(centerItemY),
               text: item.label,
@@ -2915,6 +2967,7 @@ export default function EditorPage() {
             "icon-button": {
               tag: item.tag ?? "",
               teamSide: item.teamSide,
+              increment: item.increment ?? 1,
               x: scaleX(centerItemX),
               y: scaleY(centerItemY),
               icon: item.iconName ?? "",
@@ -3079,6 +3132,7 @@ export default function EditorPage() {
           payload: uploadPayload,
           editorState,
           backgroundImage,
+          uploadId: latestUploadId,
           isDraft: false,
         }),
       });
@@ -3103,6 +3157,7 @@ export default function EditorPage() {
     editorTeamSide,
     isCustomSideLayoutsEnabled,
     items,
+    latestUploadId,
     previewTeamSide,
     uploadPayload,
   ]);
@@ -3485,6 +3540,76 @@ export default function EditorPage() {
 
     const restore = async () => {
       try {
+        if (shouldStartBlank) {
+          if (!isCancelled) {
+            setItems([]);
+            setAspectWidth("16");
+            setAspectHeight("9");
+            setAspectWidthDraft("16");
+            setAspectHeightDraft("9");
+            setBackgroundImage(null);
+            setIsCustomSideLayoutsEnabled(false);
+            setEditorTeamSide("red");
+            setPreviewTeamSide("red");
+            setSelectedItemId(null);
+            setStagingParentId(null);
+            setPreviewStageParentId(null);
+            setIsPreviewMode(false);
+            setAutosaveUpdatedAt(null);
+            setLatestUploadId(null);
+            setAutosaveState("idle");
+          }
+          return;
+        }
+
+        if (requestedUploadId) {
+          const selectedResponse = await fetch(
+            `/api/field-configs/public/${encodeURIComponent(requestedUploadId)}`,
+            {
+              method: "GET",
+              headers: { "Content-Type": "application/json" },
+            }
+          );
+
+          if (!selectedResponse.ok) {
+            hasRestoredRef.current = true;
+            return;
+          }
+
+          const selectedResult = (await selectedResponse.json()) as {
+            config?: { payload?: unknown; updatedAt?: string; uploadId?: string } | null;
+          };
+
+          if (selectedResult.config?.payload) {
+            const nextState = parseImportedEditorState(
+              selectedResult.config.payload,
+              fieldWidth,
+              FIELD_HEIGHT
+            );
+
+            if (!isCancelled) {
+              setItems(nextState.items);
+              setAspectWidth(nextState.aspectWidth || "16");
+              setAspectHeight(nextState.aspectHeight || "9");
+              setAspectWidthDraft(nextState.aspectWidth || "16");
+              setAspectHeightDraft(nextState.aspectHeight || "9");
+              setBackgroundImage(nextState.backgroundImage ?? null);
+              setIsCustomSideLayoutsEnabled(Boolean(nextState.useCustomSideLayouts));
+              setEditorTeamSide(nextState.editorTeamSide ?? "red");
+              setPreviewTeamSide(nextState.previewTeamSide ?? "red");
+              setSelectedItemId(null);
+              setStagingParentId(null);
+              setPreviewStageParentId(null);
+              setIsPreviewMode(false);
+              setAutosaveUpdatedAt(selectedResult.config?.updatedAt ?? null);
+              setLatestUploadId(selectedResult.config?.uploadId ?? requestedUploadId);
+              setAutosaveState("saved");
+            }
+          }
+
+          return;
+        }
+
         const response = await fetch("/api/field-configs", {
           method: "GET",
           headers: { "Content-Type": "application/json" },
@@ -3529,7 +3654,7 @@ export default function EditorPage() {
     return () => {
       isCancelled = true;
     };
-  }, [sessionData?.user?.id]);
+  }, [fieldWidth, requestedUploadId, sessionData?.user?.id, shouldStartBlank]);
 
   React.useEffect(() => {
     if (!sessionData?.user?.id) return;
@@ -3715,11 +3840,14 @@ export default function EditorPage() {
 
   const handleIconTagChange = React.useCallback(
     (value: string) => {
-      setIconTagDraft(value);
+      const normalizedTag = normalizeTag(value);
+      setIconTagDraft(normalizedTag);
       const id = iconEditingIdRef.current;
       if (!id) return;
       setItems((prev) =>
-        prev.map((item) => (item.id === id ? { ...item, tag: value } : item))
+        prev.map((item) =>
+          item.id === id ? { ...item, tag: normalizedTag } : item
+        )
       );
     },
     [setItems]
@@ -4382,6 +4510,7 @@ export default function EditorPage() {
             iconName: kind === "icon" ? "Bot" : undefined,
             outlineColor: kind === "icon" ? "#ffffff" : undefined,
             fillColor: kind === "icon" ? "transparent" : undefined,
+            increment: kind === "text" || kind === "icon" ? 1 : undefined,
             startX: kind === "mirror" ? x : undefined,
             startY: kind === "mirror" ? y : undefined,
             endX: kind === "mirror" ? x : undefined,
@@ -5025,6 +5154,25 @@ export default function EditorPage() {
                 </div>
 
                 <div className="grid gap-2">
+                  <Label htmlFor="icon-increment-side" className="text-sm text-white/80">
+                    Increment
+                  </Label>
+                  <Input
+                    id="icon-increment-side"
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={selectedItem.increment ?? 1}
+                    onChange={(event) =>
+                      handleSelectedIncrementChange(
+                        Math.max(1, Number(event.target.value) || 1)
+                      )
+                    }
+                    className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
+                  />
+                </div>
+
+                <div className="grid gap-2">
                   <Label className="text-sm text-white/80">Staging</Label>
                   <Button
                     ref={stagingButtonRef}
@@ -5266,6 +5414,26 @@ export default function EditorPage() {
                     className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35 disabled:opacity-50"
                   />
                 </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="button-increment" className="text-sm text-white/80">
+                    Increment
+                  </Label>
+                  <Input
+                    id="button-increment"
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={selectedItem?.kind === "text" ? (selectedItem.increment ?? 1) : 1}
+                    onChange={(event) =>
+                      handleSelectedIncrementChange(
+                        Math.max(1, Number(event.target.value) || 1)
+                      )
+                    }
+                    disabled={selectedItem?.kind !== "text"}
+                    className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35 disabled:opacity-50"
+                  />
+                </div>
+
                 <div className="grid gap-2">
                   <Label className="text-sm text-white/80">Staging</Label>
                   <Button
@@ -5532,7 +5700,7 @@ export default function EditorPage() {
                 <Input
                   id="button-tag"
                   value={tagDraft}
-                  onChange={(event) => setTagDraft(event.target.value)}
+                  onChange={(event) => setTagDraft(normalizeTag(event.target.value))}
                   placeholder="Tag for data"
                 />
               </div>
@@ -5574,7 +5742,9 @@ export default function EditorPage() {
                 <Input
                   id="input-tag"
                   value={inputTagDraft}
-                  onChange={(event) => setInputTagDraft(event.target.value)}
+                  onChange={(event) =>
+                    setInputTagDraft(normalizeTag(event.target.value))
+                  }
                   placeholder="Optional tag"
                 />
               </div>

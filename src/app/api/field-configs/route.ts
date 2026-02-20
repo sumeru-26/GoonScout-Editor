@@ -51,6 +51,48 @@ const buildDraftFingerprint = (input: {
 const buildShareCode8 = () =>
   `${Math.floor(Math.random() * 90_000_000) + 10_000_000}`;
 
+const ensureProjectsTable = async () => {
+  await sql`
+    create table if not exists public.project_manager_entries (
+      upload_id uuid primary key references public.field_configs(upload_id) on delete cascade,
+      user_id text not null,
+      name text not null,
+      status varchar(16) not null default 'active',
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now(),
+      constraint project_manager_entries_status_chk check (status in ('active', 'archive', 'trash'))
+    )
+  `.execute(db);
+
+  await sql`
+    create index if not exists project_manager_entries_user_status_updated_idx
+      on public.project_manager_entries (user_id, status, updated_at desc)
+  `.execute(db);
+};
+
+const upsertProjectEntry = async (input: {
+  uploadId: string;
+  userId: string;
+  contentHash: string;
+}) => {
+  await ensureProjectsTable();
+
+  await sql`
+    insert into public.project_manager_entries (upload_id, user_id, name, status)
+    values (
+      ${input.uploadId}::uuid,
+      ${input.userId},
+      concat('Project ', right(${input.contentHash}, 4)),
+      'active'
+    )
+    on conflict (upload_id) do update
+    set
+      user_id = excluded.user_id,
+      status = 'active',
+      updated_at = now()
+  `.execute(db);
+};
+
 const selectLatestByUserAndDraft = async (input: {
   userId: string;
   isDraft: boolean;
@@ -91,6 +133,38 @@ const updateFieldConfigDraft = async (input: {
       is_draft = true,
       updated_at = now()
     where id = ${input.id}::uuid
+    returning
+      id,
+      upload_id,
+      user_id,
+      payload,
+      background_image,
+      content_hash,
+      is_draft,
+      created_at,
+      updated_at
+  `.execute(db);
+
+  return result.rows[0] ?? null;
+};
+
+const updateFinalFieldConfigByUploadId = async (input: {
+  userId: string;
+  uploadId: string;
+  payload: unknown;
+  backgroundImage: string | null;
+}) => {
+  const payloadJson = JSON.stringify(input.payload);
+
+  const result = await sql<FieldConfigRow>`
+    update public.field_configs
+    set
+      payload = ${payloadJson}::jsonb,
+      background_image = ${input.backgroundImage},
+      is_draft = false,
+      updated_at = now()
+    where upload_id = ${input.uploadId}::uuid
+      and user_id = ${input.userId}
     returning
       id,
       upload_id,
@@ -192,6 +266,8 @@ export async function POST(request: Request) {
     const editorState = body?.editorState ?? null;
     const backgroundImage =
       typeof body?.backgroundImage === "string" ? body.backgroundImage : null;
+    const requestedUploadId =
+      typeof body?.uploadId === "string" ? body.uploadId.trim() : "";
     const isDraft = Boolean(body?.isDraft ?? true);
 
     if (payload === undefined) {
@@ -282,11 +358,28 @@ export async function POST(request: Request) {
       );
     }
 
-    const created = await createFieldConfigWithRetry({
-      userId,
-      payload,
-      backgroundImage,
-      isDraft: false,
+    const updatedExisting = requestedUploadId
+      ? await updateFinalFieldConfigByUploadId({
+          userId,
+          uploadId: requestedUploadId,
+          payload,
+          backgroundImage,
+        })
+      : null;
+
+    const created =
+      updatedExisting ??
+      (await createFieldConfigWithRetry({
+        userId,
+        payload,
+        backgroundImage,
+        isDraft: false,
+      }));
+
+    await upsertProjectEntry({
+      uploadId: created.upload_id,
+      userId: created.user_id,
+      contentHash: created.content_hash,
     });
 
     return NextResponse.json(

@@ -23,7 +23,7 @@ export default function SignupPage() {
     setError(null);
     const { error: signInError } = await authClient.signIn.social({
       provider,
-      callbackURL: "/editor",
+      callbackURL: "/projectManager",
     });
     if (signInError) {
       setError(signInError.message);
