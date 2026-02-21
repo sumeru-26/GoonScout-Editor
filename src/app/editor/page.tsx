@@ -191,6 +191,9 @@ const getDefaultLabelForKind = (kind: AssetKind) =>
                         ? "Log"
                         : "Button";
 
+                  const isMassDragExcludedKind = (kind: AssetKind) =>
+                    kind === "cover" || kind === "mirror";
+
 type DragType = "palette" | "canvas";
 
 type DragData = {
@@ -1218,7 +1221,7 @@ function CanvasButton({
   onEditLabel: (item: CanvasItem) => void;
   onSwapSides: () => void;
   onPreviewButtonAction: (item: CanvasItem) => void;
-  onSelect: (itemId: string) => void;
+  onSelect: (itemId: string, options?: { append?: boolean }) => void;
   onPreviewPressStart: (itemId: string) => void;
   onPreviewPressEnd: (itemId: string) => void;
   onPreviewStageToggle: (itemId: string) => void;
@@ -1273,9 +1276,9 @@ function CanvasButton({
           ? "scale-[0.97] ring-2 ring-sky-300/70 !bg-slate-800"
           : ""
       }`}
-      onPointerDown={() => {
+      onPointerDown={(event) => {
         if (!isPreviewMode) {
-          onSelect(item.id);
+          onSelect(item.id, { append: event.button === 2 });
           return;
         }
         onPreviewPressStart(item.id);
@@ -1294,7 +1297,6 @@ function CanvasButton({
       }}
       onClick={() => {
         if (!isPreviewMode) {
-          onSelect(item.id);
           if (item.kind === "icon") {
             onEditLabel(item);
           }
@@ -1314,17 +1316,18 @@ function CanvasButton({
       }}
       onContextMenu={(event) => {
         if (isPreviewMode) return;
+        event.preventDefault();
+        onSelect(item.id, { append: true });
         if (item.kind === "swap") {
-          event.preventDefault();
           onSwapSides();
           return;
         }
         if (!hasStages) return;
-        event.preventDefault();
         onStageContextMenu(item.id);
       }}
       {...attributes}
       {...listeners}
+      data-canvas-item="true"
       data-stage-root={hasStages ? "true" : undefined}
       type="button"
       aria-label={item.kind === "icon" ? item.label : undefined}
@@ -1385,7 +1388,7 @@ function CanvasMirrorLine({
     item: CanvasItem,
     handle: "start" | "end"
   ) => void;
-  onSelect: (itemId: string) => void;
+  onSelect: (itemId: string, options?: { append?: boolean }) => void;
   snapOffset?: { x: number; y: number };
   isPreviewMode?: boolean;
 }) {
@@ -1424,11 +1427,17 @@ function CanvasMirrorLine({
       ref={setNodeRef}
       style={style}
       className="absolute"
-      onPointerDown={() => {
-        if (!isPreviewMode) onSelect(item.id);
+      onPointerDown={(event) => {
+        if (isPreviewMode || event.button === 2) return;
+        onSelect(item.id);
+      }}
+      onContextMenu={(event) => {
+        if (isPreviewMode) return;
+        event.preventDefault();
       }}
       {...attributes}
       {...listeners}
+      data-canvas-item="true"
     >
       <svg
         className="absolute left-0 top-0 overflow-visible"
@@ -1476,7 +1485,7 @@ function CanvasCover({
 }: {
   item: CanvasItem;
   onResizeStart: (event: React.PointerEvent, item: CanvasItem) => void;
-  onSelect: (itemId: string) => void;
+  onSelect: (itemId: string, options?: { append?: boolean }) => void;
   snapOffset?: { x: number; y: number };
   isPreviewMode?: boolean;
 }) {
@@ -1503,11 +1512,18 @@ function CanvasCover({
           ? "bg-slate-900 transition-all duration-150 ease-out"
           : "bg-white/5 !transition-none"
       }`}
-      onPointerDown={() => {
-        if (!isPreviewMode) onSelect(item.id);
+      onPointerDown={(event) => {
+        if (isPreviewMode || event.button === 2) return;
+        onSelect(item.id);
+      }}
+      onContextMenu={(event) => {
+        if (isPreviewMode) return;
+        event.preventDefault();
       }}
       {...attributes}
       {...listeners}
+      data-canvas-item="true"
+      data-canvas-kind="cover"
     >
       {!isPreviewMode ? (
         <>
@@ -1539,7 +1555,7 @@ function CanvasInput({
   onResizeStart: (event: React.PointerEvent, item: CanvasItem) => void;
   onEditInput: (item: CanvasItem) => void;
   onPreviewValueChange: (item: CanvasItem, value: string) => void;
-  onSelect: (itemId: string) => void;
+  onSelect: (itemId: string, options?: { append?: boolean }) => void;
   previewValue: string;
   snapOffset?: { x: number; y: number };
   isPreviewMode?: boolean;
@@ -1565,16 +1581,21 @@ function CanvasInput({
       className={`group absolute flex flex-col gap-2 ${
         isPreviewMode ? "transition-all duration-150 ease-out" : "!transition-none"
       }`}
-      onPointerDown={() => {
-        if (!isPreviewMode) onSelect(item.id);
+      onPointerDown={(event) => {
+        if (!isPreviewMode) onSelect(item.id, { append: event.button === 2 });
+      }}
+      onContextMenu={(event) => {
+        if (isPreviewMode) return;
+        event.preventDefault();
+        onSelect(item.id, { append: true });
       }}
       onClick={() => {
         if (isPreviewMode) return;
-        onSelect(item.id);
         onEditInput(item);
       }}
       {...attributes}
       {...listeners}
+      data-canvas-item="true"
     >
       <Label className="text-xs text-white/80">{item.label}</Label>
       <Input
@@ -1608,7 +1629,7 @@ function CanvasLog({
 }: {
   item: CanvasItem;
   onResizeStart: (event: React.PointerEvent, item: CanvasItem) => void;
-  onSelect: (itemId: string) => void;
+  onSelect: (itemId: string, options?: { append?: boolean }) => void;
   logText: string;
   snapOffset?: { x: number; y: number };
   isPreviewMode?: boolean;
@@ -1634,11 +1655,17 @@ function CanvasLog({
       className={`group absolute rounded-md border border-white/15 bg-slate-900/90 p-2 ${
         isPreviewMode ? "transition-all duration-150 ease-out" : "!transition-none"
       }`}
-      onPointerDown={() => {
-        if (!isPreviewMode) onSelect(item.id);
+      onPointerDown={(event) => {
+        if (!isPreviewMode) onSelect(item.id, { append: event.button === 2 });
+      }}
+      onContextMenu={(event) => {
+        if (isPreviewMode) return;
+        event.preventDefault();
+        onSelect(item.id, { append: true });
       }}
       {...attributes}
       {...listeners}
+      data-canvas-item="true"
     >
       <Label className="mb-1 block text-xs text-white/80">{item.label || "Log"}</Label>
       <div className="h-[calc(100%-18px)] overflow-auto rounded border border-white/10 bg-slate-950/90 p-2 text-[11px] leading-snug text-white/80">
@@ -1667,7 +1694,7 @@ function CanvasToggle({
 }: {
   item: CanvasItem;
   onResizeStart: (event: React.PointerEvent, item: CanvasItem) => void;
-  onSelect: (itemId: string) => void;
+  onSelect: (itemId: string, options?: { append?: boolean }) => void;
   onToggle: (itemId: string) => void;
   snapOffset?: { x: number; y: number };
   isPreviewMode?: boolean;
@@ -1705,17 +1732,22 @@ function CanvasToggle({
       className={`group absolute ${
         isPreviewMode ? "transition-all duration-150 ease-out" : "!transition-none"
       }`}
-      onPointerDown={() => {
-        if (!isPreviewMode) onSelect(item.id);
+      onPointerDown={(event) => {
+        if (!isPreviewMode) onSelect(item.id, { append: event.button === 2 });
+      }}
+      onContextMenu={(event) => {
+        if (isPreviewMode) return;
+        event.preventDefault();
+        onSelect(item.id, { append: true });
       }}
       onClick={() => {
-        onSelect(item.id);
         if (isPreviewMode) {
           onToggle(item.id);
         }
       }}
       {...attributes}
       {...listeners}
+      data-canvas-item="true"
     >
       {showLabel ? (
         <Label
@@ -1871,6 +1903,9 @@ export default function EditorPage() {
   >({});
   const [previewLogText, setPreviewLogText] = React.useState("");
   const [selectedItemId, setSelectedItemId] = React.useState<string | null>(null);
+  const [selectedItemIds, setSelectedItemIds] = React.useState<string[]>([]);
+  const [isMassSelectionActive, setIsMassSelectionActive] =
+    React.useState(false);
   const [isTutorialOpen, setIsTutorialOpen] = React.useState(false);
   const [tutorialStepIndex, setTutorialStepIndex] = React.useState(0);
   const [tutorialTargetRect, setTutorialTargetRect] = React.useState<DOMRect | null>(
@@ -1981,6 +2016,7 @@ export default function EditorPage() {
   const paletteSnapOffsetRef = React.useRef({ x: 0, y: 0 });
   const dragMoveSnapshotRef = React.useRef<DragMoveSnapshot | null>(null);
   const dragMoveRafRef = React.useRef<number | null>(null);
+  const dragSelectionIdsRef = React.useRef<string[]>([]);
 
   React.useEffect(() => {
     alignmentGuidesRef.current = alignmentGuides;
@@ -2091,6 +2127,78 @@ export default function EditorPage() {
     );
     return [...bottomItems, ...topItems];
   }, [visibleItems]);
+
+  const selectedItemIdSet = React.useMemo(
+    () => new Set(selectedItemIds),
+    [selectedItemIds]
+  );
+
+  const selectedVisibleItems = React.useMemo(
+    () => layeredVisibleItems.filter((item) => selectedItemIdSet.has(item.id)),
+    [layeredVisibleItems, selectedItemIdSet]
+  );
+
+  const selectedGroupBounds = React.useMemo(() => {
+    if (selectedVisibleItems.length === 0) return null;
+
+    let minX = Number.POSITIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+
+    selectedVisibleItems.forEach((item) => {
+      minX = Math.min(minX, item.x);
+      minY = Math.min(minY, item.y);
+      maxX = Math.max(maxX, item.x + item.width);
+      maxY = Math.max(maxY, item.y + item.height);
+    });
+
+    return {
+      x: minX,
+      y: minY,
+      width: Math.max(1, maxX - minX),
+      height: Math.max(1, maxY - minY),
+    };
+  }, [selectedVisibleItems]);
+
+  const handleCanvasItemSelect = React.useCallback(
+    (itemId: string, options?: { append?: boolean }) => {
+      const append = Boolean(options?.append);
+      const targetItem = items.find((item) => item.id === itemId);
+
+      if (append) {
+        if (!targetItem || isMassDragExcludedKind(targetItem.kind)) {
+          return;
+        }
+
+        setIsMassSelectionActive(true);
+        setSelectedItemIds((prev) =>
+          [
+            ...prev.filter((selectedId) => {
+              const selectedItem = items.find((item) => item.id === selectedId);
+              return selectedItem
+                ? !isMassDragExcludedKind(selectedItem.kind)
+                : false;
+            }),
+            itemId,
+          ].filter((id, index, list) => list.indexOf(id) === index)
+        );
+        setSelectedItemId(itemId);
+        return;
+      }
+
+      if (selectedItemIds.length > 1 && selectedItemIds.includes(itemId)) {
+        setIsMassSelectionActive(true);
+        setSelectedItemId(itemId);
+        return;
+      }
+
+      setIsMassSelectionActive(false);
+      setSelectedItemIds([itemId]);
+      setSelectedItemId(itemId);
+    },
+    [items, selectedItemIds]
+  );
 
   const visibleItemsRef = React.useRef<CanvasItem[]>(visibleItems);
   const isAlignmentAssistEnabledRef = React.useRef(isAlignmentAssistEnabled);
@@ -3057,6 +3165,12 @@ export default function EditorPage() {
       }
 
       if (data?.type === "canvas" && data.itemId) {
+        const selectedIds =
+          selectedItemIdSet.has(data.itemId) && selectedItemIds.length > 1
+            ? selectedItemIds
+            : [data.itemId];
+        dragSelectionIdsRef.current = selectedIds;
+        setSelectedItemIds(selectedIds);
         setSelectedItemId(data.itemId);
         const currentItem = items.find((item) => item.id === data.itemId);
         setActiveSize(
@@ -3070,6 +3184,7 @@ export default function EditorPage() {
         setActiveOutlineColor(currentItem?.outlineColor);
         setActiveFillColor(currentItem?.fillColor);
       } else if (data?.type === "palette") {
+        dragSelectionIdsRef.current = [];
         const nextKind = data.assetKind ?? "text";
         const targetSize = getAssetSize(nextKind);
         setActiveKind(nextKind);
@@ -3127,6 +3242,7 @@ export default function EditorPage() {
           });
         }
       } else {
+        dragSelectionIdsRef.current = [];
         setActiveSize(BUTTON_SIZE);
         setActiveLabel("Button");
         setActiveKind("text");
@@ -3136,7 +3252,7 @@ export default function EditorPage() {
         setPalettePointerOffset({ x: 0, y: 0 });
       }
     },
-    [isPreviewMode, items]
+    [isPreviewMode, items, selectedItemIdSet, selectedItemIds]
   );
 
   const handleDragMove = React.useCallback(
@@ -3326,19 +3442,15 @@ export default function EditorPage() {
     );
   }, [editorTeamSide, isCustomSideLayoutsEnabled, isPreviewMode, items, previewTeamSide]);
 
-  const handleEditLabel = React.useCallback((item: CanvasItem) => {
-    if (item.kind === "icon") {
+  const handleEditLabel = React.useCallback(
+    (item: CanvasItem) => {
+      if (!selectedItemIdSet.has(item.id)) {
+        setSelectedItemIds([item.id]);
+      }
       setSelectedItemId(item.id);
-      return;
-    }
-
-    if (item.kind === "input") {
-      setSelectedItemId(item.id);
-      return;
-    }
-
-    setSelectedItemId(item.id);
-  }, []);
+    },
+    [selectedItemIdSet]
+  );
 
   const handleSaveLabel = React.useCallback(() => {
     if (!editingId) return;
@@ -3718,6 +3830,7 @@ export default function EditorPage() {
       setEditorTeamSide(nextState.editorTeamSide ?? "red");
       setPreviewTeamSide(nextState.previewTeamSide ?? "red");
       setSelectedItemId(null);
+      setSelectedItemIds([]);
       setStagingParentId(null);
       setPreviewStageParentId(null);
       setIsPreviewMode(false);
@@ -3880,6 +3993,7 @@ export default function EditorPage() {
 
       setItems(nextItems);
       if (selectedItemId && !remainingIds.has(selectedItemId)) {
+        setSelectedItemIds([]);
         setSelectedItemId(null);
       }
       if (stagingParentId && !remainingIds.has(stagingParentId)) {
@@ -4985,6 +5099,7 @@ export default function EditorPage() {
         setPalettePointerOffset({ x: 0, y: 0 });
         palettePointerStartRef.current = null;
         dragStartPointerRef.current = null;
+        dragSelectionIdsRef.current = [];
         return;
       }
 
@@ -4999,6 +5114,7 @@ export default function EditorPage() {
         setPalettePointerOffset({ x: 0, y: 0 });
         palettePointerStartRef.current = null;
         dragStartPointerRef.current = null;
+        dragSelectionIdsRef.current = [];
         return;
       }
 
@@ -5024,11 +5140,20 @@ export default function EditorPage() {
         : false;
 
       if (data?.type === "canvas" && data.itemId && isInsideAssets) {
+        const draggedIds = dragSelectionIdsRef.current.includes(data.itemId)
+          ? dragSelectionIdsRef.current
+          : [data.itemId];
+        const draggedSet = new Set(draggedIds);
+
         setItems((prev) =>
           prev.filter(
-            (item) => item.id !== data.itemId && item.stageParentId !== data.itemId
+            (item) =>
+              !draggedSet.has(item.id) &&
+              !(item.stageParentId && draggedSet.has(item.stageParentId))
           )
         );
+        setSelectedItemIds([]);
+        setSelectedItemId(null);
         setActiveType(null);
         setAlignmentGuides({ vertical: [], horizontal: [] });
         setDragSnapOffset({ itemId: null, x: 0, y: 0 });
@@ -5036,6 +5161,7 @@ export default function EditorPage() {
         setPalettePointerOffset({ x: 0, y: 0 });
         palettePointerStartRef.current = null;
         dragStartPointerRef.current = null;
+        dragSelectionIdsRef.current = [];
         return;
       }
 
@@ -5053,6 +5179,7 @@ export default function EditorPage() {
         setPalettePointerOffset({ x: 0, y: 0 });
         palettePointerStartRef.current = null;
         dragStartPointerRef.current = null;
+        dragSelectionIdsRef.current = [];
         return;
       }
 
@@ -5127,33 +5254,87 @@ export default function EditorPage() {
       };
 
       if (data?.type === "canvas" && data.itemId) {
+        const draggedIds = dragSelectionIdsRef.current.includes(data.itemId)
+          ? dragSelectionIdsRef.current
+          : [data.itemId];
+        const draggedSet = new Set(draggedIds);
         const adjustedX = x + (dragSnapOffset.itemId === data.itemId ? dragSnapOffset.x : 0);
         const adjustedY = y + (dragSnapOffset.itemId === data.itemId ? dragSnapOffset.y : 0);
 
-        setItems((prev) =>
-          prev.map((item) => {
-            if (item.id !== data.itemId) return item;
+        setItems((prev) => {
+          const draggedItem = prev.find((entry) => entry.id === data.itemId);
+          if (!draggedItem) return prev;
+
+          if (draggedIds.length <= 1) {
+            return prev.map((item) => {
+              if (item.id !== data.itemId) return item;
+              if (item.kind !== "mirror") {
+                const snapped = snapToGuides(adjustedX, adjustedY);
+                return { ...item, x: snapped.x, y: snapped.y };
+              }
+              const dx = adjustedX - item.x;
+              const dy = adjustedY - item.y;
+              const startX = (item.startX ?? item.x) + dx;
+              const startY = (item.startY ?? item.y) + dy;
+              const endX = (item.endX ?? item.x + item.width) + dx;
+              const endY = (item.endY ?? item.y + item.height) + dy;
+              return {
+                ...item,
+                x: adjustedX,
+                y: adjustedY,
+                startX,
+                startY,
+                endX,
+                endY,
+              };
+            });
+          }
+
+          const draggedTarget =
+            draggedItem.kind === "mirror"
+              ? { x: adjustedX, y: adjustedY }
+              : snapToGuides(adjustedX, adjustedY);
+          const deltaX = draggedTarget.x - draggedItem.x;
+          const deltaY = draggedTarget.y - draggedItem.y;
+
+          return prev.map((item) => {
+            if (!draggedSet.has(item.id)) return item;
+
+            const nextX = Math.max(
+              0,
+              Math.min(item.x + deltaX, canvasRect.width - item.width)
+            );
+            const nextY = Math.max(
+              0,
+              Math.min(item.y + deltaY, canvasRect.height - item.height)
+            );
+            const appliedDX = nextX - item.x;
+            const appliedDY = nextY - item.y;
+
             if (item.kind !== "mirror") {
-              const snapped = snapToGuides(adjustedX, adjustedY);
-              return { ...item, x: snapped.x, y: snapped.y };
+              return {
+                ...item,
+                x: nextX,
+                y: nextY,
+              };
             }
-            const dx = adjustedX - item.x;
-            const dy = adjustedY - item.y;
-            const startX = (item.startX ?? item.x) + dx;
-            const startY = (item.startY ?? item.y) + dy;
-            const endX = (item.endX ?? item.x + item.width) + dx;
-            const endY = (item.endY ?? item.y + item.height) + dy;
+
+            const startX = (item.startX ?? item.x) + appliedDX;
+            const startY = (item.startY ?? item.y) + appliedDY;
+            const endX = (item.endX ?? item.x + item.width) + appliedDX;
+            const endY = (item.endY ?? item.y + item.height) + appliedDY;
+
             return {
               ...item,
-              x: adjustedX,
-              y: adjustedY,
+              x: nextX,
+              y: nextY,
               startX,
               startY,
               endX,
               endY,
             };
-          })
-        );
+          });
+        });
         setActiveType(null);
         setAlignmentGuides({ vertical: [], horizontal: [] });
         setDragSnapOffset({ itemId: null, x: 0, y: 0 });
@@ -5161,6 +5342,7 @@ export default function EditorPage() {
         setPalettePointerOffset({ x: 0, y: 0 });
         palettePointerStartRef.current = null;
         dragStartPointerRef.current = null;
+        dragSelectionIdsRef.current = [];
         return;
       }
 
@@ -5280,6 +5462,7 @@ export default function EditorPage() {
           },
         ]);
         setSelectedItemId(newId);
+        setSelectedItemIds([newId]);
         setActiveType(null);
         setAlignmentGuides({ vertical: [], horizontal: [] });
         setDragSnapOffset({ itemId: null, x: 0, y: 0 });
@@ -5287,6 +5470,7 @@ export default function EditorPage() {
         setPalettePointerOffset({ x: 0, y: 0 });
         palettePointerStartRef.current = null;
         dragStartPointerRef.current = null;
+        dragSelectionIdsRef.current = [];
       }
     },
     [
@@ -5319,6 +5503,7 @@ export default function EditorPage() {
     setPaletteSnapOffset({ x: 0, y: 0 });
     setActiveType(null);
     setSelectedItemId(null);
+    setSelectedItemIds([]);
     setIsPreviewMode(false);
     setLatestUploadId(null);
     historyRef.current = [];
@@ -5327,6 +5512,39 @@ export default function EditorPage() {
     setCanUndo(false);
     setCanRedo(false);
   }, []);
+
+  React.useEffect(() => {
+    setSelectedItemIds((prev) => prev.filter((id) => items.some((item) => item.id === id)));
+  }, [items]);
+
+  React.useEffect(() => {
+    if (selectedItemIds.length === 0) {
+      setIsMassSelectionActive(false);
+      if (selectedItemId !== null) {
+        setSelectedItemId(null);
+      }
+      return;
+    }
+
+    if (selectedItemId && selectedItemIds.includes(selectedItemId)) return;
+    setSelectedItemId(selectedItemIds[selectedItemIds.length - 1] ?? null);
+  }, [selectedItemId, selectedItemIds]);
+
+  React.useEffect(() => {
+    if (isPreviewMode) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (!target) return;
+      const canvasItem = target.closest('[data-canvas-item="true"]') as HTMLElement | null;
+      if (canvasItem && canvasItem.dataset.canvasKind !== "cover") return;
+      setSelectedItemIds([]);
+      setSelectedItemId(null);
+    };
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    return () => window.removeEventListener("pointerdown", handlePointerDown);
+  }, [isPreviewMode]);
 
   React.useEffect(() => {
     if (!selectedItemId) return;
@@ -5680,6 +5898,9 @@ export default function EditorPage() {
                     className={`relative h-full w-full overflow-hidden rounded-xl border border-white/[0.03] bg-slate-950/90 transition-colors ${
                       isOver ? "ring-1 ring-blue-300/25" : ""
                     }`}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                    }}
                   >
                   <div
                     className={`pointer-events-none absolute inset-0 opacity-35 transition-all duration-200 ${
@@ -5744,7 +5965,7 @@ export default function EditorPage() {
                         key={item.id}
                         item={item}
                         onHandleStart={handleMirrorHandleStart}
-                        onSelect={setSelectedItemId}
+                        onSelect={handleCanvasItemSelect}
                         snapOffset={snapOffset}
                         isPreviewMode={isEditorReadOnly}
                       />
@@ -5753,7 +5974,7 @@ export default function EditorPage() {
                         key={item.id}
                         item={item}
                         onResizeStart={handleResizeStart}
-                        onSelect={setSelectedItemId}
+                        onSelect={handleCanvasItemSelect}
                         snapOffset={snapOffset}
                         isPreviewMode={isEditorReadOnly}
                       />
@@ -5764,7 +5985,7 @@ export default function EditorPage() {
                         onResizeStart={handleResizeStart}
                         onEditInput={handleEditLabel}
                         onPreviewValueChange={handlePreviewInputChange}
-                        onSelect={setSelectedItemId}
+                        onSelect={handleCanvasItemSelect}
                         previewValue={previewInputValues[normalizeTag(item.tag ?? "") || item.id] ?? ""}
                         snapOffset={snapOffset}
                         isPreviewMode={isEditorReadOnly}
@@ -5774,7 +5995,7 @@ export default function EditorPage() {
                         key={item.id}
                         item={item}
                         onResizeStart={handleResizeStart}
-                        onSelect={setSelectedItemId}
+                        onSelect={handleCanvasItemSelect}
                         logText={previewLogText}
                         snapOffset={snapOffset}
                         isPreviewMode={isEditorReadOnly}
@@ -5784,7 +6005,7 @@ export default function EditorPage() {
                         key={item.id}
                         item={item}
                         onResizeStart={handleResizeStart}
-                        onSelect={setSelectedItemId}
+                        onSelect={handleCanvasItemSelect}
                         onToggle={handleToggleItem}
                         snapOffset={snapOffset}
                         isPreviewMode={isEditorReadOnly}
@@ -5797,7 +6018,7 @@ export default function EditorPage() {
                         onEditLabel={handleEditLabel}
                         onSwapSides={handleSwapSides}
                         onPreviewButtonAction={handlePreviewButtonAction}
-                        onSelect={setSelectedItemId}
+                        onSelect={handleCanvasItemSelect}
                         onPreviewPressStart={handlePreviewPressStart}
                         onPreviewPressEnd={handlePreviewPressEnd}
                         onPreviewStageToggle={handlePreviewStageToggle}
@@ -5811,6 +6032,20 @@ export default function EditorPage() {
                       />
                     );
                     })}
+                  {!isEditorReadOnly &&
+                  selectedGroupBounds &&
+                  isMassSelectionActive &&
+                  activeType !== "canvas" ? (
+                    <div
+                      className="pointer-events-none absolute z-30 rounded-md border-2 border-dashed border-sky-300/85"
+                      style={{
+                        left: selectedGroupBounds.x - 6,
+                        top: selectedGroupBounds.y - 6,
+                        width: selectedGroupBounds.width + 12,
+                        height: selectedGroupBounds.height + 12,
+                      }}
+                    />
+                  ) : null}
                   </section>
                 </div>
               </div>
