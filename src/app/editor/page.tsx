@@ -3427,6 +3427,18 @@ export default function EditorPage() {
     };
   }, [buildEditorState]);
 
+  const buildProjectPayload = React.useCallback(() => {
+    const exportPayload = buildExportPayload();
+    if (!exportPayload) {
+      return null;
+    }
+
+    return {
+      payload: exportPayload.payload,
+      editorState: buildEditorState(),
+    };
+  }, [buildEditorState, buildExportPayload]);
+
   const persistDraft = React.useCallback(async () => {
     if (!sessionData?.user?.id) return;
     const payload = buildDraftPayload();
@@ -3456,6 +3468,43 @@ export default function EditorPage() {
       setAutosaveState("error");
     }
   }, [backgroundImage, buildDraftPayload, sessionData?.user?.id]);
+
+  const persistProjectConfig = React.useCallback(async () => {
+    if (!sessionData?.user?.id || !requestedUploadId) return;
+    const payload = buildProjectPayload();
+    if (!payload) return;
+
+    setAutosaveState("saving");
+
+    try {
+      const response = await fetch("/api/field-configs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          payload,
+          backgroundImage,
+          uploadId: requestedUploadId,
+          isDraft: false,
+        }),
+      });
+
+      if (!response.ok) {
+        setAutosaveState("error");
+        return;
+      }
+
+      const result = (await response.json()) as {
+        updatedAt?: string;
+        uploadId?: string;
+      };
+
+      setLatestUploadId(result.uploadId ?? requestedUploadId);
+      setAutosaveState("saved");
+      setAutosaveUpdatedAt(result.updatedAt ?? new Date().toISOString());
+    } catch {
+      setAutosaveState("error");
+    }
+  }, [backgroundImage, buildProjectPayload, requestedUploadId, sessionData?.user?.id]);
 
   React.useEffect(() => {
     if (isInteractingWithCanvas) {
@@ -3662,7 +3711,11 @@ export default function EditorPage() {
     if (isInteractingWithCanvas) return;
 
     const timer = window.setTimeout(() => {
-      void persistDraft();
+      if (requestedUploadId) {
+        void persistProjectConfig();
+      } else {
+        void persistDraft();
+      }
     }, AUTOSAVE_DELAY_MS);
 
     return () => window.clearTimeout(timer);
@@ -3673,6 +3726,8 @@ export default function EditorPage() {
     isInteractingWithCanvas,
     items,
     persistDraft,
+    persistProjectConfig,
+    requestedUploadId,
     sessionData?.user?.id,
   ]);
 
@@ -3682,13 +3737,24 @@ export default function EditorPage() {
     const flushAutosave = () => {
       if (!hasRestoredRef.current || isRestoringRef.current) return;
 
-      const payload = buildDraftPayload();
-      const body = JSON.stringify({
-        payload,
-        editorState: payload.editorState,
-        backgroundImage,
-        isDraft: true,
-      });
+      const payload = requestedUploadId ? buildProjectPayload() : buildDraftPayload();
+      if (!payload) return;
+
+      const body = JSON.stringify(
+        requestedUploadId
+          ? {
+              payload,
+              backgroundImage,
+              uploadId: requestedUploadId,
+              isDraft: false,
+            }
+          : {
+              payload,
+              editorState: payload.editorState,
+              backgroundImage,
+              isDraft: true,
+            }
+      );
 
       if (typeof navigator !== "undefined" && navigator.sendBeacon) {
         const blob = new Blob([body], { type: "application/json" });
@@ -3717,7 +3783,13 @@ export default function EditorPage() {
       window.removeEventListener("beforeunload", flushAutosave);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [backgroundImage, buildDraftPayload, sessionData?.user?.id]);
+  }, [
+    backgroundImage,
+    buildDraftPayload,
+    buildProjectPayload,
+    requestedUploadId,
+    sessionData?.user?.id,
+  ]);
 
   React.useEffect(() => {
     iconEditingIdRef.current = iconEditingId;

@@ -180,6 +180,58 @@ const updateFinalFieldConfigByUploadId = async (input: {
   return result.rows[0] ?? null;
 };
 
+const createFieldConfigWithUploadId = async (input: {
+  userId: string;
+  uploadId: string;
+  payload: unknown;
+  backgroundImage: string | null;
+  isDraft: boolean;
+}) => {
+  const payloadJson = JSON.stringify(input.payload);
+
+  const result = await sql<FieldConfigRow>`
+    insert into public.field_configs (
+      id,
+      upload_id,
+      user_id,
+      payload,
+      background_image,
+      content_hash,
+      is_draft
+    )
+    values (
+      ${randomUUID()}::uuid,
+      ${input.uploadId}::uuid,
+      ${input.userId},
+      ${payloadJson}::jsonb,
+      ${input.backgroundImage},
+      ${buildShareCode8()},
+      ${input.isDraft}
+    )
+    returning
+      id,
+      upload_id,
+      user_id,
+      payload,
+      background_image,
+      content_hash,
+      is_draft,
+      created_at,
+      updated_at
+  `.execute(db);
+
+  return result.rows[0] ?? null;
+};
+
+const cleanupOtherDrafts = async (input: { userId: string; keepId: string }) => {
+  await sql`
+    delete from public.field_configs
+    where user_id = ${input.userId}
+      and is_draft = true
+      and id <> ${input.keepId}::uuid
+  `.execute(db);
+};
+
 const createFieldConfigWithRetry = async (input: {
   userId: string;
   payload: unknown;
@@ -297,19 +349,20 @@ export async function POST(request: Request) {
         });
 
         if (existingDraftFingerprint === incomingDraftFingerprint) {
-        return NextResponse.json(
-          {
-            id: draft.id,
-            uploadId: draft.upload_id,
-            contentHash: draft.content_hash,
-            isDraft: draft.is_draft,
-            createdAt: draft.created_at,
-            updatedAt: draft.updated_at,
-            deduped: true,
-          },
-          { status: 200 }
-        );
-      }
+          await cleanupOtherDrafts({ userId, keepId: draft.id });
+          return NextResponse.json(
+            {
+              id: draft.id,
+              uploadId: draft.upload_id,
+              contentHash: draft.content_hash,
+              isDraft: draft.is_draft,
+              createdAt: draft.created_at,
+              updatedAt: draft.updated_at,
+              deduped: true,
+            },
+            { status: 200 }
+          );
+        }
       }
 
       if (draft) {
@@ -323,6 +376,7 @@ export async function POST(request: Request) {
           throw new Error("Draft update failed.");
         }
 
+        await cleanupOtherDrafts({ userId, keepId: updated.id });
         return NextResponse.json(
           {
             id: updated.id,
@@ -343,6 +397,8 @@ export async function POST(request: Request) {
         backgroundImage,
         isDraft: true,
       });
+
+      await cleanupOtherDrafts({ userId, keepId: createdDraft.id });
 
       return NextResponse.json(
         {
@@ -369,12 +425,24 @@ export async function POST(request: Request) {
 
     const created =
       updatedExisting ??
-      (await createFieldConfigWithRetry({
-        userId,
-        payload,
-        backgroundImage,
-        isDraft: false,
-      }));
+      (requestedUploadId
+        ? await createFieldConfigWithUploadId({
+            userId,
+            uploadId: requestedUploadId,
+            payload,
+            backgroundImage,
+            isDraft: false,
+          })
+        : await createFieldConfigWithRetry({
+            userId,
+            payload,
+            backgroundImage,
+            isDraft: false,
+          }));
+
+    if (!created) {
+      throw new Error("Failed to create field config.");
+    }
 
     await upsertProjectEntry({
       uploadId: created.upload_id,

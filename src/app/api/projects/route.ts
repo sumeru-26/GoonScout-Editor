@@ -65,11 +65,23 @@ const ensureProjectEntriesForUser = async (userId: string) => {
   `.execute(db);
 };
 
+const normalizePayloadArray = (payload: unknown) => {
+  if (Array.isArray(payload)) return payload;
+  if (payload && typeof payload === "object") {
+    const record = payload as Record<string, unknown>;
+    if (Array.isArray(record.payload)) {
+      return record.payload as Array<Record<string, unknown>>;
+    }
+  }
+  return null;
+};
+
 const inferStageCount = (payload: unknown) => {
-  if (!Array.isArray(payload)) return 1;
+  const normalized = normalizePayloadArray(payload);
+  if (!normalized) return 1;
 
   const stageParentTags = new Set<string>();
-  for (const entry of payload) {
+  for (const entry of normalized) {
     if (!entry || typeof entry !== "object") continue;
     const record = entry as Record<string, unknown>;
     const element =
