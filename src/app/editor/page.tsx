@@ -18,13 +18,16 @@ import { Button } from "@/components/ui/button";
 import * as LucideIcons from "lucide-react";
 import {
   Bot,
+  Check,
   CircleHelp,
   ChevronDown,
   ChevronRight,
   Download,
   Eye,
+  FileText,
   Redo2,
-  Save,
+  RotateCcw,
+  Send,
   Settings,
   Square,
   ToggleLeft,
@@ -53,6 +56,7 @@ const MIRROR_LINE_SIZE = { width: 160, height: 80 } as const;
 const COVER_SIZE = { width: 220, height: 120 } as const;
 const INPUT_SIZE = { width: 220, height: 56 } as const;
 const TOGGLE_SIZE = { width: 64, height: 36 } as const;
+const LOG_SIZE = { width: 280, height: 120 } as const;
 const FIELD_HEIGHT = 560;
 const ICON_GRID_COLUMNS = 6;
 const ICON_CELL_SIZE = 48;
@@ -106,7 +110,14 @@ type AssetKind =
   | "swap"
   | "cover"
   | "input"
-  | "toggle";
+  | "toggle"
+  | "undo"
+  | "redo"
+  | "submit"
+  | "reset"
+  | "log";
+
+type ActionButtonKind = "undo" | "redo" | "submit" | "reset";
 
 type TeamSide = "red" | "blue";
 
@@ -137,6 +148,49 @@ type CanvasItem = {
   stageParentId?: string;
 };
 
+const isActionButtonKind = (kind: AssetKind): kind is ActionButtonKind =>
+  kind === "undo" || kind === "redo" || kind === "submit" || kind === "reset";
+
+const getAssetSize = (kind: AssetKind) =>
+  kind === "icon"
+    ? ICON_BUTTON_SIZE
+    : kind === "mirror"
+      ? MIRROR_LINE_SIZE
+      : kind === "cover"
+        ? COVER_SIZE
+        : kind === "input"
+          ? INPUT_SIZE
+          : kind === "toggle"
+            ? TOGGLE_SIZE
+            : kind === "log"
+              ? LOG_SIZE
+              : BUTTON_SIZE;
+
+const getDefaultLabelForKind = (kind: AssetKind) =>
+  kind === "icon"
+    ? "Bot"
+    : kind === "mirror"
+      ? "Mirror line"
+      : kind === "cover"
+        ? "Cover"
+        : kind === "input"
+          ? "Input label"
+          : kind === "toggle"
+            ? "Toggle"
+            : kind === "swap"
+              ? "Swap sides"
+              : kind === "undo"
+                ? "Undo"
+                : kind === "redo"
+                  ? "Redo"
+                  : kind === "submit"
+                    ? "Submit"
+                    : kind === "reset"
+                      ? "Reset"
+                      : kind === "log"
+                        ? "Log"
+                        : "Button";
+
 type DragType = "palette" | "canvas";
 
 type DragData = {
@@ -164,9 +218,19 @@ type PersistedEditorState = {
   aspectWidth: string;
   aspectHeight: string;
   backgroundImage: string | null;
+  coordinateSpace?: string;
   useCustomSideLayouts?: boolean;
   editorTeamSide?: TeamSide;
   previewTeamSide?: TeamSide;
+};
+
+type SerializedCanvasItem = Omit<CanvasItem, "kind"> & {
+  kind: AssetKind | "button";
+};
+
+type SerializedEditorState = Omit<PersistedEditorState, "items"> & {
+  items: SerializedCanvasItem[];
+  coordinateSpace: "normalized-v1";
 };
 
 type EditorSnapshot = {
@@ -204,9 +268,164 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
 const normalizeTag = (value: string) => value.replace(/\s+/g, "").trim();
+const NORMALIZED_COORDINATE_SPACE = "normalized-v1" as const;
+
+const clampNormalized = (value: number) => Math.max(-100, Math.min(100, value));
+const roundNormalized = (value: number) => Number(clampNormalized(value).toFixed(2));
+
+const normalizeX = (value: number, canvasWidth: number) =>
+  roundNormalized(((value - canvasWidth / 2) / (canvasWidth / 2)) * 100);
+const normalizeY = (value: number, canvasHeight: number) =>
+  roundNormalized((((canvasHeight / 2) - value) / (canvasHeight / 2)) * 100);
+const normalizeWidth = (value: number, canvasWidth: number) =>
+  roundNormalized((value / canvasWidth) * 100);
+const normalizeHeight = (value: number, canvasHeight: number) =>
+  roundNormalized((value / canvasHeight) * 100);
+
+const denormalizeX = (value: number, canvasWidth: number) =>
+  canvasWidth / 2 + (value / 100) * (canvasWidth / 2);
+const denormalizeY = (value: number, canvasHeight: number) =>
+  canvasHeight / 2 - (value / 100) * (canvasHeight / 2);
+const denormalizeWidth = (value: number, canvasWidth: number) =>
+  Math.max(1, (value / 100) * canvasWidth);
+const denormalizeHeight = (value: number, canvasHeight: number) =>
+  Math.max(1, (value / 100) * canvasHeight);
+
+const serializeCanvasItem = (
+  item: CanvasItem,
+  canvasWidth: number,
+  canvasHeight: number
+): SerializedCanvasItem => {
+  const kind = item.kind === "text" ? "button" : item.kind;
+  const centerX = item.x + item.width / 2;
+  const centerY = item.y + item.height / 2;
+
+  return {
+    ...item,
+    kind,
+    x: normalizeX(centerX, canvasWidth),
+    y: normalizeY(centerY, canvasHeight),
+    width: normalizeWidth(item.width, canvasWidth),
+    height: normalizeHeight(item.height, canvasHeight),
+    startX:
+      typeof item.startX === "number" ? normalizeX(item.startX, canvasWidth) : undefined,
+    startY:
+      typeof item.startY === "number"
+        ? normalizeY(item.startY, canvasHeight)
+        : undefined,
+    endX: typeof item.endX === "number" ? normalizeX(item.endX, canvasWidth) : undefined,
+    endY:
+      typeof item.endY === "number" ? normalizeY(item.endY, canvasHeight) : undefined,
+  };
+};
+
+const normalizeLoadedItemKind = (kind: unknown): AssetKind => {
+  if (kind === "button" || kind === "text") return "text";
+  if (
+    kind === "icon" ||
+    kind === "mirror" ||
+    kind === "swap" ||
+    kind === "cover" ||
+    kind === "input" ||
+    kind === "toggle" ||
+    kind === "undo" ||
+    kind === "redo" ||
+    kind === "submit" ||
+    kind === "reset" ||
+    kind === "log"
+  ) {
+    return kind;
+  }
+  return "text";
+};
+
+const fromPersistedItem = (
+  value: unknown,
+  options: {
+    coordinateSpace?: string;
+    canvasWidth: number;
+    canvasHeight: number;
+  }
+): CanvasItem | null => {
+  if (!isRecord(value)) return null;
+
+  const isNormalized = options.coordinateSpace === NORMALIZED_COORDINATE_SPACE;
+  const readNumber = (input: unknown): number | null =>
+    typeof input === "number" && Number.isFinite(input) ? input : null;
+
+  const xValue = readNumber(value.x);
+  const yValue = readNumber(value.y);
+  const widthValue = readNumber(value.width);
+  const heightValue = readNumber(value.height);
+  const startXValue = readNumber(value.startX);
+  const startYValue = readNumber(value.startY);
+  const endXValue = readNumber(value.endX);
+  const endYValue = readNumber(value.endY);
+
+  const resolvedWidth =
+    widthValue === null
+      ? BUTTON_SIZE.width
+      : isNormalized
+        ? denormalizeWidth(widthValue, options.canvasWidth)
+        : widthValue;
+  const resolvedHeight =
+    heightValue === null
+      ? BUTTON_SIZE.height
+      : isNormalized
+        ? denormalizeHeight(heightValue, options.canvasHeight)
+        : heightValue;
+
+  const centerX =
+    xValue === null
+      ? 0
+      : isNormalized
+        ? denormalizeX(xValue, options.canvasWidth)
+        : xValue;
+  const centerY =
+    yValue === null
+      ? 0
+      : isNormalized
+        ? denormalizeY(yValue, options.canvasHeight)
+        : yValue;
+
+  return {
+    ...(value as Omit<CanvasItem, "kind">),
+    kind: normalizeLoadedItemKind(value.kind),
+    x: isNormalized ? centerX - resolvedWidth / 2 : centerX,
+    y: isNormalized ? centerY - resolvedHeight / 2 : centerY,
+    width: resolvedWidth,
+    height: resolvedHeight,
+    startX:
+      startXValue === null
+        ? undefined
+        : isNormalized
+          ? denormalizeX(startXValue, options.canvasWidth)
+          : startXValue,
+    startY:
+      startYValue === null
+        ? undefined
+        : isNormalized
+          ? denormalizeY(startYValue, options.canvasHeight)
+          : startYValue,
+    endX:
+      endXValue === null
+        ? undefined
+        : isNormalized
+          ? denormalizeX(endXValue, options.canvasWidth)
+          : endXValue,
+    endY:
+      endYValue === null
+        ? undefined
+        : isNormalized
+          ? denormalizeY(endYValue, options.canvasHeight)
+          : endYValue,
+  };
+};
 
 const parsePersistedEditorState = (
-  payload: unknown
+  payload: unknown,
+  canvasWidth?: number,
+  canvasHeight?: number
 ): PersistedEditorState | null => {
   const source =
     isRecord(payload) && isRecord(payload.editorState)
@@ -230,12 +449,42 @@ const parsePersistedEditorState = (
     source.editorTeamSide === "blue" ? "blue" : "red";
   const previewTeamSide: TeamSide =
     source.previewTeamSide === "blue" ? "blue" : "red";
+  const normalizedAspectWidth = Number(aspectWidth);
+  const normalizedAspectHeight = Number(aspectHeight);
+  const aspectRatio =
+    Number.isFinite(normalizedAspectWidth) &&
+    Number.isFinite(normalizedAspectHeight) &&
+    normalizedAspectWidth > 0 &&
+    normalizedAspectHeight > 0
+      ? normalizedAspectWidth / normalizedAspectHeight
+      : 16 / 9;
+  const resolvedCanvasHeight =
+    typeof canvasHeight === "number" && Number.isFinite(canvasHeight) && canvasHeight > 0
+      ? canvasHeight
+      : FIELD_HEIGHT;
+  const resolvedCanvasWidth =
+    typeof canvasWidth === "number" && Number.isFinite(canvasWidth) && canvasWidth > 0
+      ? canvasWidth
+      : resolvedCanvasHeight * aspectRatio;
 
   return {
-    items: source.items as CanvasItem[],
+    items: source.items
+      .map((item) =>
+        fromPersistedItem(item, {
+          coordinateSpace:
+            typeof source.coordinateSpace === "string"
+              ? source.coordinateSpace
+              : undefined,
+          canvasWidth: resolvedCanvasWidth,
+          canvasHeight: resolvedCanvasHeight,
+        })
+      )
+      .filter((item): item is CanvasItem => Boolean(item)),
     aspectWidth,
     aspectHeight,
     backgroundImage,
+    coordinateSpace:
+      typeof source.coordinateSpace === "string" ? source.coordinateSpace : undefined,
     useCustomSideLayouts,
     editorTeamSide,
     previewTeamSide,
@@ -247,7 +496,7 @@ const parseImportedEditorState = (
   canvasWidth: number,
   canvasHeight: number
 ): PersistedEditorState => {
-  const restored = parsePersistedEditorState(payload);
+  const restored = parsePersistedEditorState(payload, canvasWidth, canvasHeight);
   if (restored) {
     return {
       ...restored,
@@ -293,10 +542,20 @@ const parseImportedEditorState = (
     centerX + (readNumber(value, 0) / 100) * halfWidth;
   const scaleY = (value: unknown) =>
     centerY - (readNumber(value, 0) / 100) * halfHeight;
-  const scaleWidth = (value: unknown, fallback: number) =>
-    Math.max(1, (readNumber(value, (fallback / halfWidth) * 100) / 100) * halfWidth);
-  const scaleHeight = (value: unknown, fallback: number) =>
-    Math.max(1, (readNumber(value, (fallback / halfHeight) * 100) / 100) * halfHeight);
+  const scaleWidth = (value: unknown, fallback: number) => {
+    const normalized = readNumber(value, (fallback / canvasWidth) * 100);
+    if (Math.abs(normalized) > 100) {
+      return Math.max(1, (normalized / 100) * halfWidth);
+    }
+    return Math.max(1, (normalized / 100) * canvasWidth);
+  };
+  const scaleHeight = (value: unknown, fallback: number) => {
+    const normalized = readNumber(value, (fallback / canvasHeight) * 100);
+    if (Math.abs(normalized) > 100) {
+      return Math.max(1, (normalized / 100) * halfHeight);
+    }
+    return Math.max(1, (normalized / 100) * canvasHeight);
+  };
 
   const tagToId = new Map<string, string>();
   const pendingStageLinks: Array<{ id: string; stageParentTag: string }> = [];
@@ -333,22 +592,40 @@ const parseImportedEditorState = (
       const height = scaleHeight(data.height, BUTTON_SIZE.height);
       const centerItemX = scaleX(data.x);
       const centerItemY = scaleY(data.y);
+      const actionKind: ActionButtonKind | null =
+        data.action === "undo"
+          ? "undo"
+          : data.action === "redo"
+            ? "redo"
+            : data.action === "submit"
+              ? "submit"
+              : data.action === "reset"
+                ? "reset"
+                : null;
+      const resolvedKind: AssetKind = actionKind ?? "text";
       const tag = readTag(data.tag);
-      if (tag) tagToId.set(tag, id);
+      if (resolvedKind === "text" && tag) tagToId.set(tag, id);
       registerStageLink(data.stageParentTag, id);
       return {
         id,
-        kind: "text",
+        kind: resolvedKind,
         x: centerItemX - width / 2,
         y: centerItemY - height / 2,
         width,
         height,
-        label: typeof data.text === "string" ? data.text : "Button",
+        label:
+          typeof data.text === "string"
+            ? data.text
+            : getDefaultLabelForKind(resolvedKind),
         increment:
-          typeof data.increment === "number" && Number.isFinite(data.increment)
+          resolvedKind === "text" &&
+          typeof data.increment === "number" &&
+          Number.isFinite(data.increment)
             ? data.increment
-            : 1,
-        tag,
+            : resolvedKind === "text"
+              ? 1
+              : undefined,
+        tag: resolvedKind === "text" ? tag : "",
         teamSide: toTeamSide(data.teamSide),
       };
     }
@@ -502,6 +779,25 @@ const parseImportedEditorState = (
       };
     }
 
+    if (isRecord(entry["log-view"])) {
+      const data = entry["log-view"];
+      const width = scaleWidth(data.width, LOG_SIZE.width);
+      const height = scaleHeight(data.height, LOG_SIZE.height);
+      const centerItemX = scaleX(data.x);
+      const centerItemY = scaleY(data.y);
+      return {
+        id,
+        kind: "log",
+        x: centerItemX - width / 2,
+        y: centerItemY - height / 2,
+        width,
+        height,
+        label: typeof data.label === "string" ? data.label : "Log",
+        tag: "",
+        teamSide: toTeamSide(data.teamSide),
+      };
+    }
+
     throw new Error(`Payload entry ${index + 1} has an unsupported schema.`);
   });
 
@@ -611,6 +907,49 @@ function PaletteButton({ onPalettePointerDown }: PaletteButtonProps) {
       <span className="flex flex-col items-start leading-tight">
         <span className="text-sm font-semibold">Button</span>
         <span className="text-xs text-white/55">Small clickable action</span>
+      </span>
+    </Button>
+  );
+}
+
+function PaletteActionButton({
+  kind,
+  title,
+  description,
+  icon,
+  onPalettePointerDown,
+}: {
+  kind: ActionButtonKind;
+  title: string;
+  description: string;
+  icon: React.ReactNode;
+} & PaletteButtonProps) {
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+    id: `palette-${kind}-button`,
+    data: { type: "palette", assetKind: kind } satisfies DragData,
+  });
+
+  const style: React.CSSProperties = {
+    opacity: isDragging ? 0 : 1,
+  };
+
+  return (
+    <Button
+      ref={setNodeRef}
+      style={style}
+      variant="outline"
+      className="mx-auto h-[58px] w-[calc(100%-8px)] justify-start gap-3 rounded-xl border-white/10 bg-slate-900/70 px-3 text-left text-white transition-all duration-150 hover:border-white/20 hover:bg-slate-800/80"
+      onPointerDownCapture={(event) => onPalettePointerDown(kind, event)}
+      {...attributes}
+      {...listeners}
+      type="button"
+    >
+      <span className="flex h-8 w-8 items-center justify-center rounded-md bg-sky-500/20 text-sky-300">
+        {icon}
+      </span>
+      <span className="flex flex-col items-start leading-tight">
+        <span className="text-sm font-semibold">{title}</span>
+        <span className="text-xs text-white/55">{description}</span>
       </span>
     </Button>
   );
@@ -823,11 +1162,45 @@ function PaletteToggleButton({ onPalettePointerDown }: PaletteButtonProps) {
   );
 }
 
+function PaletteLogButton({ onPalettePointerDown }: PaletteButtonProps) {
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+    id: "palette-log",
+    data: { type: "palette", assetKind: "log" } satisfies DragData,
+  });
+
+  const style: React.CSSProperties = {
+    opacity: isDragging ? 0 : 1,
+  };
+
+  return (
+    <Button
+      ref={setNodeRef}
+      style={style}
+      variant="outline"
+      className="mx-auto h-[58px] w-[calc(100%-8px)] justify-start gap-3 rounded-xl border-white/10 bg-slate-900/70 px-3 text-left text-white transition-all duration-150 hover:border-white/20 hover:bg-slate-800/80"
+      onPointerDownCapture={(event) => onPalettePointerDown("log", event)}
+      {...attributes}
+      {...listeners}
+      type="button"
+      aria-label="Log"
+    >
+      <span className="flex h-8 w-8 items-center justify-center rounded-md bg-white/10 text-white">
+        <FileText className="h-4 w-4" />
+      </span>
+      <span className="flex flex-col items-start leading-tight">
+        <span className="text-sm font-semibold">Log</span>
+        <span className="text-xs text-white/55">Shows submitted input text</span>
+      </span>
+    </Button>
+  );
+}
+
 function CanvasButton({
   item,
   onResizeStart,
   onEditLabel,
   onSwapSides,
+  onPreviewButtonAction,
   onSelect,
   onPreviewPressStart,
   onPreviewPressEnd,
@@ -844,6 +1217,7 @@ function CanvasButton({
   onResizeStart: (event: React.PointerEvent, item: CanvasItem) => void;
   onEditLabel: (item: CanvasItem) => void;
   onSwapSides: () => void;
+  onPreviewButtonAction: (item: CanvasItem) => void;
   onSelect: (itemId: string) => void;
   onPreviewPressStart: (itemId: string) => void;
   onPreviewPressEnd: (itemId: string) => void;
@@ -926,6 +1300,10 @@ function CanvasButton({
           }
           return;
         }
+        if (isActionButtonKind(item.kind)) {
+          onPreviewButtonAction(item);
+          return;
+        }
         if (item.kind === "icon" || item.kind === "text") {
           onPreviewStageToggle(item.id);
           return;
@@ -965,6 +1343,16 @@ function CanvasButton({
             />
           );
         })()
+      ) : item.kind === "undo" ? (
+        <span className="inline-flex items-center gap-2">
+          <Undo2 className="h-4 w-4" />
+          {item.label}
+        </span>
+      ) : item.kind === "redo" ? (
+        <span className="inline-flex items-center gap-2">
+          <Redo2 className="h-4 w-4" />
+          {item.label}
+        </span>
       ) : (
         item.label
       )}
@@ -1141,14 +1529,18 @@ function CanvasInput({
   item,
   onResizeStart,
   onEditInput,
+  onPreviewValueChange,
   onSelect,
+  previewValue,
   snapOffset,
   isPreviewMode,
 }: {
   item: CanvasItem;
   onResizeStart: (event: React.PointerEvent, item: CanvasItem) => void;
   onEditInput: (item: CanvasItem) => void;
+  onPreviewValueChange: (item: CanvasItem, value: string) => void;
   onSelect: (itemId: string) => void;
+  previewValue: string;
   snapOffset?: { x: number; y: number };
   isPreviewMode?: boolean;
 }) {
@@ -1186,11 +1578,74 @@ function CanvasInput({
     >
       <Label className="text-xs text-white/80">{item.label}</Label>
       <Input
-        value=""
+        value={isPreviewMode ? previewValue : ""}
         placeholder={item.placeholder ?? "Enter text"}
         className="h-full"
-        readOnly
+        readOnly={!isPreviewMode}
+        onChange={(event) => {
+          if (!isPreviewMode) return;
+          onPreviewValueChange(item, event.target.value);
+        }}
       />
+      {!isPreviewMode ? (
+        <span
+          role="presentation"
+          onPointerDown={(event) => onResizeStart(event, item)}
+          className="absolute bottom-1 right-1 hidden h-3 w-3 cursor-se-resize rounded-sm border border-white/60 bg-white/80 group-hover:block"
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function CanvasLog({
+  item,
+  onResizeStart,
+  onSelect,
+  logText,
+  snapOffset,
+  isPreviewMode,
+}: {
+  item: CanvasItem;
+  onResizeStart: (event: React.PointerEvent, item: CanvasItem) => void;
+  onSelect: (itemId: string) => void;
+  logText: string;
+  snapOffset?: { x: number; y: number };
+  isPreviewMode?: boolean;
+}) {
+  const { attributes, listeners, setNodeRef, transform } = useDraggable({
+    id: item.id,
+    disabled: Boolean(isPreviewMode),
+    data: { type: "canvas", itemId: item.id } satisfies DragData,
+  });
+
+  const style: React.CSSProperties = {
+    transform: toDragTransform(true, transform, snapOffset),
+    left: item.x,
+    top: item.y,
+    width: item.width,
+    height: item.height,
+  };
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className={`group absolute rounded-md border border-white/15 bg-slate-900/90 p-2 ${
+        isPreviewMode ? "transition-all duration-150 ease-out" : "!transition-none"
+      }`}
+      onPointerDown={() => {
+        if (!isPreviewMode) onSelect(item.id);
+      }}
+      {...attributes}
+      {...listeners}
+    >
+      <Label className="mb-1 block text-xs text-white/80">{item.label || "Log"}</Label>
+      <div className="h-[calc(100%-18px)] overflow-auto rounded border border-white/10 bg-slate-950/90 p-2 text-[11px] leading-snug text-white/80">
+        <pre className="whitespace-pre-wrap break-words font-sans">
+          {logText || "Submit in preview to display input values."}
+        </pre>
+      </div>
       {!isPreviewMode ? (
         <span
           role="presentation"
@@ -1333,6 +1788,15 @@ const MemoCanvasInput = React.memo(
   CanvasInput,
   (prev, next) =>
     prev.item === next.item &&
+    prev.previewValue === next.previewValue &&
+    prev.isPreviewMode === next.isPreviewMode &&
+    areSnapOffsetsEqual(prev.snapOffset, next.snapOffset)
+);
+const MemoCanvasLog = React.memo(
+  CanvasLog,
+  (prev, next) =>
+    prev.item === next.item &&
+    prev.logText === next.logText &&
     prev.isPreviewMode === next.isPreviewMode &&
     areSnapOffsetsEqual(prev.snapOffset, next.snapOffset)
 );
@@ -1402,6 +1866,10 @@ export default function EditorPage() {
   const [previewPressedItemId, setPreviewPressedItemId] = React.useState<string | null>(
     null
   );
+  const [previewInputValues, setPreviewInputValues] = React.useState<
+    Record<string, string>
+  >({});
+  const [previewLogText, setPreviewLogText] = React.useState("");
   const [selectedItemId, setSelectedItemId] = React.useState<string | null>(null);
   const [isTutorialOpen, setIsTutorialOpen] = React.useState(false);
   const [tutorialStepIndex, setTutorialStepIndex] = React.useState(0);
@@ -1457,6 +1925,11 @@ export default function EditorPage() {
     React.useState(false);
   const autosaveBadgeTimeoutRef = React.useRef<number | null>(null);
   const [latestUploadId, setLatestUploadId] = React.useState<string | null>(null);
+  const [projectMeta, setProjectMeta] = React.useState<{
+    name: string;
+    contentHash: string | null;
+    isDraft: boolean | null;
+  } | null>(null);
   const [isInteractingWithCanvas, setIsInteractingWithCanvas] =
     React.useState(false);
   const isRestoringRef = React.useRef(false);
@@ -1579,6 +2052,9 @@ export default function EditorPage() {
     setCanRedo(index >= 0 && index < length - 1);
   }, []);
 
+  const isProjectCompleted = Boolean(requestedUploadId) && projectMeta?.isDraft === false;
+  const isEditorReadOnly = isPreviewMode || isProjectCompleted;
+
   const currentVisibleTeamSide = isPreviewMode ? previewTeamSide : editorTeamSide;
 
   const sideScopedItems = React.useMemo(() => {
@@ -1605,6 +2081,16 @@ export default function EditorPage() {
 
     return sideScopedItems.filter((item) => !item.stageParentId);
   }, [isPreviewMode, previewStageParentId, sideScopedItems, stagingParentId]);
+
+  const layeredVisibleItems = React.useMemo(() => {
+    const bottomItems = visibleItems.filter(
+      (item) => item.kind === "cover" || item.kind === "mirror"
+    );
+    const topItems = visibleItems.filter(
+      (item) => item.kind !== "cover" && item.kind !== "mirror"
+    );
+    return [...bottomItems, ...topItems];
+  }, [visibleItems]);
 
   const visibleItemsRef = React.useRef<CanvasItem[]>(visibleItems);
   const isAlignmentAssistEnabledRef = React.useRef(isAlignmentAssistEnabled);
@@ -1703,20 +2189,7 @@ export default function EditorPage() {
           ? items.find((item) => item.id === data.itemId)
           : null;
       const paletteKind = data?.type === "palette" ? data.assetKind : undefined;
-      const paletteSize =
-        paletteKind === "icon"
-          ? ICON_BUTTON_SIZE
-          : paletteKind === "mirror"
-            ? MIRROR_LINE_SIZE
-            : paletteKind === "cover"
-              ? COVER_SIZE
-              : paletteKind === "input"
-                ? INPUT_SIZE
-                : paletteKind === "toggle"
-                  ? TOGGLE_SIZE
-                  : paletteKind === "swap"
-                    ? BUTTON_SIZE
-                    : BUTTON_SIZE;
+      const paletteSize = getAssetSize(paletteKind ?? "text");
       const activeWidth = activeItem?.width ?? paletteSize.width;
       const activeHeight = activeItem?.height ?? paletteSize.height;
 
@@ -2024,6 +2497,9 @@ export default function EditorPage() {
   const selectedIsStageableRoot =
     Boolean(selectedItem) &&
     (selectedItem?.kind === "text" || selectedItem?.kind === "icon");
+
+  const selectedHasStagedChildren = Boolean(selectedItem?.id) &&
+    items.some((item) => item.stageParentId === selectedItem?.id);
 
   const selectedIsStagingRoot =
     Boolean(selectedItem?.id) && stagingParentId === selectedItem?.id;
@@ -2409,6 +2885,17 @@ export default function EditorPage() {
     setPreviewPressedItemId((current) => (current === itemId ? null : current));
   }, []);
 
+  const handlePreviewInputChange = React.useCallback(
+    (item: CanvasItem, value: string) => {
+      const key = normalizeTag(item.tag ?? "") || item.id;
+      setPreviewInputValues((prev) => ({
+        ...prev,
+        [key]: value,
+      }));
+    },
+    []
+  );
+
   const applyEditorSnapshot = React.useCallback(
     (snapshot: EditorSnapshot) => {
       isApplyingHistoryRef.current = true;
@@ -2428,22 +2915,58 @@ export default function EditorPage() {
   );
 
   const handleUndo = React.useCallback(() => {
+    if (isProjectCompleted) return;
     if (historyIndexRef.current <= 0) return;
     historyIndexRef.current -= 1;
     const snapshot = historyRef.current[historyIndexRef.current];
     if (!snapshot) return;
     applyEditorSnapshot(snapshot);
     updateHistoryAvailability();
-  }, [applyEditorSnapshot, updateHistoryAvailability]);
+  }, [applyEditorSnapshot, isProjectCompleted, updateHistoryAvailability]);
 
   const handleRedo = React.useCallback(() => {
+    if (isProjectCompleted) return;
     if (historyIndexRef.current >= historyRef.current.length - 1) return;
     historyIndexRef.current += 1;
     const snapshot = historyRef.current[historyIndexRef.current];
     if (!snapshot) return;
     applyEditorSnapshot(snapshot);
     updateHistoryAvailability();
-  }, [applyEditorSnapshot, updateHistoryAvailability]);
+  }, [applyEditorSnapshot, isProjectCompleted, updateHistoryAvailability]);
+
+  const handlePreviewButtonAction = React.useCallback(
+    (item: CanvasItem) => {
+      if (item.kind === "undo") {
+        handleUndo();
+        return;
+      }
+
+      if (item.kind === "redo") {
+        handleRedo();
+        return;
+      }
+
+      if (item.kind === "reset") {
+        setPreviewInputValues({});
+        setPreviewLogText("");
+        return;
+      }
+
+      if (item.kind === "submit") {
+        const submitted = items
+          .filter((entry) => entry.kind === "input")
+          .reduce<Record<string, string>>((accumulator, entry) => {
+            const inputKey = normalizeTag(entry.tag ?? "") || entry.id;
+            const outputKey = normalizeTag(entry.tag ?? "") || entry.label || entry.id;
+            accumulator[outputKey] = previewInputValues[inputKey] ?? "";
+            return accumulator;
+          }, {});
+
+        setPreviewLogText(JSON.stringify(submitted, null, 2));
+      }
+    },
+    [handleRedo, handleUndo, items, previewInputValues]
+  );
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 1 } })
@@ -2495,20 +3018,7 @@ export default function EditorPage() {
         sourceHeight: Math.max(rect.height, 1),
       };
 
-      const targetSize =
-        assetKind === "icon"
-          ? ICON_BUTTON_SIZE
-          : assetKind === "mirror"
-            ? MIRROR_LINE_SIZE
-            : assetKind === "cover"
-              ? COVER_SIZE
-              : assetKind === "input"
-                ? INPUT_SIZE
-              : assetKind === "toggle"
-                ? TOGGLE_SIZE
-                : assetKind === "swap"
-                  ? BUTTON_SIZE
-                  : BUTTON_SIZE;
+      const targetSize = getAssetSize(assetKind);
 
       const shouldCenterOnPointer =
         assetKind === "icon" || assetKind === "toggle";
@@ -2561,37 +3071,10 @@ export default function EditorPage() {
         setActiveFillColor(currentItem?.fillColor);
       } else if (data?.type === "palette") {
         const nextKind = data.assetKind ?? "text";
-        const targetSize =
-          nextKind === "icon"
-            ? ICON_BUTTON_SIZE
-            : nextKind === "mirror"
-              ? MIRROR_LINE_SIZE
-              : nextKind === "cover"
-                ? COVER_SIZE
-              : nextKind === "input"
-                ? INPUT_SIZE
-              : nextKind === "toggle"
-                ? TOGGLE_SIZE
-              : nextKind === "swap"
-                ? BUTTON_SIZE
-              : BUTTON_SIZE;
+        const targetSize = getAssetSize(nextKind);
         setActiveKind(nextKind);
         setActiveSize(targetSize);
-        setActiveLabel(
-          nextKind === "icon"
-            ? "Bot"
-            : nextKind === "mirror"
-              ? "Mirror line"
-              : nextKind === "cover"
-                ? "Cover"
-            : nextKind === "input"
-              ? "Input label"
-              : nextKind === "toggle"
-                ? "Toggle"
-              : nextKind === "swap"
-                ? "Swap sides"
-                : "Button"
-        );
+        setActiveLabel(getDefaultLabelForKind(nextKind));
         setActiveIconName("Bot");
         setActiveOutlineColor(undefined);
         setActiveFillColor(undefined);
@@ -2931,12 +3414,15 @@ export default function EditorPage() {
     const halfWidth = canvasRect.width / 2;
     const halfHeight = canvasRect.height / 2;
     const normalize = (value: number) => Number(value.toFixed(2));
+    const clampToRange = (value: number) => Math.max(-100, Math.min(100, value));
     const scaleX = (value: number) =>
-      normalize(((value - centerX) / halfWidth) * 100);
+      normalize(clampToRange(((value - centerX) / halfWidth) * 100));
     const scaleY = (value: number) =>
-      normalize(((centerY - value) / halfHeight) * 100);
-    const scaleWidth = (value: number) => normalize((value / halfWidth) * 100);
-    const scaleHeight = (value: number) => normalize((value / halfHeight) * 100);
+      normalize(clampToRange(((centerY - value) / halfHeight) * 100));
+    const scaleWidth = (value: number) =>
+      normalize(clampToRange((value / canvasRect.width) * 100));
+    const scaleHeight = (value: number) =>
+      normalize(clampToRange((value / canvasRect.height) * 100));
 
     const payload = items.map((item) => {
       const centerItemX = item.x + item.width / 2;
@@ -2958,6 +3444,21 @@ export default function EditorPage() {
               text: item.label,
               stageParentTag,
               hasStageChildren,
+              width: scaleWidth(item.width),
+              height: scaleHeight(item.height),
+            },
+          };
+        case "undo":
+        case "redo":
+        case "submit":
+        case "reset":
+          return {
+            button: {
+              teamSide: item.teamSide,
+              action: item.kind,
+              x: scaleX(centerItemX),
+              y: scaleY(centerItemY),
+              text: item.label,
               width: scaleWidth(item.width),
               height: scaleHeight(item.height),
             },
@@ -3051,6 +3552,17 @@ export default function EditorPage() {
             },
           };
         }
+        case "log":
+          return {
+            "log-view": {
+              teamSide: item.teamSide,
+              x: scaleX(centerItemX),
+              y: scaleY(centerItemY),
+              label: item.label || "Log",
+              width: scaleWidth(item.width),
+              height: scaleHeight(item.height),
+            },
+          };
         default:
           return null;
       }
@@ -3078,6 +3590,18 @@ export default function EditorPage() {
       useCustomSideLayouts: isCustomSideLayoutsEnabled,
       editorTeamSide,
       previewTeamSide,
+      editorState: {
+        items: items.map((item) =>
+          serializeCanvasItem(item, canvasRect.width, canvasRect.height)
+        ),
+        aspectWidth,
+        aspectHeight,
+        backgroundImage,
+        coordinateSpace: NORMALIZED_COORDINATE_SPACE,
+        useCustomSideLayouts: isCustomSideLayoutsEnabled,
+        editorTeamSide,
+        previewTeamSide,
+      },
       payload: filteredPayload,
       background: {
         backendPointer: backgroundPointer,
@@ -3091,6 +3615,8 @@ export default function EditorPage() {
     };
   }, [
     backgroundImage,
+    aspectHeight,
+    aspectWidth,
     editorTeamSide,
     isCustomSideLayoutsEnabled,
     items,
@@ -3116,11 +3642,29 @@ export default function EditorPage() {
   const handleUploadConfig = React.useCallback(async () => {
     if (uploadPayload.length === 0) return;
     try {
-      const editorState: PersistedEditorState = {
-        items,
+      const canvasRect = canvasRef.current?.getBoundingClientRect();
+      const numericAspectWidth = Number(aspectWidth);
+      const numericAspectHeight = Number(aspectHeight);
+      const aspectRatio =
+        Number.isFinite(numericAspectWidth) &&
+        Number.isFinite(numericAspectHeight) &&
+        numericAspectWidth > 0 &&
+        numericAspectHeight > 0
+          ? numericAspectWidth / numericAspectHeight
+          : 16 / 9;
+      const canvasWidth =
+        canvasRect && canvasRect.width > 0 ? canvasRect.width : FIELD_HEIGHT * aspectRatio;
+      const canvasHeight =
+        canvasRect && canvasRect.height > 0 ? canvasRect.height : FIELD_HEIGHT;
+
+      const editorState: SerializedEditorState = {
+        items: items.map((item) =>
+          serializeCanvasItem(item, canvasWidth, canvasHeight)
+        ),
         aspectWidth,
         aspectHeight,
         backgroundImage,
+        coordinateSpace: NORMALIZED_COORDINATE_SPACE,
         useCustomSideLayouts: isCustomSideLayoutsEnabled,
         editorTeamSide,
         previewTeamSide,
@@ -3259,6 +3803,10 @@ export default function EditorPage() {
 
   const fieldWidth = React.useMemo(() => FIELD_HEIGHT * aspectRatio, [aspectRatio]);
   const stageWrapRef = React.useRef<HTMLDivElement | null>(null);
+  const stageSizeRef = React.useRef({
+    width: fieldWidth,
+    height: FIELD_HEIGHT,
+  });
   const [stageSize, setStageSize] = React.useState({
     width: fieldWidth,
     height: FIELD_HEIGHT,
@@ -3290,7 +3838,9 @@ export default function EditorPage() {
       if (rect.width <= 0 || rect.height <= 0) return;
       const fitWidth = Math.min(rect.width, rect.height * aspectRatio);
       const fitHeight = fitWidth / aspectRatio;
-      setStageSize({ width: fitWidth, height: fitHeight });
+      const nextSize = { width: fitWidth, height: fitHeight };
+      stageSizeRef.current = nextSize;
+      setStageSize(nextSize);
     };
 
     updateSize();
@@ -3400,12 +3950,15 @@ export default function EditorPage() {
     [applyImageAspectRatio]
   );
 
-  const buildEditorState = React.useCallback((): PersistedEditorState => {
+  const buildEditorState = React.useCallback((): SerializedEditorState => {
     return {
-      items,
+      items: items.map((item) =>
+        serializeCanvasItem(item, stageSize.width, stageSize.height)
+      ),
       aspectWidth,
       aspectHeight,
       backgroundImage,
+      coordinateSpace: NORMALIZED_COORDINATE_SPACE,
       useCustomSideLayouts: isCustomSideLayoutsEnabled,
       editorTeamSide,
       previewTeamSide,
@@ -3418,6 +3971,8 @@ export default function EditorPage() {
     isCustomSideLayoutsEnabled,
     items,
     previewTeamSide,
+    stageSize.height,
+    stageSize.width,
   ]);
 
   const buildDraftPayload = React.useCallback(() => {
@@ -3428,16 +3983,67 @@ export default function EditorPage() {
   }, [buildEditorState]);
 
   const buildProjectPayload = React.useCallback(() => {
-    const exportPayload = buildExportPayload();
-    if (!exportPayload) {
-      return null;
+    const editorState = buildEditorState();
+    return {
+      editorState,
+    };
+  }, [buildEditorState]);
+
+  const handleCompleteProject = React.useCallback(async () => {
+    const uploadId = requestedUploadId || latestUploadId || "";
+    if (!uploadId) {
+      toast.error("Open a project from Project Manager before marking complete.");
+      return;
     }
 
-    return {
-      payload: exportPayload.payload,
-      editorState: buildEditorState(),
-    };
-  }, [buildEditorState, buildExportPayload]);
+    const nextIsDraft = isProjectCompleted;
+    const payload = buildProjectPayload();
+
+    try {
+      const response = await fetch("/api/field-configs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          payload,
+          editorState: payload.editorState,
+          backgroundImage,
+          uploadId,
+          isDraft: nextIsDraft,
+        }),
+      });
+
+      if (!response.ok) {
+        toast.error("Failed to update project status.");
+        return;
+      }
+
+      const result = (await response.json()) as {
+        uploadId?: string;
+        updatedAt?: string;
+      };
+
+      setLatestUploadId(result.uploadId ?? uploadId);
+      setAutosaveUpdatedAt(result.updatedAt ?? new Date().toISOString());
+      setAutosaveState("saved");
+      setProjectMeta((prev) =>
+        prev
+          ? {
+              ...prev,
+              isDraft: nextIsDraft,
+            }
+          : prev
+      );
+      toast.success(nextIsDraft ? "Project moved back to draft." : "Project marked complete.");
+    } catch {
+      toast.error("Failed to update project status.");
+    }
+  }, [
+    backgroundImage,
+    buildProjectPayload,
+    isProjectCompleted,
+    latestUploadId,
+    requestedUploadId,
+  ]);
 
   const persistDraft = React.useCallback(async () => {
     if (!sessionData?.user?.id) return;
@@ -3472,7 +4078,6 @@ export default function EditorPage() {
   const persistProjectConfig = React.useCallback(async () => {
     if (!sessionData?.user?.id || !requestedUploadId) return;
     const payload = buildProjectPayload();
-    if (!payload) return;
 
     setAutosaveState("saving");
 
@@ -3482,9 +4087,10 @@ export default function EditorPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           payload,
+          editorState: payload.editorState,
           backgroundImage,
           uploadId: requestedUploadId,
-          isDraft: false,
+          isDraft: true,
         }),
       });
 
@@ -3574,6 +4180,39 @@ export default function EditorPage() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [handleRedo, handleUndo]);
 
+  const resolveRestoreCanvasSize = React.useCallback(
+    (payload: unknown) => {
+      const payloadRecord = isRecord(payload) ? payload : null;
+      const editorState = isRecord(payloadRecord?.editorState)
+        ? payloadRecord.editorState
+        : payloadRecord;
+
+      const aspectWidthValue = Number(editorState?.aspectWidth);
+      const aspectHeightValue = Number(editorState?.aspectHeight);
+
+      const ratio =
+        Number.isFinite(aspectWidthValue) &&
+        Number.isFinite(aspectHeightValue) &&
+        aspectWidthValue > 0 &&
+        aspectHeightValue > 0
+          ? aspectWidthValue / aspectHeightValue
+          : 16 / 9;
+
+      const wrapperRect = stageWrapRef.current?.getBoundingClientRect();
+      if (wrapperRect && wrapperRect.width > 0 && wrapperRect.height > 0) {
+        const fitWidth = Math.min(wrapperRect.width, wrapperRect.height * ratio);
+        const fitHeight = fitWidth / ratio;
+        return { width: fitWidth, height: fitHeight };
+      }
+
+      return {
+        width: stageSizeRef.current.width,
+        height: stageSizeRef.current.height,
+      };
+    },
+    []
+  );
+
   React.useEffect(() => {
     const userId = sessionData?.user?.id;
     if (!userId) {
@@ -3630,10 +4269,13 @@ export default function EditorPage() {
           };
 
           if (selectedResult.config?.payload) {
+            const restoreCanvas = resolveRestoreCanvasSize(
+              selectedResult.config.payload
+            );
             const nextState = parseImportedEditorState(
               selectedResult.config.payload,
-              fieldWidth,
-              FIELD_HEIGHT
+              restoreCanvas.width,
+              restoreCanvas.height
             );
 
             if (!isCancelled) {
@@ -3673,7 +4315,12 @@ export default function EditorPage() {
           config?: { payload?: unknown; updatedAt?: string; uploadId?: string } | null;
         };
 
-        const restored = parsePersistedEditorState(result.config?.payload);
+        const restoreCanvas = resolveRestoreCanvasSize(result.config?.payload);
+        const restored = parsePersistedEditorState(
+          result.config?.payload,
+          restoreCanvas.width,
+          restoreCanvas.height
+        );
         if (!isCancelled && restored) {
           setItems(restored.items);
           setAspectWidth(restored.aspectWidth);
@@ -3703,7 +4350,68 @@ export default function EditorPage() {
     return () => {
       isCancelled = true;
     };
-  }, [fieldWidth, requestedUploadId, sessionData?.user?.id, shouldStartBlank]);
+  }, [requestedUploadId, resolveRestoreCanvasSize, sessionData?.user?.id, shouldStartBlank]);
+
+  React.useEffect(() => {
+    const userId = sessionData?.user?.id;
+    const metadataUploadId = requestedUploadId || latestUploadId || "";
+
+    if (!userId || !metadataUploadId) {
+      setProjectMeta(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    const fetchMetadata = async () => {
+      try {
+        const response = await fetch(
+          `/api/projects/${encodeURIComponent(metadataUploadId)}`,
+          {
+            method: "GET",
+            headers: { "Content-Type": "application/json" },
+          }
+        );
+
+        if (!response.ok) {
+          if (!cancelled) {
+            setProjectMeta(null);
+          }
+          return;
+        }
+
+        const result = (await response.json()) as {
+          project?: { name?: string; contentHash?: string | null; isDraft?: boolean };
+        };
+
+        if (cancelled) return;
+
+        const name = result.project?.name?.trim();
+        setProjectMeta(
+          name
+            ? {
+                name,
+                contentHash: result.project?.contentHash ?? null,
+                isDraft:
+                  typeof result.project?.isDraft === "boolean"
+                    ? result.project.isDraft
+                    : null,
+              }
+            : null
+        );
+      } catch {
+        if (!cancelled) {
+          setProjectMeta(null);
+        }
+      }
+    };
+
+    void fetchMetadata();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [latestUploadId, requestedUploadId, sessionData?.user?.id]);
 
   React.useEffect(() => {
     if (!sessionData?.user?.id) return;
@@ -3744,9 +4452,10 @@ export default function EditorPage() {
         requestedUploadId
           ? {
               payload,
+              editorState: payload.editorState,
               backgroundImage,
               uploadId: requestedUploadId,
-              isDraft: false,
+              isDraft: true,
             }
           : {
               payload,
@@ -4302,20 +5011,7 @@ export default function EditorPage() {
           ? items.find((item) => item.id === data.itemId)
           : null;
       const paletteKind = data?.type === "palette" ? data.assetKind : undefined;
-      const paletteSize =
-        paletteKind === "icon"
-          ? ICON_BUTTON_SIZE
-          : paletteKind === "mirror"
-            ? MIRROR_LINE_SIZE
-            : paletteKind === "cover"
-              ? COVER_SIZE
-          : paletteKind === "input"
-            ? INPUT_SIZE
-            : paletteKind === "toggle"
-              ? TOGGLE_SIZE
-            : paletteKind === "swap"
-              ? BUTTON_SIZE
-            : BUTTON_SIZE;
+      const paletteSize = getAssetSize(paletteKind ?? "text");
       const activeWidth = activeItem?.width ?? paletteSize.width;
       const activeHeight = activeItem?.height ?? paletteSize.height;
 
@@ -4541,52 +5237,35 @@ export default function EditorPage() {
             ? crypto.randomUUID()
             : `button-${Date.now()}`;
         const kind = data.assetKind ?? "text";
-        const size =
-          kind === "icon"
-            ? ICON_BUTTON_SIZE
-            : kind === "mirror"
-              ? MIRROR_LINE_SIZE
-              : kind === "cover"
-                ? COVER_SIZE
-            : kind === "input"
-              ? INPUT_SIZE
-              : kind === "toggle"
-                ? TOGGLE_SIZE
-              : kind === "swap"
-                ? BUTTON_SIZE
-              : BUTTON_SIZE;
+        const size = getAssetSize(kind);
+        const isNewMirror = kind === "mirror";
+        const mirrorStartX = canvasRect.width / 2;
+        const mirrorStartY = 0;
+        const mirrorEndX = canvasRect.width / 2;
+        const mirrorEndY = canvasRect.height;
+        const mirrorLeft = Math.min(mirrorStartX, mirrorEndX);
+        const mirrorTop = Math.min(mirrorStartY, mirrorEndY);
+        const mirrorWidth = Math.max(1, Math.abs(mirrorEndX - mirrorStartX));
+        const mirrorHeight = Math.max(1, Math.abs(mirrorEndY - mirrorStartY));
         setItems((prev) => [
           ...prev,
           {
             id: newId,
-            x,
-            y,
-            width: size.width,
-            height: size.height,
-            label:
-              kind === "icon"
-                ? "Bot"
-                : kind === "mirror"
-                  ? "Mirror line"
-                  : kind === "cover"
-                    ? "Cover"
-                : kind === "input"
-                  ? "Input label"
-                  : kind === "toggle"
-                    ? "Toggle"
-                  : kind === "swap"
-                    ? "Swap sides"
-                    : "Button",
+            x: isNewMirror ? mirrorLeft : x,
+            y: isNewMirror ? mirrorTop : y,
+            width: isNewMirror ? mirrorWidth : size.width,
+            height: isNewMirror ? mirrorHeight : size.height,
+            label: getDefaultLabelForKind(kind),
             kind,
             tag: "",
             iconName: kind === "icon" ? "Bot" : undefined,
             outlineColor: kind === "icon" ? "#ffffff" : undefined,
             fillColor: kind === "icon" ? "transparent" : undefined,
             increment: kind === "text" || kind === "icon" ? 1 : undefined,
-            startX: kind === "mirror" ? x : undefined,
-            startY: kind === "mirror" ? y : undefined,
-            endX: kind === "mirror" ? x : undefined,
-            endY: kind === "mirror" ? y + size.height : undefined,
+            startX: kind === "mirror" ? mirrorStartX : undefined,
+            startY: kind === "mirror" ? mirrorStartY : undefined,
+            endX: kind === "mirror" ? mirrorEndX : undefined,
+            endY: kind === "mirror" ? mirrorEndY : undefined,
             placeholder: kind === "input" ? "Enter text" : undefined,
             toggleOn: kind === "toggle" ? false : undefined,
             toggleTextAlign: kind === "toggle" ? "center" : undefined,
@@ -4774,7 +5453,26 @@ export default function EditorPage() {
             ref={navHeaderRef}
             className="mx-auto flex w-full max-w-[1760px] items-center justify-between px-5 py-3"
           >
-            <h1 className="text-4xl font-black tracking-tight">GoonScout</h1>
+            <div className="min-w-0">
+              <button
+                type="button"
+                onClick={() => router.push("/projectManager")}
+                className="text-left text-4xl font-black tracking-tight text-white transition-opacity hover:opacity-85"
+              >
+                GoonScout
+              </button>
+              {requestedUploadId ? (
+                <div className="mt-1 flex items-center gap-3 text-sm text-white/80">
+                  <span className="truncate font-semibold text-white">
+                    {projectMeta?.name ?? "Loading project..."}
+                  </span>
+                  <span className="text-white/45">•</span>
+                  <span className="font-medium text-white/70">
+                    Hash: {projectMeta?.contentHash?.trim() || "Unavailable"}
+                  </span>
+                </div>
+              ) : null}
+            </div>
             <div className="ml-6 flex items-center gap-3 sm:gap-4">
               <span
                 className={`hidden items-center gap-2 rounded-full border border-emerald-400/40 bg-emerald-400/10 px-2.5 py-1 text-xs font-medium text-emerald-300 transition-opacity duration-300 xl:inline-flex ${
@@ -4789,14 +5487,19 @@ export default function EditorPage() {
                 variant="outline"
                 type="button"
                 className="h-10 gap-2 rounded-lg border-white/15 bg-slate-900/60 px-4 text-white hover:bg-slate-800/80"
+                disabled={isProjectCompleted}
                 onClick={() =>
                   setIsPreviewMode((current) => {
                     const next = !current;
                     if (next) {
                       setStagingParentId(null);
                       setPreviewTeamSide(editorTeamSide);
+                      setPreviewInputValues({});
+                      setPreviewLogText("");
                     } else {
                       setPreviewStageParentId(null);
+                      setPreviewInputValues({});
+                      setPreviewLogText("");
                     }
                     return next;
                   })
@@ -4807,11 +5510,11 @@ export default function EditorPage() {
               </Button>
               <Button
                 type="button"
-                className="h-10 gap-2 rounded-lg bg-blue-600 px-5 text-white hover:bg-blue-500"
-                onClick={handleUploadPreview}
+                className="h-10 gap-2 rounded-lg bg-emerald-600 px-5 text-white hover:bg-emerald-500"
+                onClick={handleCompleteProject}
               >
-                <Save className="h-4 w-4" />
-                Save
+                <Check className="h-4 w-4" />
+                {isProjectCompleted ? "Completed" : "Complete"}
               </Button>
               <Button
                 variant="outline"
@@ -4889,7 +5592,7 @@ export default function EditorPage() {
               setAssetsRef(node);
               assetsPanelRef.current = node;
             }}
-            className="flex h-[min(66vh,620px)] min-h-0 flex-col overflow-hidden rounded-2xl border border-white/[0.03] bg-slate-900/70 p-4 text-white shadow-2xl backdrop-blur"
+            className="flex h-[min(72vh,700px)] min-h-0 flex-col overflow-hidden rounded-2xl border border-white/[0.03] bg-slate-900/70 p-4 text-white shadow-2xl backdrop-blur"
           >
             <div className="mb-4 px-1">
               <h2 className="text-3xl font-semibold tracking-tight">Assets</h2>
@@ -4902,21 +5605,50 @@ export default function EditorPage() {
 
             <ScrollArea
               className="h-full w-full"
-              scrollbarClassName="bg-black/40"
-              thumbClassName="bg-black"
+              scrollbarClassName="bg-transparent"
+              thumbClassName="bg-slate-600/50"
             >
               <div
                 className={`flex flex-col gap-3 pr-2 ${
-                  isPreviewMode ? "pointer-events-none opacity-50" : ""
+                  isEditorReadOnly ? "pointer-events-none opacity-50" : ""
                 }`}
               >
                 <PaletteButton onPalettePointerDown={handlePalettePointerDown} />
+                <PaletteActionButton
+                  kind="undo"
+                  title="Undo"
+                  description="Undo previous change"
+                  icon={<Undo2 className="h-4 w-4" />}
+                  onPalettePointerDown={handlePalettePointerDown}
+                />
+                <PaletteActionButton
+                  kind="redo"
+                  title="Redo"
+                  description="Redo reverted change"
+                  icon={<Redo2 className="h-4 w-4" />}
+                  onPalettePointerDown={handlePalettePointerDown}
+                />
+                <PaletteActionButton
+                  kind="submit"
+                  title="Submit"
+                  description="Submit current input values"
+                  icon={<Send className="h-4 w-4" />}
+                  onPalettePointerDown={handlePalettePointerDown}
+                />
+                <PaletteActionButton
+                  kind="reset"
+                  title="Reset"
+                  description="Clear all inputs"
+                  icon={<RotateCcw className="h-4 w-4" />}
+                  onPalettePointerDown={handlePalettePointerDown}
+                />
                 <PaletteIconButton onPalettePointerDown={handlePalettePointerDown} />
                 <PaletteMirrorButton
                   onPalettePointerDown={handlePalettePointerDown}
                   disabled={isCustomSideLayoutsEnabled}
                 />
                 <PaletteInputButton onPalettePointerDown={handlePalettePointerDown} />
+                <PaletteLogButton onPalettePointerDown={handlePalettePointerDown} />
                 <PaletteToggleButton onPalettePointerDown={handlePalettePointerDown} />
                 <PaletteCoverButton onPalettePointerDown={handlePalettePointerDown} />
               </div>
@@ -4924,7 +5656,7 @@ export default function EditorPage() {
                 <span>Layout</span>
                 <ChevronRight className="h-4 w-4" />
               </div>
-              <div className={`mt-3 pr-2 ${isPreviewMode ? "pointer-events-none opacity-50" : ""}`}>
+              <div className={`mt-3 pr-2 ${isEditorReadOnly ? "pointer-events-none opacity-50" : ""}`}>
                 <PaletteSwapButton onPalettePointerDown={handlePalettePointerDown} />
               </div>
             </ScrollArea>
@@ -4933,7 +5665,7 @@ export default function EditorPage() {
           <section className="min-w-0">
             <div
               ref={canvasPanelRef}
-              className="relative flex h-[min(66vh,620px)] min-h-0 items-center justify-center overflow-hidden rounded-2xl border border-white/[0.03] bg-slate-900/60 p-1 shadow-2xl backdrop-blur"
+              className="relative flex h-[min(72vh,700px)] min-h-0 items-center justify-center overflow-hidden rounded-2xl border border-white/[0.03] bg-slate-900/60 p-1 shadow-2xl backdrop-blur"
             >
               <div
                 ref={stageWrapRef}
@@ -4997,7 +5729,7 @@ export default function EditorPage() {
                     </p>
                   )}
                     {!isTutorialOpen &&
-                    visibleItems.map((item) => {
+                    layeredVisibleItems.map((item) => {
                     if (isPreviewMode && item.kind === "mirror") {
                       return null;
                     }
@@ -5014,7 +5746,7 @@ export default function EditorPage() {
                         onHandleStart={handleMirrorHandleStart}
                         onSelect={setSelectedItemId}
                         snapOffset={snapOffset}
-                        isPreviewMode={isPreviewMode}
+                        isPreviewMode={isEditorReadOnly}
                       />
                     ) : item.kind === "cover" ? (
                       <MemoCanvasCover
@@ -5023,7 +5755,7 @@ export default function EditorPage() {
                         onResizeStart={handleResizeStart}
                         onSelect={setSelectedItemId}
                         snapOffset={snapOffset}
-                        isPreviewMode={isPreviewMode}
+                        isPreviewMode={isEditorReadOnly}
                       />
                     ) : item.kind === "input" ? (
                       <MemoCanvasInput
@@ -5031,9 +5763,21 @@ export default function EditorPage() {
                         item={item}
                         onResizeStart={handleResizeStart}
                         onEditInput={handleEditLabel}
+                        onPreviewValueChange={handlePreviewInputChange}
                         onSelect={setSelectedItemId}
+                        previewValue={previewInputValues[normalizeTag(item.tag ?? "") || item.id] ?? ""}
                         snapOffset={snapOffset}
-                        isPreviewMode={isPreviewMode}
+                        isPreviewMode={isEditorReadOnly}
+                      />
+                    ) : item.kind === "log" ? (
+                      <MemoCanvasLog
+                        key={item.id}
+                        item={item}
+                        onResizeStart={handleResizeStart}
+                        onSelect={setSelectedItemId}
+                        logText={previewLogText}
+                        snapOffset={snapOffset}
+                        isPreviewMode={isEditorReadOnly}
                       />
                     ) : item.kind === "toggle" ? (
                       <MemoCanvasToggle
@@ -5043,7 +5787,7 @@ export default function EditorPage() {
                         onSelect={setSelectedItemId}
                         onToggle={handleToggleItem}
                         snapOffset={snapOffset}
-                        isPreviewMode={isPreviewMode}
+                        isPreviewMode={isEditorReadOnly}
                       />
                     ) : (
                       <MemoCanvasButton
@@ -5052,6 +5796,7 @@ export default function EditorPage() {
                         onResizeStart={handleResizeStart}
                         onEditLabel={handleEditLabel}
                         onSwapSides={handleSwapSides}
+                        onPreviewButtonAction={handlePreviewButtonAction}
                         onSelect={setSelectedItemId}
                         onPreviewPressStart={handlePreviewPressStart}
                         onPreviewPressEnd={handlePreviewPressEnd}
@@ -5062,7 +5807,7 @@ export default function EditorPage() {
                         isCustomSideLayoutsEnabled={isCustomSideLayoutsEnabled}
                         visibleTeamSide={currentVisibleTeamSide}
                         snapOffset={snapOffset}
-                        isPreviewMode={isPreviewMode}
+                        isPreviewMode={isEditorReadOnly}
                       />
                     );
                     })}
@@ -5073,10 +5818,12 @@ export default function EditorPage() {
             </div>
           </section>
 
-          <div className="flex h-[min(66vh,620px)] min-h-0 flex-col gap-3">
+          <div className="flex h-[min(72vh,700px)] min-h-0 flex-col gap-3">
           <aside
             ref={propertiesPanelRef}
-            className="flex min-h-0 flex-1 flex-col overflow-y-auto rounded-2xl border border-white/[0.03] bg-slate-900/70 p-4 text-white shadow-2xl backdrop-blur [scrollbar-color:rgba(100,116,139,0.45)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-slate-600/50"
+            className={`flex min-h-0 flex-1 flex-col overflow-y-auto rounded-2xl border border-white/[0.03] bg-slate-900/70 p-4 text-white shadow-2xl backdrop-blur [scrollbar-color:rgba(100,116,139,0.45)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-slate-600/50 ${
+              isProjectCompleted ? "pointer-events-none opacity-60" : ""
+            }`}
           >
             <div className="mb-5 px-1">
               <h2 className="text-3xl font-semibold tracking-tight">Properties</h2>
@@ -5088,7 +5835,7 @@ export default function EditorPage() {
                 type="button"
                 className="h-10 rounded-lg border-white/15 bg-slate-900/70 text-white hover:bg-slate-800/80"
                 onClick={handleUndo}
-                disabled={!canUndo}
+                disabled={!canUndo || isProjectCompleted}
               >
                 <Undo2 className="mr-2 h-4 w-4" />
                 Undo
@@ -5098,7 +5845,7 @@ export default function EditorPage() {
                 type="button"
                 className="h-10 rounded-lg border-white/15 bg-slate-900/70 text-white hover:bg-slate-800/80"
                 onClick={handleRedo}
-                disabled={!canRedo}
+                disabled={!canRedo || isProjectCompleted}
               >
                 <Redo2 className="mr-2 h-4 w-4" />
                 Redo
@@ -5225,24 +5972,26 @@ export default function EditorPage() {
                   </ScrollArea>
                 </div>
 
-                <div className="grid gap-2">
-                  <Label htmlFor="icon-increment-side" className="text-sm text-white/80">
-                    Increment
-                  </Label>
-                  <Input
-                    id="icon-increment-side"
-                    type="number"
-                    min={1}
-                    step={1}
-                    value={selectedItem.increment ?? 1}
-                    onChange={(event) =>
-                      handleSelectedIncrementChange(
-                        Math.max(1, Number(event.target.value) || 1)
-                      )
-                    }
-                    className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
-                  />
-                </div>
+                {!selectedHasStagedChildren ? (
+                  <div className="grid gap-2">
+                    <Label htmlFor="icon-increment-side" className="text-sm text-white/80">
+                      Increment
+                    </Label>
+                    <Input
+                      id="icon-increment-side"
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={selectedItem.increment ?? 1}
+                      onChange={(event) =>
+                        handleSelectedIncrementChange(
+                          Math.max(1, Number(event.target.value) || 1)
+                        )
+                      }
+                      className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
+                    />
+                  </div>
+                ) : null}
 
                 <div className="grid gap-2">
                   <Label className="text-sm text-white/80">Staging</Label>
@@ -5457,6 +6206,42 @@ export default function EditorPage() {
                   />
                 </div>
               </div>
+            ) : selectedItem && isActionButtonKind(selectedItem.kind) ? (
+              <div className="grid gap-4">
+                <div className="grid gap-2">
+                  <Label htmlFor="action-button-name" className="text-sm text-white/80">
+                    Button name
+                  </Label>
+                  <Input
+                    id="action-button-name"
+                    value={selectedItem.label}
+                    onChange={(event) => handleSelectedLabelChange(event.target.value)}
+                    placeholder="Button text"
+                    className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
+                  />
+                </div>
+                <div className="rounded-md border border-white/10 bg-slate-900/80 px-3 py-2 text-xs text-white/70">
+                  In preview mode, this button performs the <span className="font-semibold text-white">{selectedItem.kind}</span> action.
+                </div>
+              </div>
+            ) : selectedItem?.kind === "log" ? (
+              <div className="grid gap-4">
+                <div className="grid gap-2">
+                  <Label htmlFor="log-name" className="text-sm text-white/80">
+                    Log label
+                  </Label>
+                  <Input
+                    id="log-name"
+                    value={selectedItem.label}
+                    onChange={(event) => handleSelectedLabelChange(event.target.value)}
+                    placeholder="Log"
+                    className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
+                  />
+                </div>
+                <div className="rounded-md border border-white/10 bg-slate-900/80 px-3 py-2 text-xs text-white/70">
+                  Log output is populated when a Submit button is clicked in preview mode.
+                </div>
+              </div>
             ) : (
               <div className="grid gap-4">
                 <div className="grid gap-2">
@@ -5486,25 +6271,27 @@ export default function EditorPage() {
                     className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35 disabled:opacity-50"
                   />
                 </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="button-increment" className="text-sm text-white/80">
-                    Increment
-                  </Label>
-                  <Input
-                    id="button-increment"
-                    type="number"
-                    min={1}
-                    step={1}
-                    value={selectedItem?.kind === "text" ? (selectedItem.increment ?? 1) : 1}
-                    onChange={(event) =>
-                      handleSelectedIncrementChange(
-                        Math.max(1, Number(event.target.value) || 1)
-                      )
-                    }
-                    disabled={selectedItem?.kind !== "text"}
-                    className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35 disabled:opacity-50"
-                  />
-                </div>
+                {!selectedHasStagedChildren ? (
+                  <div className="grid gap-2">
+                    <Label htmlFor="button-increment" className="text-sm text-white/80">
+                      Increment
+                    </Label>
+                    <Input
+                      id="button-increment"
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={selectedItem?.kind === "text" ? (selectedItem.increment ?? 1) : 1}
+                      onChange={(event) =>
+                        handleSelectedIncrementChange(
+                          Math.max(1, Number(event.target.value) || 1)
+                        )
+                      }
+                      disabled={selectedItem?.kind !== "text"}
+                      className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35 disabled:opacity-50"
+                    />
+                  </div>
+                ) : null}
 
                 <div className="grid gap-2">
                   <Label className="text-sm text-white/80">Staging</Label>
@@ -5716,6 +6503,13 @@ export default function EditorPage() {
                   <div className="text-xs text-white/80">Input label</div>
                   <Input placeholder="Enter text" readOnly />
                 </div>
+              ) : activeKind === "log" ? (
+                <div className="h-full w-full rounded-md border border-white/15 bg-slate-900/90 p-2">
+                  <div className="mb-1 text-xs text-white/80">Log</div>
+                  <div className="h-[calc(100%-18px)] rounded border border-white/10 bg-slate-950/80 p-2 text-[11px] text-white/70">
+                    Submitted input values...
+                  </div>
+                </div>
               ) : activeKind === "toggle" ? (
                 <div className="flex h-full w-full flex-col justify-center gap-1">
                   <div className="text-center text-[11px] text-white/80">{activeLabel}</div>
@@ -5744,6 +6538,16 @@ export default function EditorPage() {
                         />
                       );
                     })()
+                  ) : activeKind === "undo" ? (
+                    <span className="inline-flex items-center gap-2">
+                      <Undo2 className="h-4 w-4" />
+                      {activeLabel}
+                    </span>
+                  ) : activeKind === "redo" ? (
+                    <span className="inline-flex items-center gap-2">
+                      <Redo2 className="h-4 w-4" />
+                      {activeLabel}
+                    </span>
                   ) : (
                     activeLabel
                   )}

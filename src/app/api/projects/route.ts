@@ -21,6 +21,64 @@ type ProjectRow = {
 const buildShareCode8 = () =>
   `${Math.floor(Math.random() * 90_000_000) + 10_000_000}`;
 
+const createProjectConfigWithRetry = async (input: { userId: string }) => {
+  const maxAttempts = 5;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const createdConfig = await sql<{
+        upload_id: string;
+        updated_at: Date;
+        payload: unknown;
+        background_image: string | null;
+      }>`
+        insert into public.field_configs (
+          id,
+          upload_id,
+          user_id,
+          payload,
+          background_image,
+          content_hash,
+          is_draft
+        )
+        values (
+          ${randomUUID()}::uuid,
+          ${randomUUID()}::uuid,
+          ${input.userId},
+          ${JSON.stringify([])}::jsonb,
+          null,
+          ${buildShareCode8()},
+          true
+        )
+        returning upload_id, updated_at, payload, background_image
+      `.execute(db);
+
+      const config = createdConfig.rows[0];
+      if (!config) {
+        throw new Error("Failed to create project config.");
+      }
+
+      return config;
+    } catch (error) {
+      const pgCode =
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        typeof (error as { code?: unknown }).code === "string"
+          ? (error as { code: string }).code
+          : null;
+
+      const isUniqueConflict = pgCode === "23505";
+
+      if (!isUniqueConflict || attempt === maxAttempts) {
+        throw error;
+      }
+    }
+  }
+
+  throw new Error("Unable to create project after multiple attempts.");
+};
+
 const resolveAuthenticatedUserId = async () => {
   const headersList = await headers();
   const session = await auth.api.getSession({ headers: headersList });
@@ -44,6 +102,26 @@ const ensureProjectsTable = async () => {
     create index if not exists project_manager_entries_user_status_updated_idx
       on public.project_manager_entries (user_id, status, updated_at desc)
   `.execute(db);
+
+  await sql`
+    alter table public.project_manager_entries
+    drop constraint if exists project_manager_entries_user_id_key
+  `.execute(db);
+
+  await sql`
+    drop index if exists public.project_manager_entries_user_id_key
+  `.execute(db);
+};
+
+const ensureMultipleDraftsAllowed = async () => {
+  await sql`
+    alter table public.field_configs
+    drop constraint if exists field_configs_one_draft_per_user_uidx
+  `.execute(db);
+
+  await sql`
+    drop index if exists public.field_configs_one_draft_per_user_uidx
+  `.execute(db);
 };
 
 const ensureProjectEntriesForUser = async (userId: string) => {
@@ -56,7 +134,6 @@ const ensureProjectEntriesForUser = async (userId: string) => {
       'active'
     from public.field_configs f
     where f.user_id = ${userId}
-      and f.is_draft = false
       and not exists (
         select 1
         from public.project_manager_entries p
@@ -111,6 +188,7 @@ export async function GET(request: Request) {
     }
 
     await ensureProjectsTable();
+    await ensureMultipleDraftsAllowed();
     await ensureProjectEntriesForUser(userId);
 
     const url = new URL(request.url);
@@ -131,7 +209,6 @@ export async function GET(request: Request) {
       join public.field_configs f on f.upload_id = p.upload_id
       where p.user_id = ${userId}
         and f.user_id = ${userId}
-        and f.is_draft = false
         and p.status = ${status}
       order by p.updated_at desc
     `.execute(db);
@@ -172,37 +249,7 @@ export async function POST(request: Request) {
         ? body.name.trim()
         : "Untitled Project";
 
-    const createdConfig = await sql<{
-      upload_id: string;
-      updated_at: Date;
-      payload: unknown;
-      background_image: string | null;
-    }>`
-      insert into public.field_configs (
-        id,
-        upload_id,
-        user_id,
-        payload,
-        background_image,
-        content_hash,
-        is_draft
-      )
-      values (
-        ${randomUUID()}::uuid,
-        ${randomUUID()}::uuid,
-        ${userId},
-        ${JSON.stringify([])}::jsonb,
-        null,
-        ${buildShareCode8()},
-        false
-      )
-      returning upload_id, updated_at, payload, background_image
-    `.execute(db);
-
-    const config = createdConfig.rows[0];
-    if (!config) {
-      throw new Error("Failed to create project config.");
-    }
+    const config = await createProjectConfigWithRetry({ userId });
 
     await sql`
       insert into public.project_manager_entries (upload_id, user_id, name, status)

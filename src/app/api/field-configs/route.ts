@@ -18,7 +18,6 @@ type FieldConfigRow = {
   updated_at: Date;
 };
 
-
 const isObjectRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
@@ -67,6 +66,26 @@ const ensureProjectsTable = async () => {
   await sql`
     create index if not exists project_manager_entries_user_status_updated_idx
       on public.project_manager_entries (user_id, status, updated_at desc)
+  `.execute(db);
+
+  await sql`
+    alter table public.project_manager_entries
+    drop constraint if exists project_manager_entries_user_id_key
+  `.execute(db);
+
+  await sql`
+    drop index if exists public.project_manager_entries_user_id_key
+  `.execute(db);
+};
+
+const ensureMultipleDraftsAllowed = async () => {
+  await sql`
+    alter table public.field_configs
+    drop constraint if exists field_configs_one_draft_per_user_uidx
+  `.execute(db);
+
+  await sql`
+    drop index if exists public.field_configs_one_draft_per_user_uidx
   `.execute(db);
 };
 
@@ -148,39 +167,7 @@ const updateFieldConfigDraft = async (input: {
   return result.rows[0] ?? null;
 };
 
-const updateFinalFieldConfigByUploadId = async (input: {
-  userId: string;
-  uploadId: string;
-  payload: unknown;
-  backgroundImage: string | null;
-}) => {
-  const payloadJson = JSON.stringify(input.payload);
-
-  const result = await sql<FieldConfigRow>`
-    update public.field_configs
-    set
-      payload = ${payloadJson}::jsonb,
-      background_image = ${input.backgroundImage},
-      is_draft = false,
-      updated_at = now()
-    where upload_id = ${input.uploadId}::uuid
-      and user_id = ${input.userId}
-    returning
-      id,
-      upload_id,
-      user_id,
-      payload,
-      background_image,
-      content_hash,
-      is_draft,
-      created_at,
-      updated_at
-  `.execute(db);
-
-  return result.rows[0] ?? null;
-};
-
-const createFieldConfigWithUploadId = async (input: {
+const updateFieldConfigByUploadId = async (input: {
   userId: string;
   uploadId: string;
   payload: unknown;
@@ -190,24 +177,14 @@ const createFieldConfigWithUploadId = async (input: {
   const payloadJson = JSON.stringify(input.payload);
 
   const result = await sql<FieldConfigRow>`
-    insert into public.field_configs (
-      id,
-      upload_id,
-      user_id,
-      payload,
-      background_image,
-      content_hash,
-      is_draft
-    )
-    values (
-      ${randomUUID()}::uuid,
-      ${input.uploadId}::uuid,
-      ${input.userId},
-      ${payloadJson}::jsonb,
-      ${input.backgroundImage},
-      ${buildShareCode8()},
-      ${input.isDraft}
-    )
+    update public.field_configs
+    set
+      payload = ${payloadJson}::jsonb,
+      background_image = ${input.backgroundImage},
+      is_draft = ${input.isDraft},
+      updated_at = now()
+    where upload_id = ${input.uploadId}::uuid
+      and user_id = ${input.userId}
     returning
       id,
       upload_id,
@@ -313,6 +290,8 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
     }
 
+    await ensureMultipleDraftsAllowed();
+
     const body = await request.json();
     const payload = body?.payload;
     const editorState = body?.editorState ?? null;
@@ -324,6 +303,41 @@ export async function POST(request: Request) {
 
     if (payload === undefined) {
       return NextResponse.json({ error: "Invalid payload." }, { status: 400 });
+    }
+
+    if (requestedUploadId) {
+      const scoped = await updateFieldConfigByUploadId({
+        userId,
+        uploadId: requestedUploadId,
+        payload,
+        backgroundImage,
+        isDraft,
+      });
+
+      if (!scoped) {
+        return NextResponse.json({ error: "Project config not found." }, { status: 404 });
+      }
+
+      if (!isDraft) {
+        await upsertProjectEntry({
+          uploadId: scoped.upload_id,
+          userId: scoped.user_id,
+          contentHash: scoped.content_hash,
+        });
+      }
+
+      return NextResponse.json(
+        {
+          id: scoped.id,
+          uploadId: scoped.upload_id,
+          contentHash: scoped.content_hash,
+          isDraft: scoped.is_draft,
+          createdAt: scoped.created_at,
+          updatedAt: scoped.updated_at,
+          deduped: false,
+        },
+        { status: 200 }
+      );
     }
 
     if (isDraft) {
@@ -377,6 +391,7 @@ export async function POST(request: Request) {
         }
 
         await cleanupOtherDrafts({ userId, keepId: updated.id });
+
         return NextResponse.json(
           {
             id: updated.id,
@@ -414,35 +429,12 @@ export async function POST(request: Request) {
       );
     }
 
-    const updatedExisting = requestedUploadId
-      ? await updateFinalFieldConfigByUploadId({
-          userId,
-          uploadId: requestedUploadId,
-          payload,
-          backgroundImage,
-        })
-      : null;
-
-    const created =
-      updatedExisting ??
-      (requestedUploadId
-        ? await createFieldConfigWithUploadId({
-            userId,
-            uploadId: requestedUploadId,
-            payload,
-            backgroundImage,
-            isDraft: false,
-          })
-        : await createFieldConfigWithRetry({
-            userId,
-            payload,
-            backgroundImage,
-            isDraft: false,
-          }));
-
-    if (!created) {
-      throw new Error("Failed to create field config.");
-    }
+    const created = await createFieldConfigWithRetry({
+      userId,
+      payload,
+      backgroundImage,
+      isDraft: false,
+    });
 
     await upsertProjectEntry({
       uploadId: created.upload_id,

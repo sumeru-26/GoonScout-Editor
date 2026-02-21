@@ -4,18 +4,24 @@ import * as React from "react";
 import { useRouter } from "next/navigation";
 import {
   Archive,
-  Eye,
   Folder,
   MoreHorizontal,
   Plus,
   Search,
   Trash2,
   Upload,
-  Users,
 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { authClient } from "@/lib/auth-client";
 
@@ -63,8 +69,6 @@ const formatUpdatedText = (value: string) => {
   return `Last edited: ${month} ${day}`;
 };
 
-const stageLabel = (count: number) => `${count} ${count === 1 ? "Stage" : "Stages"}`;
-
 const cardGradient =
   "radial-gradient(circle at 20% 20%, rgba(59,130,246,0.16), transparent 42%), radial-gradient(circle at 80% 35%, rgba(30,64,175,0.25), transparent 45%), linear-gradient(180deg, rgba(15,23,42,0.9), rgba(10,15,32,0.95))";
 
@@ -77,6 +81,13 @@ export default function ProjectManagerPage() {
   const [isLoading, setIsLoading] = React.useState(true);
   const [isCreating, setIsCreating] = React.useState(false);
   const [isUploading, setIsUploading] = React.useState(false);
+  const [isCreateDialogOpen, setIsCreateDialogOpen] = React.useState(false);
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = React.useState(false);
+  const [isDeletingProject, setIsDeletingProject] = React.useState(false);
+  const [projectToDelete, setProjectToDelete] = React.useState<
+    { uploadId: string; name: string } | null
+  >(null);
+  const [createProjectName, setCreateProjectName] = React.useState("Untitled Project");
   const [activeStatus, setActiveStatus] = React.useState<ProjectStatus>("active");
   const [search, setSearch] = React.useState("");
   const [openMenuId, setOpenMenuId] = React.useState<string | null>(null);
@@ -185,16 +196,25 @@ export default function ProjectManagerPage() {
   }, [activeStatus, projectsByStatus, search]);
 
   const handleCreateProject = React.useCallback(async () => {
+    const projectName = createProjectName.trim();
+    if (!projectName) {
+      toast.error("Project name is required.");
+      return;
+    }
+
     setIsCreating(true);
     try {
       const response = await fetch("/api/projects", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: "Untitled Project" }),
+        body: JSON.stringify({ name: projectName }),
       });
 
       if (!response.ok) {
-        throw new Error("Failed to create project.");
+        const body = (await response.json().catch(() => ({}))) as {
+          error?: string;
+        };
+        throw new Error(body.error || "Failed to create project.");
       }
 
       const result = (await response.json()) as {
@@ -207,6 +227,7 @@ export default function ProjectManagerPage() {
       }
 
       toast.success("Project created.");
+      setIsCreateDialogOpen(false);
       router.push(`/editor?uploadId=${uploadId}`);
     } catch (error) {
       const message =
@@ -215,7 +236,12 @@ export default function ProjectManagerPage() {
     } finally {
       setIsCreating(false);
     }
-  }, [router]);
+  }, [createProjectName, router]);
+
+  const openCreateProjectDialog = React.useCallback(() => {
+    setCreateProjectName("Untitled Project");
+    setIsCreateDialogOpen(true);
+  }, []);
 
   const updateProject = React.useCallback(
     async (uploadId: string, updates: { status?: ProjectStatus; name?: string }) => {
@@ -248,6 +274,29 @@ export default function ProjectManagerPage() {
     },
     [refreshProjects]
   );
+
+  const requestDeleteProject = React.useCallback((project: Project) => {
+    setOpenMenuId(null);
+    setProjectToDelete({ uploadId: project.uploadId, name: project.name });
+    setIsDeleteDialogOpen(true);
+  }, []);
+
+  const confirmDeleteProject = React.useCallback(async () => {
+    if (!projectToDelete) return;
+    setIsDeletingProject(true);
+    try {
+      await handlePermanentDelete(projectToDelete.uploadId);
+      toast.success("Project deleted.");
+      setIsDeleteDialogOpen(false);
+      setProjectToDelete(null);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Delete failed.";
+      toast.error(message);
+    } finally {
+      setIsDeletingProject(false);
+    }
+  }, [handlePermanentDelete, projectToDelete]);
 
   const handleUploadClick = React.useCallback(() => {
     fileInputRef.current?.click();
@@ -335,7 +384,7 @@ export default function ProjectManagerPage() {
           <Button
             type="button"
             className="h-10 rounded-xl bg-blue-600 px-5 text-white hover:bg-blue-500"
-            onClick={handleCreateProject}
+            onClick={openCreateProjectDialog}
             disabled={isCreating}
           >
             <Plus className="mr-2 h-4 w-4" />
@@ -538,14 +587,13 @@ export default function ProjectManagerPage() {
                           <div className="absolute right-0 z-20 mt-2 w-44 rounded-xl border border-white/10 bg-slate-950 p-1 shadow-2xl">
                             <button
                               type="button"
-                              className="flex w-full items-center rounded-lg px-3 py-2 text-left text-sm text-white/90 hover:bg-white/10"
+                              className="flex w-full items-center rounded-lg px-3 py-2 text-left text-sm text-red-200 hover:bg-red-500/20"
                               onClick={(event) => {
                                 event.stopPropagation();
-                                setOpenMenuId(null);
-                                router.push(`/editor?uploadId=${project.uploadId}`);
+                                requestDeleteProject(project);
                               }}
                             >
-                              Open Project
+                              Delete Project
                             </button>
 
                             {activeStatus === "active" ? (
@@ -589,30 +637,17 @@ export default function ProjectManagerPage() {
                                 Move to Trash
                               </button>
                             ) : (
-                              <>
-                                <button
-                                  type="button"
-                                  className="flex w-full items-center rounded-lg px-3 py-2 text-left text-sm text-white/90 hover:bg-white/10"
-                                  onClick={async (event) => {
-                                    event.stopPropagation();
-                                    setOpenMenuId(null);
-                                    await updateProject(project.uploadId, { status: "active" });
-                                  }}
-                                >
-                                  Restore
-                                </button>
-                                <button
-                                  type="button"
-                                  className="flex w-full items-center rounded-lg px-3 py-2 text-left text-sm text-red-200 hover:bg-red-500/20"
-                                  onClick={async (event) => {
-                                    event.stopPropagation();
-                                    setOpenMenuId(null);
-                                    await handlePermanentDelete(project.uploadId);
-                                  }}
-                                >
-                                  Delete Permanently
-                                </button>
-                              </>
+                              <button
+                                type="button"
+                                className="flex w-full items-center rounded-lg px-3 py-2 text-left text-sm text-white/90 hover:bg-white/10"
+                                onClick={async (event) => {
+                                  event.stopPropagation();
+                                  setOpenMenuId(null);
+                                  await updateProject(project.uploadId, { status: "active" });
+                                }}
+                              >
+                                Restore
+                              </button>
                             )}
                           </div>
                         ) : null}
@@ -620,19 +655,6 @@ export default function ProjectManagerPage() {
                     </div>
 
                     <p className="text-base text-white/65">{formatUpdatedText(project.updatedAt)}</p>
-                    <div className="mt-3 flex items-center justify-between">
-                      <p className="text-2xl text-white/85">{stageLabel(project.stageCount)}</p>
-                      <div className="flex items-center gap-2">
-                        <span className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-slate-900/70 px-2 py-1 text-sm text-white/70">
-                          <Users className="h-3.5 w-3.5" />
-                          +3
-                        </span>
-                        <span className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-slate-900/70 px-2 py-1 text-sm text-white/70">
-                          <Eye className="h-3.5 w-3.5" />
-                          Open
-                        </span>
-                      </div>
-                    </div>
                   </div>
                 </article>
               ))}
@@ -640,6 +662,98 @@ export default function ProjectManagerPage() {
           )}
         </section>
       </main>
+
+      <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
+        <DialogContent className="border-white/10 bg-slate-950 text-white sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Create Project</DialogTitle>
+            <DialogDescription className="text-white/65">
+              Enter a name for your new project.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid gap-2">
+            <Input
+              value={createProjectName}
+              onChange={(event) => setCreateProjectName(event.target.value)}
+              placeholder="Untitled Project"
+              className="h-10 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
+              autoFocus
+              onKeyDown={(event) => {
+                if (event.key !== "Enter") return;
+                event.preventDefault();
+                if (isCreating) return;
+                void handleCreateProject();
+              }}
+            />
+          </div>
+
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              className="border-white/20 bg-slate-900/60 text-white hover:bg-slate-800"
+              onClick={() => setIsCreateDialogOpen(false)}
+              disabled={isCreating}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              className="bg-blue-600 text-white hover:bg-blue-500"
+              onClick={() => void handleCreateProject()}
+              disabled={isCreating}
+            >
+              {isCreating ? "Creating..." : "Create"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={isDeleteDialogOpen}
+        onOpenChange={(open) => {
+          if (isDeletingProject) return;
+          setIsDeleteDialogOpen(open);
+          if (!open) {
+            setProjectToDelete(null);
+          }
+        }}
+      >
+        <DialogContent className="border-white/10 bg-slate-950 text-white sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Delete Project</DialogTitle>
+            <DialogDescription className="text-white/65">
+              Are you sure you want to delete
+              {projectToDelete?.name ? ` "${projectToDelete.name}"` : " this project"}?
+              This permanently removes it from the backend.
+            </DialogDescription>
+          </DialogHeader>
+
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              className="border-white/20 bg-slate-900/60 text-white hover:bg-slate-800"
+              onClick={() => {
+                setIsDeleteDialogOpen(false);
+                setProjectToDelete(null);
+              }}
+              disabled={isDeletingProject}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              className="bg-red-600 text-white hover:bg-red-500"
+              onClick={() => void confirmDeleteProject()}
+              disabled={isDeletingProject}
+            >
+              {isDeletingProject ? "Deleting..." : "Delete"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
