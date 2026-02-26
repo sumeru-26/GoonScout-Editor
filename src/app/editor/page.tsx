@@ -1419,7 +1419,7 @@ function CanvasMirrorLine({
     height,
   };
 
-  return (
+  return React.useMemo(() => (
     <div
       ref={setNodeRef}
       style={style}
@@ -1464,7 +1464,7 @@ function CanvasMirrorLine({
         </>
       ) : null}
     </div>
-  );
+  ), [item, style, isPreviewMode, attributes, listeners, onSelect, onHandleStart, width, height, relativeStartX, relativeStartY, relativeEndX, relativeEndY, isSnapped]);
 }
 
 function CanvasCover({
@@ -2103,39 +2103,44 @@ export default function EditorPage() {
     isAlignmentAssistEnabledRef.current = isAlignmentAssistEnabled;
   }, [isAlignmentAssistEnabled]);
 
-  const flushDragUpdates = React.useCallback(
-    (
-      nextGuides: { vertical: number[]; horizontal: number[] },
-      nextDragSnap: DragSnapOffset,
-      nextPaletteSnap: { x: number; y: number }
-    ) => {
-      if (
-        !areNumberArraysEqual(nextGuides.vertical, alignmentGuidesRef.current.vertical) ||
-        !areNumberArraysEqual(nextGuides.horizontal, alignmentGuidesRef.current.horizontal)
-      ) {
-        alignmentGuidesRef.current = nextGuides;
-        setAlignmentGuides(nextGuides);
-      }
-
-      if (
-        nextDragSnap.itemId !== dragSnapOffsetRef.current.itemId ||
-        nextDragSnap.x !== dragSnapOffsetRef.current.x ||
-        nextDragSnap.y !== dragSnapOffsetRef.current.y
-      ) {
-        dragSnapOffsetRef.current = nextDragSnap;
-        setDragSnapOffset(nextDragSnap);
-      }
-
-      if (
-        nextPaletteSnap.x !== paletteSnapOffsetRef.current.x ||
-        nextPaletteSnap.y !== paletteSnapOffsetRef.current.y
-      ) {
-        paletteSnapOffsetRef.current = nextPaletteSnap;
-        setPaletteSnapOffset(nextPaletteSnap);
-      }
-    },
-    []
-  );
+      // Throttle snap line updates using requestAnimationFrame
+      const flushDragUpdates = React.useCallback(
+        (
+          nextGuides: { vertical: number[]; horizontal: number[] },
+          nextDragSnap: DragSnapOffset,
+          nextPaletteSnap: { x: number; y: number }
+        ) => {
+          if (flushDragUpdates.rafId) {
+            cancelAnimationFrame(flushDragUpdates.rafId);
+          }
+          flushDragUpdates.rafId = requestAnimationFrame(() => {
+            if (
+              !areNumberArraysEqual(nextGuides.vertical, alignmentGuidesRef.current.vertical) ||
+              !areNumberArraysEqual(nextGuides.horizontal, alignmentGuidesRef.current.horizontal)
+            ) {
+              alignmentGuidesRef.current = nextGuides;
+              setAlignmentGuides(nextGuides);
+            }
+            if (
+              nextDragSnap.itemId !== dragSnapOffsetRef.current.itemId ||
+              nextDragSnap.x !== dragSnapOffsetRef.current.x ||
+              nextDragSnap.y !== dragSnapOffsetRef.current.y
+            ) {
+              dragSnapOffsetRef.current = nextDragSnap;
+              setDragSnapOffset(nextDragSnap);
+            }
+            if (
+              nextPaletteSnap.x !== paletteSnapOffsetRef.current.x ||
+              nextPaletteSnap.y !== paletteSnapOffsetRef.current.y
+            ) {
+              paletteSnapOffsetRef.current = nextPaletteSnap;
+              setPaletteSnapOffset(nextPaletteSnap);
+            }
+          });
+        },
+        []
+      );
+      flushDragUpdates.rafId = null;
 
   const processDragMove = React.useCallback(
     (snapshot: DragMoveSnapshot) => {
@@ -2222,34 +2227,28 @@ export default function EditorPage() {
       const vertical = new Set<number>();
       const horizontal = new Set<number>();
 
-      visibleItems
-        .filter((item) => item.kind !== "mirror")
-        .forEach((item) => {
-          if (data?.type === "canvas" && item.id === data.itemId) return;
-          const left = item.x;
-          const right = item.x + item.width;
-          const centerX = item.x + item.width / 2;
-          const top = item.y;
-          const bottom = item.y + item.height;
-          const centerY = item.y + item.height / 2;
-
-          if (Math.abs(activeLeft - left) <= GUIDE_SNAP_PX) vertical.add(left);
-          if (Math.abs(activeRight - right) <= GUIDE_SNAP_PX) vertical.add(right);
-          if (Math.abs(activeLeft - right) <= GUIDE_SNAP_PX) vertical.add(right);
-          if (Math.abs(activeRight - left) <= GUIDE_SNAP_PX) vertical.add(left);
-          if (Math.abs(activeCenterX - centerX) <= GUIDE_SNAP_PX)
-            vertical.add(centerX);
-
-          if (Math.abs(activeTop - top) <= GUIDE_SNAP_PX) horizontal.add(top);
-          if (Math.abs(activeBottom - bottom) <= GUIDE_SNAP_PX)
-            horizontal.add(bottom);
-          if (Math.abs(activeTop - bottom) <= GUIDE_SNAP_PX)
-            horizontal.add(bottom);
-          if (Math.abs(activeBottom - top) <= GUIDE_SNAP_PX)
-            horizontal.add(top);
-          if (Math.abs(activeCenterY - centerY) <= GUIDE_SNAP_PX)
-            horizontal.add(centerY);
-        });
+      // Optimize: Only calculate guides for visible items, skip unnecessary checks
+      for (let i = 0; i < visibleItems.length; ++i) {
+        const item = visibleItems[i];
+        if (item.kind === "mirror") continue;
+        if (data?.type === "canvas" && item.id === data.itemId) continue;
+        const left = item.x;
+        const right = item.x + item.width;
+        const centerX = item.x + item.width / 2;
+        const top = item.y;
+        const bottom = item.y + item.height;
+        const centerY = item.y + item.height / 2;
+        if (Math.abs(activeLeft - left) <= GUIDE_SNAP_PX) vertical.add(left);
+        if (Math.abs(activeRight - right) <= GUIDE_SNAP_PX) vertical.add(right);
+        if (Math.abs(activeLeft - right) <= GUIDE_SNAP_PX) vertical.add(right);
+        if (Math.abs(activeRight - left) <= GUIDE_SNAP_PX) vertical.add(left);
+        if (Math.abs(activeCenterX - centerX) <= GUIDE_SNAP_PX) vertical.add(centerX);
+        if (Math.abs(activeTop - top) <= GUIDE_SNAP_PX) horizontal.add(top);
+        if (Math.abs(activeBottom - bottom) <= GUIDE_SNAP_PX) horizontal.add(bottom);
+        if (Math.abs(activeTop - bottom) <= GUIDE_SNAP_PX) horizontal.add(bottom);
+        if (Math.abs(activeBottom - top) <= GUIDE_SNAP_PX) horizontal.add(top);
+        if (Math.abs(activeCenterY - centerY) <= GUIDE_SNAP_PX) horizontal.add(centerY);
+      }
 
       const nextGuides = {
         vertical: Array.from(vertical),
@@ -2257,74 +2256,10 @@ export default function EditorPage() {
       };
 
       if (data?.type === "canvas" && data.itemId && activeItem) {
-        let snappedX = x;
-        let snappedY = y;
-        let bestXDiff = GUIDE_SNAP_PX + 1;
-        let bestYDiff = GUIDE_SNAP_PX + 1;
-
-        visibleItems
-          .filter((item) => item.kind !== "mirror" && item.id !== data.itemId)
-          .forEach((item) => {
-            const left = item.x;
-            const right = item.x + item.width;
-            const centerX = item.x + item.width / 2;
-            const top = item.y;
-            const bottom = item.y + item.height;
-            const centerY = item.y + item.height / 2;
-
-            const candidatesX = [
-              { diff: Math.abs(activeLeft - left), value: left },
-              { diff: Math.abs(activeRight - right), value: right - activeWidth },
-              { diff: Math.abs(activeLeft - right), value: right },
-              { diff: Math.abs(activeRight - left), value: left - activeWidth },
-              { diff: Math.abs(activeCenterX - centerX), value: centerX - activeWidth / 2 },
-            ];
-
-            candidatesX.forEach((candidate) => {
-              if (candidate.diff <= GUIDE_SNAP_PX && candidate.diff < bestXDiff) {
-                bestXDiff = candidate.diff;
-                snappedX = candidate.value;
-              }
-            });
-
-            const candidatesY = [
-              { diff: Math.abs(activeTop - top), value: top },
-              { diff: Math.abs(activeBottom - bottom), value: bottom - activeHeight },
-              { diff: Math.abs(activeTop - bottom), value: bottom },
-              { diff: Math.abs(activeBottom - top), value: top - activeHeight },
-              { diff: Math.abs(activeCenterY - centerY), value: centerY - activeHeight / 2 },
-            ];
-
-            candidatesY.forEach((candidate) => {
-              if (candidate.diff <= GUIDE_SNAP_PX && candidate.diff < bestYDiff) {
-                bestYDiff = candidate.diff;
-                snappedY = candidate.value;
-              }
-            });
-          });
-
-        const existingLock = snapLockRef.current;
-        const lockedX =
-          existingLock.type === "canvas" && existingLock.itemId === data.itemId
-            ? existingLock.x
-            : null;
-        const lockedY =
-          existingLock.type === "canvas" && existingLock.itemId === data.itemId
-            ? existingLock.y
-            : null;
-
-        const resolvedX = resolveSnapLock(x, snappedX, bestXDiff, lockedX);
-        const resolvedY = resolveSnapLock(y, snappedY, bestYDiff, lockedY);
-        snapLockRef.current = {
-          itemId: data.itemId,
-          type: "canvas",
-          x: resolvedX.lock,
-          y: resolvedY.lock,
-        };
-
+        // Only show snap lines when in range, do not update snap offset or item position during drag
         flushDragUpdates(
           nextGuides,
-          { itemId: data.itemId, x: resolvedX.value - x, y: resolvedY.value - y },
+          { itemId: data.itemId, x: 0, y: 0 },
           { x: 0, y: 0 }
         );
       } else if (data?.type === "palette") {
@@ -5023,11 +4958,57 @@ export default function EditorPage() {
           finalTop < assetsRect.bottom
         : false;
 
-      if (data?.type === "canvas" && data.itemId && isInsideAssets) {
+      if (data?.type === "canvas" && data.itemId && activeItem) {
+        // Snap to nearest guide if within range on drag end
+        const x = finalLeft - canvasRect.left;
+        const y = finalTop - canvasRect.top;
+        let snappedX = x;
+        let snappedY = y;
+        let bestXDiff = GUIDE_SNAP_PX + 1;
+        let bestYDiff = GUIDE_SNAP_PX + 1;
+        visibleItems
+          .filter((item) => item.kind !== "mirror" && item.id !== data.itemId)
+          .forEach((item) => {
+            const left = item.x;
+            const right = item.x + item.width;
+            const centerX = item.x + item.width / 2;
+            const top = item.y;
+            const bottom = item.y + item.height;
+            const centerY = item.y + item.height / 2;
+            const candidatesX = [
+              { diff: Math.abs(x - left), value: left },
+              { diff: Math.abs(x + activeWidth - right), value: right - activeWidth },
+              { diff: Math.abs(x - right), value: right },
+              { diff: Math.abs(x + activeWidth - left), value: left - activeWidth },
+              { diff: Math.abs(x + activeWidth / 2 - centerX), value: centerX - activeWidth / 2 },
+            ];
+            candidatesX.forEach((candidate) => {
+              if (candidate.diff <= GUIDE_SNAP_PX && candidate.diff < bestXDiff) {
+                bestXDiff = candidate.diff;
+                snappedX = candidate.value;
+              }
+            });
+            const candidatesY = [
+              { diff: Math.abs(y - top), value: top },
+              { diff: Math.abs(y + activeHeight - bottom), value: bottom - activeHeight },
+              { diff: Math.abs(y - bottom), value: bottom },
+              { diff: Math.abs(y + activeHeight - top), value: top - activeHeight },
+              { diff: Math.abs(y + activeHeight / 2 - centerY), value: centerY - activeHeight / 2 },
+            ];
+            candidatesY.forEach((candidate) => {
+              if (candidate.diff <= GUIDE_SNAP_PX && candidate.diff < bestYDiff) {
+                bestYDiff = candidate.diff;
+                snappedY = candidate.value;
+              }
+            });
+          });
+        snappedX = Math.max(0, Math.min(snappedX, canvasRect.width - activeWidth));
+        snappedY = Math.max(0, Math.min(snappedY, canvasRect.height - activeHeight));
         setItems((prev) =>
-          prev.filter(
-            (item) => item.id !== data.itemId && item.stageParentId !== data.itemId
-          )
+          prev.map((item) => {
+            if (item.id !== data.itemId) return item;
+            return { ...item, x: snappedX, y: snappedY };
+          })
         );
         setActiveType(null);
         setAlignmentGuides({ vertical: [], horizontal: [] });
@@ -5037,91 +5018,8 @@ export default function EditorPage() {
         palettePointerStartRef.current = null;
         dragStartPointerRef.current = null;
         return;
-      }
-
-      const isInsideCanvas =
-        finalLeft + activeWidth > canvasRect.left &&
-        finalLeft < canvasRect.right &&
-        finalTop + activeHeight > canvasRect.top &&
-        finalTop < canvasRect.bottom;
-
-      if (!isInsideCanvas) {
-        setActiveType(null);
-        setAlignmentGuides({ vertical: [], horizontal: [] });
-        setDragSnapOffset({ itemId: null, x: 0, y: 0 });
-        setPaletteSnapOffset({ x: 0, y: 0 });
-        setPalettePointerOffset({ x: 0, y: 0 });
-        palettePointerStartRef.current = null;
-        dragStartPointerRef.current = null;
-        return;
-      }
-
-      let x = finalLeft - canvasRect.left;
-      let y = finalTop - canvasRect.top;
-
-      x = Math.max(0, Math.min(x, canvasRect.width - activeWidth));
-      y = Math.max(0, Math.min(y, canvasRect.height - activeHeight));
-
-      const snapToGuides = (nextX: number, nextY: number) => {
-        if (!isAlignmentAssistEnabled) {
-          return { x: nextX, y: nextY };
-        }
-
-        let snappedX = nextX;
-        let snappedY = nextY;
-        let bestXDiff = GUIDE_SNAP_PX + 1;
-        let bestYDiff = GUIDE_SNAP_PX + 1;
-
-        const activeLeft = nextX;
-        const activeRight = nextX + activeWidth;
-        const activeCenterX = nextX + activeWidth / 2;
-        const activeTop = nextY;
-        const activeBottom = nextY + activeHeight;
-        const activeCenterY = nextY + activeHeight / 2;
-
-        visibleItems
-          .filter((item) => item.kind !== "mirror")
-          .forEach((item) => {
-            if (data?.type === "canvas" && item.id === data.itemId) return;
-            const left = item.x;
-            const right = item.x + item.width;
-            const centerX = item.x + item.width / 2;
-            const top = item.y;
-            const bottom = item.y + item.height;
-            const centerY = item.y + item.height / 2;
-
-            const candidatesX = [
-              { diff: Math.abs(activeLeft - left), value: left },
-              { diff: Math.abs(activeRight - right), value: right - activeWidth },
-              { diff: Math.abs(activeLeft - right), value: right },
-              { diff: Math.abs(activeRight - left), value: left - activeWidth },
-              { diff: Math.abs(activeCenterX - centerX), value: centerX - activeWidth / 2 },
-            ];
-
-            candidatesX.forEach((candidate) => {
-              if (candidate.diff <= GUIDE_SNAP_PX && candidate.diff < bestXDiff) {
-                bestXDiff = candidate.diff;
-                snappedX = candidate.value;
-              }
-            });
-
-            const candidatesY = [
-              { diff: Math.abs(activeTop - top), value: top },
-              { diff: Math.abs(activeBottom - bottom), value: bottom - activeHeight },
-              { diff: Math.abs(activeTop - bottom), value: bottom },
-              { diff: Math.abs(activeBottom - top), value: top - activeHeight },
-              { diff: Math.abs(activeCenterY - centerY), value: centerY - activeHeight / 2 },
-            ];
-
-            candidatesY.forEach((candidate) => {
-              if (candidate.diff <= GUIDE_SNAP_PX && candidate.diff < bestYDiff) {
-                bestYDiff = candidate.diff;
-                snappedY = candidate.value;
-              }
-            });
-          });
-
-        snappedX = Math.max(0, Math.min(snappedX, canvasRect.width - activeWidth));
+      } else if (data?.type === "palette") {
+        // ...existing code...
         snappedY = Math.max(0, Math.min(snappedY, canvasRect.height - activeHeight));
         return { x: snappedX, y: snappedY };
       };
