@@ -377,7 +377,7 @@ export default function ProjectManagerPage() {
   );
 
   return (
-    <div className="min-h-screen bg-[radial-gradient(1200px_700px_at_10%_0%,#16234b_0%,#070b1a_45%,#04060f_100%)] text-white">
+    <div className="min-h-screen bg-slate-900 text-white">
       <header className="flex items-center justify-between border-b border-white/10 px-6 py-4">
         <div className="text-4xl font-black tracking-tight text-white">GoonScout</div>
         <div className="flex items-center gap-3">
@@ -428,7 +428,7 @@ export default function ProjectManagerPage() {
               )}
             </button>
             {isUserMenuOpen ? (
-              <div className="absolute right-0 mt-2 w-44 rounded-lg border border-white/10 bg-slate-900 p-1 shadow-2xl">
+              <div className="absolute right-0 mt-2 w-44 rounded-lg border border-white/10 bg-slate-900 p-1 shadow-2xl z-50">
                 <div className="px-2 py-2 text-xs text-white/70">{userName}</div>
                 <button
                   type="button"
