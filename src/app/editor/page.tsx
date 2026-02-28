@@ -16,6 +16,12 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { Button } from "@/components/ui/button";
 import * as LucideIcons from "lucide-react";
+
+declare global {
+  interface Window {
+    __lastDragMoveTimeRef?: { current: number };
+  }
+}
 import {
   Bot,
   Check,
@@ -2256,159 +2262,13 @@ export default function EditorPage() {
         horizontal: Array.from(horizontal),
       };
 
-      if (data?.type === "canvas" && data.itemId && activeItem) {
-        let snappedX = x;
-        let snappedY = y;
-        let bestXDiff = GUIDE_SNAP_PX + 1;
-        let bestYDiff = GUIDE_SNAP_PX + 1;
-
-        visibleItems
-          .filter((item) => item.kind !== "mirror" && item.id !== data.itemId)
-          .forEach((item) => {
-            const left = item.x;
-            const right = item.x + item.width;
-            const centerX = item.x + item.width / 2;
-            const top = item.y;
-            const bottom = item.y + item.height;
-            const centerY = item.y + item.height / 2;
-
-            const candidatesX = [
-              { diff: Math.abs(activeLeft - left), value: left },
-              { diff: Math.abs(activeRight - right), value: right - activeWidth },
-              { diff: Math.abs(activeLeft - right), value: right },
-              { diff: Math.abs(activeRight - left), value: left - activeWidth },
-              { diff: Math.abs(activeCenterX - centerX), value: centerX - activeWidth / 2 },
-            ];
-
-            candidatesX.forEach((candidate) => {
-              if (candidate.diff <= GUIDE_SNAP_PX && candidate.diff < bestXDiff) {
-                bestXDiff = candidate.diff;
-                snappedX = candidate.value;
-              }
-            });
-
-            const candidatesY = [
-              { diff: Math.abs(activeTop - top), value: top },
-              { diff: Math.abs(activeBottom - bottom), value: bottom - activeHeight },
-              { diff: Math.abs(activeTop - bottom), value: bottom },
-              { diff: Math.abs(activeBottom - top), value: top - activeHeight },
-              { diff: Math.abs(activeCenterY - centerY), value: centerY - activeHeight / 2 },
-            ];
-
-            candidatesY.forEach((candidate) => {
-              if (candidate.diff <= GUIDE_SNAP_PX && candidate.diff < bestYDiff) {
-                bestYDiff = candidate.diff;
-                snappedY = candidate.value;
-              }
-            });
-          });
-
-        const existingLock = snapLockRef.current;
-        const lockedX =
-          existingLock.type === "canvas" && existingLock.itemId === data.itemId
-            ? existingLock.x
-            : null;
-        const lockedY =
-          existingLock.type === "canvas" && existingLock.itemId === data.itemId
-            ? existingLock.y
-            : null;
-
-        const resolvedX = resolveSnapLock(x, snappedX, bestXDiff, lockedX);
-        const resolvedY = resolveSnapLock(y, snappedY, bestYDiff, lockedY);
-        snapLockRef.current = {
-          itemId: data.itemId,
-          type: "canvas",
-          x: resolvedX.lock,
-          y: resolvedY.lock,
-        };
-
-        flushDragUpdates(
-          nextGuides,
-          { itemId: data.itemId, x: resolvedX.value - x, y: resolvedY.value - y },
-          { x: 0, y: 0 }
-        );
-      } else if (data?.type === "palette") {
-        if (paletteKind === "icon" || paletteKind === "toggle") {
-          flushDragUpdates(
-            { vertical: [], horizontal: [] },
-            { itemId: null, x: 0, y: 0 },
-            { x: 0, y: 0 }
-          );
-          snapLockRef.current = { itemId: null, type: "palette", x: null, y: null };
-          return;
-        }
-
-        let snappedX = x;
-        let snappedY = y;
-        let bestXDiff = GUIDE_SNAP_PX + 1;
-        let bestYDiff = GUIDE_SNAP_PX + 1;
-
-        visibleItems
-          .filter((item) => item.kind !== "mirror")
-          .forEach((item) => {
-            const left = item.x;
-            const right = item.x + item.width;
-            const centerX = item.x + item.width / 2;
-            const top = item.y;
-            const bottom = item.y + item.height;
-            const centerY = item.y + item.height / 2;
-
-            const candidatesX = [
-              { diff: Math.abs(activeLeft - left), value: left },
-              { diff: Math.abs(activeRight - right), value: right - activeWidth },
-              { diff: Math.abs(activeLeft - right), value: right },
-              { diff: Math.abs(activeRight - left), value: left - activeWidth },
-              { diff: Math.abs(activeCenterX - centerX), value: centerX - activeWidth / 2 },
-            ];
-
-            candidatesX.forEach((candidate) => {
-              if (candidate.diff <= GUIDE_SNAP_PX && candidate.diff < bestXDiff) {
-                bestXDiff = candidate.diff;
-                snappedX = candidate.value;
-              }
-            });
-
-            const candidatesY = [
-              { diff: Math.abs(activeTop - top), value: top },
-              { diff: Math.abs(activeBottom - bottom), value: bottom - activeHeight },
-              { diff: Math.abs(activeTop - bottom), value: bottom },
-              { diff: Math.abs(activeBottom - top), value: top - activeHeight },
-              { diff: Math.abs(activeCenterY - centerY), value: centerY - activeHeight / 2 },
-            ];
-
-            candidatesY.forEach((candidate) => {
-              if (candidate.diff <= GUIDE_SNAP_PX && candidate.diff < bestYDiff) {
-                bestYDiff = candidate.diff;
-                snappedY = candidate.value;
-              }
-            });
-          });
-
-        const existingLock = snapLockRef.current;
-        const lockedX = existingLock.type === "palette" ? existingLock.x : null;
-        const lockedY = existingLock.type === "palette" ? existingLock.y : null;
-        const resolvedX = resolveSnapLock(x, snappedX, bestXDiff, lockedX);
-        const resolvedY = resolveSnapLock(y, snappedY, bestYDiff, lockedY);
-        snapLockRef.current = {
-          itemId: null,
-          type: "palette",
-          x: resolvedX.lock,
-          y: resolvedY.lock,
-        };
-
-        flushDragUpdates(
-          nextGuides,
-          { itemId: null, x: 0, y: 0 },
-          { x: resolvedX.value - x, y: resolvedY.value - y }
-        );
-      } else {
-        flushDragUpdates(
-          nextGuides,
-          { itemId: null, x: 0, y: 0 },
-          { x: 0, y: 0 }
-        );
-        snapLockRef.current = { itemId: null, type: null, x: null, y: null };
-      }
+      // Only show visual guides during drag, do not snap position
+      flushDragUpdates(
+        nextGuides,
+        { itemId: null, x: 0, y: 0 },
+        { x: 0, y: 0 }
+      );
+      snapLockRef.current = { itemId: null, type: null, x: null, y: null };
     },
     [
       flushDragUpdates,
@@ -2423,6 +2283,15 @@ export default function EditorPage() {
 
   const scheduleDragMove = React.useCallback(
     (snapshot: DragMoveSnapshot) => {
+      const THROTTLE_MS = 60; // ~30fps
+      if (!window.__lastDragMoveTimeRef) {
+        window.__lastDragMoveTimeRef = { current: 0 };
+      }
+      const now = Date.now();
+      if (now - window.__lastDragMoveTimeRef.current < THROTTLE_MS) {
+        return;
+      }
+      window.__lastDragMoveTimeRef.current = now;
       dragMoveSnapshotRef.current = snapshot;
       if (dragMoveRafRef.current !== null) return;
 
@@ -5707,17 +5576,17 @@ export default function EditorPage() {
                     (alignmentGuides.vertical.length > 0 ||
                       alignmentGuides.horizontal.length > 0) && (
                       <div className="pointer-events-none absolute inset-0">
-                        {alignmentGuides.vertical.map((xGuide) => (
+                        {[...new Set(alignmentGuides.vertical.map(v => Math.round(v)))].map((xGuide) => (
                           <div
                             key={`v-${xGuide}`}
-                            className="absolute top-0 h-full border-l border-dotted border-sky-300/70"
+                            className="absolute top-0 h-full border-l border-solid border-sky-300/70"
                             style={{ left: xGuide }}
                           />
                         ))}
-                        {alignmentGuides.horizontal.map((yGuide) => (
+                        {[...new Set(alignmentGuides.horizontal.map(v => Math.round(v)))].map((yGuide) => (
                           <div
                             key={`h-${yGuide}`}
-                            className="absolute left-0 w-full border-t border-dotted border-sky-300/70"
+                            className="absolute left-0 w-full border-t border-solid border-sky-300/70"
                             style={{ top: yGuide }}
                           />
                         ))}
