@@ -17,12 +17,9 @@ import { CSS } from "@dnd-kit/utilities";
 import { Button } from "@/components/ui/button";
 import * as LucideIcons from "lucide-react";
 
-declare global {
-  interface Window {
-    __lastDragMoveTimeRef?: { current: number };
-  }
-}
 import {
+  ArrowLeft,
+  ArrowRight,
   Bot,
   Check,
   CircleHelp,
@@ -31,6 +28,7 @@ import {
   Download,
   Eye,
   FileText,
+  QrCode,
   Redo2,
   RotateCcw,
   Send,
@@ -152,6 +150,7 @@ type CanvasItem = {
   swapRedSide?: "left" | "right";
   swapActiveSide?: "left" | "right";
   stageParentId?: string;
+  coverVisible?: boolean;
 };
 
 const isActionButtonKind = (kind: AssetKind): kind is ActionButtonKind =>
@@ -171,6 +170,8 @@ const getAssetSize = (kind: AssetKind) =>
             : kind === "log"
               ? LOG_SIZE
               : BUTTON_SIZE;
+
+  const shouldCenterPaletteAnchor = (kind: AssetKind) => kind !== "mirror";
 
 const getDefaultLabelForKind = (kind: AssetKind) =>
   kind === "icon"
@@ -760,6 +761,7 @@ const parseImportedEditorState = (
         label: "Cover",
         tag: "",
         teamSide: toTeamSide(data.teamSide),
+        coverVisible: data.visible !== false,
       };
     }
 
@@ -1059,13 +1061,23 @@ function PaletteSwapButton({ onPalettePointerDown }: PaletteButtonProps) {
       ref={setNodeRef}
       style={style}
       variant="outline"
-      className="mx-auto h-10 w-[calc(100%-8px)] justify-center rounded-xl border-white/10 bg-slate-900/70 text-white transition-all duration-150 hover:border-white/20 hover:bg-slate-800/80"
+      className="mx-auto h-[58px] w-[calc(100%-8px)] justify-start gap-3 rounded-xl border-white/10 bg-slate-900/70 px-3 text-left text-white transition-all duration-150 hover:border-white/20 hover:bg-slate-800/80"
       onPointerDownCapture={(event) => onPalettePointerDown("swap", event)}
       {...attributes}
       {...listeners}
       type="button"
+      aria-label="Swap side"
     >
-      Swap sides
+      <span className="flex h-8 w-8 items-center justify-center rounded-md bg-blue-500/20 text-blue-300">
+        <span className="flex flex-col items-center justify-center leading-none">
+          <ArrowRight className="h-3.5 w-3.5" />
+          <ArrowLeft className="-mt-0.5 h-3.5 w-3.5" />
+        </span>
+      </span>
+      <span className="flex flex-col items-start leading-tight">
+        <span className="text-sm font-semibold">Swap Side</span>
+        <span className="text-xs text-white/55">Switch active team side view</span>
+      </span>
     </Button>
   );
 }
@@ -1500,14 +1512,16 @@ function CanvasCover({
     height: item.height,
   };
 
+  const isCoverVisible = item.coverVisible !== false;
+
   return (
     <div
       ref={setNodeRef}
       style={style}
-      className={`group absolute rounded-md ${
-        isPreviewMode
-          ? "bg-slate-900 transition-all duration-150 ease-out"
-          : "bg-white/5 !transition-none"
+      className={`group absolute rounded-md border ${
+        isPreviewMode || isCoverVisible
+          ? "border-white/10 bg-slate-900 transition-all duration-150 ease-out"
+          : "border-dashed border-white/35 bg-white/5 !transition-none"
       }`}
       onPointerDown={() => {
         if (!isPreviewMode) onSelect(item.id);
@@ -1517,9 +1531,11 @@ function CanvasCover({
     >
       {!isPreviewMode ? (
         <>
-          <div className="pointer-events-none flex h-full w-full items-center justify-center text-xs uppercase tracking-wide text-white/60">
-            Cover
-          </div>
+          {!isCoverVisible ? (
+            <div className="pointer-events-none flex h-full w-full items-center justify-center text-xs uppercase tracking-wide text-white/60">
+              Cover hidden
+            </div>
+          ) : null}
           <span
             role="presentation"
             onPointerDown={(event) => onResizeStart(event, item)}
@@ -1850,6 +1866,7 @@ export default function EditorPage() {
   const [isIconDialogOpen, setIsIconDialogOpen] = React.useState(false);
   const [iconEditingId, setIconEditingId] = React.useState<string | null>(null);
   const [iconSearch, setIconSearch] = React.useState("");
+  const [assetSearch, setAssetSearch] = React.useState("");
   const [showIconGrid, setShowIconGrid] = React.useState(false);
   const [outlineDraft, setOutlineDraft] = React.useState("#ffffff");
   const [fillDraft, setFillDraft] = React.useState("transparent");
@@ -1913,6 +1930,7 @@ export default function EditorPage() {
   const [isResetDialogOpen, setIsResetDialogOpen] = React.useState(false);
   const [isDisableCustomSideDialogOpen, setIsDisableCustomSideDialogOpen] =
     React.useState(false);
+  const [isQrDialogOpen, setIsQrDialogOpen] = React.useState(false);
   const [customSideToKeep, setCustomSideToKeep] =
     React.useState<TeamSide>("red");
   const [uploadJson, setUploadJson] = React.useState("");
@@ -1935,6 +1953,7 @@ export default function EditorPage() {
     name: string;
     contentHash: string | null;
     isDraft: boolean | null;
+    isPublic: boolean;
   } | null>(null);
   const [isInteractingWithCanvas, setIsInteractingWithCanvas] =
     React.useState(false);
@@ -1987,6 +2006,8 @@ export default function EditorPage() {
   const paletteSnapOffsetRef = React.useRef({ x: 0, y: 0 });
   const dragMoveSnapshotRef = React.useRef<DragMoveSnapshot | null>(null);
   const dragMoveRafRef = React.useRef<number | null>(null);
+  const flushDragRafRef = React.useRef<number | null>(null);
+  const lastDragMoveAtRef = React.useRef(0);
 
   React.useEffect(() => {
     alignmentGuidesRef.current = alignmentGuides;
@@ -2060,6 +2081,14 @@ export default function EditorPage() {
 
   const isProjectCompleted = Boolean(requestedUploadId) && projectMeta?.isDraft === false;
   const isEditorReadOnly = isPreviewMode || isProjectCompleted;
+  const projectContentHash = projectMeta?.contentHash?.trim() ?? "";
+  const canShowQrButton = isProjectCompleted && projectContentHash.length > 0;
+  const qrCodeUrl = React.useMemo(() => {
+    if (!projectContentHash) return "";
+    return `https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${encodeURIComponent(
+      projectContentHash
+    )}`;
+  }, [projectContentHash]);
 
   const currentVisibleTeamSide = isPreviewMode ? previewTeamSide : editorTeamSide;
 
@@ -2070,6 +2099,14 @@ export default function EditorPage() {
       return item.teamSide === currentVisibleTeamSide;
     });
   }, [currentVisibleTeamSide, isCustomSideLayoutsEnabled, items]);
+
+  const assetSearchQuery = assetSearch.trim().toLowerCase();
+  const matchesAssetSearch = React.useCallback(
+    (keywords: string[]) =>
+      assetSearchQuery.length === 0 ||
+      keywords.some((keyword) => keyword.toLowerCase().includes(assetSearchQuery)),
+    [assetSearchQuery]
+  );
 
   const visibleItems = React.useMemo(() => {
     if (stagingParentId) {
@@ -2085,8 +2122,22 @@ export default function EditorPage() {
       );
     }
 
-    return sideScopedItems.filter((item) => !item.stageParentId);
-  }, [isPreviewMode, previewStageParentId, sideScopedItems, stagingParentId]);
+    const baseItems = sideScopedItems.filter((item) => !item.stageParentId);
+
+    if (isEditorReadOnly) {
+      return baseItems.filter(
+        (item) => item.kind !== "cover" || item.coverVisible !== false
+      );
+    }
+
+    return baseItems;
+  }, [
+    isEditorReadOnly,
+    isPreviewMode,
+    previewStageParentId,
+    sideScopedItems,
+    stagingParentId,
+  ]);
 
   const layeredVisibleItems = React.useMemo(() => {
     const bottomItems = visibleItems.filter(
@@ -2109,66 +2160,50 @@ export default function EditorPage() {
     isAlignmentAssistEnabledRef.current = isAlignmentAssistEnabled;
   }, [isAlignmentAssistEnabled]);
 
-      // Throttle snap line updates using requestAnimationFrame
-      const flushDragUpdates = React.useCallback(
-        (
-          nextGuides: { vertical: number[]; horizontal: number[] },
-          nextDragSnap: DragSnapOffset,
-          nextPaletteSnap: { x: number; y: number }
-        ) => {
-          if (flushDragUpdates.rafId) {
-            cancelAnimationFrame(flushDragUpdates.rafId);
-          }
-          flushDragUpdates.rafId = requestAnimationFrame(() => {
-            if (
-              !areNumberArraysEqual(nextGuides.vertical, alignmentGuidesRef.current.vertical) ||
-              !areNumberArraysEqual(nextGuides.horizontal, alignmentGuidesRef.current.horizontal)
-            ) {
-              alignmentGuidesRef.current = nextGuides;
-              setAlignmentGuides(nextGuides);
-            }
-            if (
-              nextDragSnap.itemId !== dragSnapOffsetRef.current.itemId ||
-              nextDragSnap.x !== dragSnapOffsetRef.current.x ||
-              nextDragSnap.y !== dragSnapOffsetRef.current.y
-            ) {
-              dragSnapOffsetRef.current = nextDragSnap;
-              setDragSnapOffset(nextDragSnap);
-            }
-            if (
-              nextPaletteSnap.x !== paletteSnapOffsetRef.current.x ||
-              nextPaletteSnap.y !== paletteSnapOffsetRef.current.y
-            ) {
-              paletteSnapOffsetRef.current = nextPaletteSnap;
-              setPaletteSnapOffset(nextPaletteSnap);
-            }
-          });
-        },
-        []
-      );
-      flushDragUpdates.rafId = null;
+  const flushDragUpdates = React.useCallback(
+    (
+      nextGuides: { vertical: number[]; horizontal: number[] },
+      nextDragSnap: DragSnapOffset,
+      nextPaletteSnap: { x: number; y: number }
+    ) => {
+      if (flushDragRafRef.current !== null) {
+        cancelAnimationFrame(flushDragRafRef.current);
+      }
+
+      flushDragRafRef.current = requestAnimationFrame(() => {
+        flushDragRafRef.current = null;
+
+        if (
+          !areNumberArraysEqual(nextGuides.vertical, alignmentGuidesRef.current.vertical) ||
+          !areNumberArraysEqual(nextGuides.horizontal, alignmentGuidesRef.current.horizontal)
+        ) {
+          alignmentGuidesRef.current = nextGuides;
+          setAlignmentGuides(nextGuides);
+        }
+
+        if (
+          nextDragSnap.itemId !== dragSnapOffsetRef.current.itemId ||
+          nextDragSnap.x !== dragSnapOffsetRef.current.x ||
+          nextDragSnap.y !== dragSnapOffsetRef.current.y
+        ) {
+          dragSnapOffsetRef.current = nextDragSnap;
+          setDragSnapOffset(nextDragSnap);
+        }
+
+        if (
+          nextPaletteSnap.x !== paletteSnapOffsetRef.current.x ||
+          nextPaletteSnap.y !== paletteSnapOffsetRef.current.y
+        ) {
+          paletteSnapOffsetRef.current = nextPaletteSnap;
+          setPaletteSnapOffset(nextPaletteSnap);
+        }
+      });
+    },
+    []
+  );
 
   const processDragMove = React.useCallback(
     (snapshot: DragMoveSnapshot) => {
-      const resolveSnapLock = (
-        rawValue: number,
-        candidateValue: number,
-        candidateDiff: number,
-        lockedValue: number | null
-      ) => {
-        if (lockedValue !== null) {
-          if (Math.abs(rawValue - lockedValue) <= SNAP_RELEASE_PX) {
-            return { value: lockedValue, lock: lockedValue };
-          }
-        }
-
-        if (candidateDiff <= GUIDE_SNAP_PX) {
-          return { value: candidateValue, lock: candidateValue };
-        }
-
-        return { value: rawValue, lock: null };
-      };
-
       if (isPreviewMode || !isAlignmentAssistEnabled) {
         flushDragUpdates(
           { vertical: [], horizontal: [] },
@@ -2262,86 +2297,19 @@ export default function EditorPage() {
       };
 
       if (data?.type === "canvas" && data.itemId && activeItem) {
-        // Only show snap lines when in range, do not update snap offset or item position during drag
         flushDragUpdates(
           nextGuides,
           { itemId: data.itemId, x: 0, y: 0 },
           { x: 0, y: 0 }
         );
+        snapLockRef.current = { itemId: null, type: null, x: null, y: null };
       } else if (data?.type === "palette") {
-        if (paletteKind === "icon" || paletteKind === "toggle") {
-          flushDragUpdates(
-            { vertical: [], horizontal: [] },
-            { itemId: null, x: 0, y: 0 },
-            { x: 0, y: 0 }
-          );
-          snapLockRef.current = { itemId: null, type: "palette", x: null, y: null };
-          return;
-        }
-
-        let snappedX = x;
-        let snappedY = y;
-        let bestXDiff = GUIDE_SNAP_PX + 1;
-        let bestYDiff = GUIDE_SNAP_PX + 1;
-
-        visibleItems
-          .filter((item) => item.kind !== "mirror")
-          .forEach((item) => {
-            const left = item.x;
-            const right = item.x + item.width;
-            const centerX = item.x + item.width / 2;
-            const top = item.y;
-            const bottom = item.y + item.height;
-            const centerY = item.y + item.height / 2;
-
-            const candidatesX = [
-              { diff: Math.abs(activeLeft - left), value: left },
-              { diff: Math.abs(activeRight - right), value: right - activeWidth },
-              { diff: Math.abs(activeLeft - right), value: right },
-              { diff: Math.abs(activeRight - left), value: left - activeWidth },
-              { diff: Math.abs(activeCenterX - centerX), value: centerX - activeWidth / 2 },
-            ];
-
-            candidatesX.forEach((candidate) => {
-              if (candidate.diff <= GUIDE_SNAP_PX && candidate.diff < bestXDiff) {
-                bestXDiff = candidate.diff;
-                snappedX = candidate.value;
-              }
-            });
-
-            const candidatesY = [
-              { diff: Math.abs(activeTop - top), value: top },
-              { diff: Math.abs(activeBottom - bottom), value: bottom - activeHeight },
-              { diff: Math.abs(activeTop - bottom), value: bottom },
-              { diff: Math.abs(activeBottom - top), value: top - activeHeight },
-              { diff: Math.abs(activeCenterY - centerY), value: centerY - activeHeight / 2 },
-            ];
-
-            candidatesY.forEach((candidate) => {
-              if (candidate.diff <= GUIDE_SNAP_PX && candidate.diff < bestYDiff) {
-                bestYDiff = candidate.diff;
-                snappedY = candidate.value;
-              }
-            });
-          });
-
-        const existingLock = snapLockRef.current;
-        const lockedX = existingLock.type === "palette" ? existingLock.x : null;
-        const lockedY = existingLock.type === "palette" ? existingLock.y : null;
-        const resolvedX = resolveSnapLock(x, snappedX, bestXDiff, lockedX);
-        const resolvedY = resolveSnapLock(y, snappedY, bestYDiff, lockedY);
-        snapLockRef.current = {
-          itemId: null,
-          type: "palette",
-          x: resolvedX.lock,
-          y: resolvedY.lock,
-        };
-
         flushDragUpdates(
           nextGuides,
           { itemId: null, x: 0, y: 0 },
-          { x: resolvedX.value - x, y: resolvedY.value - y }
+          { x: 0, y: 0 }
         );
+        snapLockRef.current = { itemId: null, type: null, x: null, y: null };
       } else {
         flushDragUpdates(
           nextGuides,
@@ -2364,15 +2332,12 @@ export default function EditorPage() {
 
   const scheduleDragMove = React.useCallback(
     (snapshot: DragMoveSnapshot) => {
-      const THROTTLE_MS = 60; // ~30fps
-      if (!window.__lastDragMoveTimeRef) {
-        window.__lastDragMoveTimeRef = { current: 0 };
-      }
-      const now = Date.now();
-      if (now - window.__lastDragMoveTimeRef.current < THROTTLE_MS) {
+      const THROTTLE_MS = 60;
+      const now = performance.now();
+      if (now - lastDragMoveAtRef.current < THROTTLE_MS) {
         return;
       }
-      window.__lastDragMoveTimeRef.current = now;
+      lastDragMoveAtRef.current = now;
       dragMoveSnapshotRef.current = snapshot;
       if (dragMoveRafRef.current !== null) return;
 
@@ -2392,6 +2357,10 @@ export default function EditorPage() {
       if (dragMoveRafRef.current !== null) {
         window.cancelAnimationFrame(dragMoveRafRef.current);
         dragMoveRafRef.current = null;
+      }
+      if (flushDragRafRef.current !== null) {
+        window.cancelAnimationFrame(flushDragRafRef.current);
+        flushDragRafRef.current = null;
       }
     };
   }, []);
@@ -2759,6 +2728,23 @@ export default function EditorPage() {
     [selectedItemId]
   );
 
+  const handleSelectedCoverVisibilityChange = React.useCallback(
+    (value: boolean) => {
+      if (!selectedItemId) return;
+      setItems((prev) =>
+        prev.map((item) =>
+          item.id === selectedItemId && item.kind === "cover"
+            ? {
+                ...item,
+                coverVisible: value,
+              }
+            : item
+        )
+      );
+    },
+    [selectedItemId]
+  );
+
   const handleToggleItem = React.useCallback((itemId: string) => {
     setItems((prev) =>
       prev.map((item) =>
@@ -2970,8 +2956,7 @@ export default function EditorPage() {
 
       const targetSize = getAssetSize(assetKind);
 
-      const shouldCenterOnPointer =
-        assetKind === "icon" || assetKind === "toggle";
+      const shouldCenterOnPointer = shouldCenterPaletteAnchor(assetKind);
       const mappedX = shouldCenterOnPointer
         ? targetSize.width / 2
         : (pointerX / sourceWidthForPointer) * targetSize.width;
@@ -3038,8 +3023,7 @@ export default function EditorPage() {
         const clientPoint = getClientPointFromEvent(event.activatorEvent);
 
         if (capturedPointer) {
-          const shouldCenterOnPointer =
-            nextKind === "icon" || nextKind === "toggle";
+          const shouldCenterOnPointer = shouldCenterPaletteAnchor(nextKind);
           const mappedX = shouldCenterOnPointer
             ? targetSize.width / 2
             : (capturedPointer.pointerX / capturedPointer.sourceWidth) *
@@ -3063,8 +3047,7 @@ export default function EditorPage() {
             Math.max(clientPoint.y - initialRect.top, 0),
             sourceHeight
           );
-          const shouldCenterOnPointer =
-            nextKind === "icon" || nextKind === "toggle";
+          const shouldCenterOnPointer = shouldCenterPaletteAnchor(nextKind);
           const mappedX = shouldCenterOnPointer
             ? targetSize.width / 2
             : (pointerX / sourceWidth) * targetSize.width;
@@ -3495,6 +3478,7 @@ export default function EditorPage() {
           return {
             cover: {
               teamSide: item.teamSide,
+              visible: item.coverVisible !== false,
               x1: scaleX(x1),
               y1: scaleY(y1),
               x2: scaleX(x2),
@@ -4331,7 +4315,12 @@ export default function EditorPage() {
         }
 
         const result = (await response.json()) as {
-          project?: { name?: string; contentHash?: string | null; isDraft?: boolean };
+          project?: {
+            name?: string;
+            contentHash?: string | null;
+            isDraft?: boolean;
+            isPublic?: boolean;
+          };
         };
 
         if (cancelled) return;
@@ -4346,6 +4335,7 @@ export default function EditorPage() {
                   typeof result.project?.isDraft === "boolean"
                     ? result.project.isDraft
                     : null,
+                isPublic: Boolean(result.project?.isPublic ?? false),
               }
             : null
         );
@@ -4362,6 +4352,44 @@ export default function EditorPage() {
       cancelled = true;
     };
   }, [latestUploadId, requestedUploadId, sessionData?.user?.id]);
+
+  const handleProjectVisibilityToggle = React.useCallback(async () => {
+    const uploadId = requestedUploadId || latestUploadId || "";
+    if (!uploadId) {
+      toast.error("Save this project before changing visibility.");
+      return;
+    }
+
+    const nextIsPublic = !Boolean(projectMeta?.isPublic);
+
+    try {
+      const response = await fetch(`/api/projects/${encodeURIComponent(uploadId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ isPublic: nextIsPublic }),
+      });
+
+      if (!response.ok) {
+        const body = (await response.json().catch(() => ({}))) as { error?: string };
+        throw new Error(body.error || "Unable to update visibility.");
+      }
+
+      setProjectMeta((prev) =>
+        prev
+          ? {
+              ...prev,
+              isPublic: nextIsPublic,
+            }
+          : prev
+      );
+
+      toast.success(nextIsPublic ? "Project is now public." : "Project is now private.");
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Unable to update project visibility.";
+      toast.error(message);
+    }
+  }, [latestUploadId, projectMeta?.isPublic, requestedUploadId]);
 
   React.useEffect(() => {
     if (!sessionData?.user?.id) return;
@@ -4920,6 +4948,7 @@ export default function EditorPage() {
   const handleDragEnd = React.useCallback(
     (event: DragEndEvent) => {
       setIsInteractingWithCanvas(false);
+
       if (dragMoveRafRef.current !== null) {
         window.cancelAnimationFrame(dragMoveRafRef.current);
         dragMoveRafRef.current = null;
@@ -4927,7 +4956,7 @@ export default function EditorPage() {
       dragMoveSnapshotRef.current = null;
       snapLockRef.current = { itemId: null, type: null, x: null, y: null };
 
-      if (isPreviewMode) {
+      const resetDragState = () => {
         setActiveType(null);
         setAlignmentGuides({ vertical: [], horizontal: [] });
         setDragSnapOffset({ itemId: null, x: 0, y: 0 });
@@ -4935,35 +4964,44 @@ export default function EditorPage() {
         setPalettePointerOffset({ x: 0, y: 0 });
         palettePointerStartRef.current = null;
         dragStartPointerRef.current = null;
+      };
+
+      if (isPreviewMode) {
+        resetDragState();
         return;
       }
 
       const data = event.active.data.current as DragData | undefined;
+      if (!data) {
+        resetDragState();
+        return;
+      }
 
       const canvasRect = canvasRef.current?.getBoundingClientRect();
       const initialRect = event.active.rect.current.initial;
       const translatedRect = event.active.rect.current.translated;
-
       if (!canvasRect || !initialRect) {
-        setAlignmentGuides({ vertical: [], horizontal: [] });
-        setPalettePointerOffset({ x: 0, y: 0 });
-        palettePointerStartRef.current = null;
-        dragStartPointerRef.current = null;
+        resetDragState();
         return;
       }
 
-      const finalLeft =
-        translatedRect?.left ?? initialRect.left + event.delta.x;
+      const finalLeft = translatedRect?.left ?? initialRect.left + event.delta.x;
       const finalTop = translatedRect?.top ?? initialRect.top + event.delta.y;
 
       const activeItem =
-        data?.type === "canvas" && data.itemId
+        data.type === "canvas" && data.itemId
           ? items.find((item) => item.id === data.itemId)
           : null;
-      const paletteKind = data?.type === "palette" ? data.assetKind : undefined;
+      const paletteKind = data.type === "palette" ? data.assetKind : undefined;
       const paletteSize = getAssetSize(paletteKind ?? "text");
       const activeWidth = activeItem?.width ?? paletteSize.width;
       const activeHeight = activeItem?.height ?? paletteSize.height;
+
+      const isInsideCanvas =
+        finalLeft + activeWidth > canvasRect.left &&
+        finalLeft < canvasRect.right &&
+        finalTop + activeHeight > canvasRect.top &&
+        finalTop < canvasRect.bottom;
 
       const assetsRect = assetsRef.current?.getBoundingClientRect();
       const isInsideAssets = assetsRect
@@ -4973,16 +5011,25 @@ export default function EditorPage() {
           finalTop < assetsRect.bottom
         : false;
 
-      if (data?.type === "canvas" && data.itemId && activeItem) {
-        // Snap to nearest guide if within range on drag end
-        const x = finalLeft - canvasRect.left;
-        const y = finalTop - canvasRect.top;
-        let snappedX = x;
-        let snappedY = y;
+      const snapToGuides = (
+        sourceX: number,
+        sourceY: number,
+        excludedItemId?: string
+      ) => {
+        let snappedX = sourceX;
+        let snappedY = sourceY;
         let bestXDiff = GUIDE_SNAP_PX + 1;
         let bestYDiff = GUIDE_SNAP_PX + 1;
+
+        const sourceLeft = sourceX;
+        const sourceRight = sourceX + activeWidth;
+        const sourceCenterX = sourceX + activeWidth / 2;
+        const sourceTop = sourceY;
+        const sourceBottom = sourceY + activeHeight;
+        const sourceCenterY = sourceY + activeHeight / 2;
+
         visibleItems
-          .filter((item) => item.kind !== "mirror" && item.id !== data.itemId)
+          .filter((item) => item.kind !== "mirror" && item.id !== excludedItemId)
           .forEach((item) => {
             const left = item.x;
             const right = item.x + item.width;
@@ -4990,12 +5037,13 @@ export default function EditorPage() {
             const top = item.y;
             const bottom = item.y + item.height;
             const centerY = item.y + item.height / 2;
+
             const candidatesX = [
-              { diff: Math.abs(x - left), value: left },
-              { diff: Math.abs(x + activeWidth - right), value: right - activeWidth },
-              { diff: Math.abs(x - right), value: right },
-              { diff: Math.abs(x + activeWidth - left), value: left - activeWidth },
-              { diff: Math.abs(x + activeWidth / 2 - centerX), value: centerX - activeWidth / 2 },
+              { diff: Math.abs(sourceLeft - left), value: left },
+              { diff: Math.abs(sourceRight - right), value: right - activeWidth },
+              { diff: Math.abs(sourceLeft - right), value: right },
+              { diff: Math.abs(sourceRight - left), value: left - activeWidth },
+              { diff: Math.abs(sourceCenterX - centerX), value: centerX - activeWidth / 2 },
             ];
             candidatesX.forEach((candidate) => {
               if (candidate.diff <= GUIDE_SNAP_PX && candidate.diff < bestXDiff) {
@@ -5003,12 +5051,13 @@ export default function EditorPage() {
                 snappedX = candidate.value;
               }
             });
+
             const candidatesY = [
-              { diff: Math.abs(y - top), value: top },
-              { diff: Math.abs(y + activeHeight - bottom), value: bottom - activeHeight },
-              { diff: Math.abs(y - bottom), value: bottom },
-              { diff: Math.abs(y + activeHeight - top), value: top - activeHeight },
-              { diff: Math.abs(y + activeHeight / 2 - centerY), value: centerY - activeHeight / 2 },
+              { diff: Math.abs(sourceTop - top), value: top },
+              { diff: Math.abs(sourceBottom - bottom), value: bottom - activeHeight },
+              { diff: Math.abs(sourceTop - bottom), value: bottom },
+              { diff: Math.abs(sourceBottom - top), value: top - activeHeight },
+              { diff: Math.abs(sourceCenterY - centerY), value: centerY - activeHeight / 2 },
             ];
             candidatesY.forEach((candidate) => {
               if (candidate.diff <= GUIDE_SNAP_PX && candidate.diff < bestYDiff) {
@@ -5017,86 +5066,79 @@ export default function EditorPage() {
               }
             });
           });
+
         snappedX = Math.max(0, Math.min(snappedX, canvasRect.width - activeWidth));
-        snappedY = Math.max(0, Math.min(snappedY, canvasRect.height - activeHeight));
-        setItems((prev) =>
-          prev.map((item) => {
-            if (item.id !== data.itemId) return item;
-            return { ...item, x: snappedX, y: snappedY };
-          })
-        );
-        setActiveType(null);
-        setAlignmentGuides({ vertical: [], horizontal: [] });
-        setDragSnapOffset({ itemId: null, x: 0, y: 0 });
-        setPaletteSnapOffset({ x: 0, y: 0 });
-        setPalettePointerOffset({ x: 0, y: 0 });
-        palettePointerStartRef.current = null;
-        dragStartPointerRef.current = null;
-        return;
-      } else if (data?.type === "palette") {
-        // ...existing code...
         snappedY = Math.max(0, Math.min(snappedY, canvasRect.height - activeHeight));
         return { x: snappedX, y: snappedY };
       };
 
-      if (data?.type === "canvas" && data.itemId) {
-        const adjustedX = x + (dragSnapOffset.itemId === data.itemId ? dragSnapOffset.x : 0);
-        const adjustedY = y + (dragSnapOffset.itemId === data.itemId ? dragSnapOffset.y : 0);
+      if (data.type === "canvas" && data.itemId && activeItem) {
+        if (isInsideAssets) {
+          setItems((prev) => prev.filter((item) => item.id !== data.itemId));
+          setSelectedItemId((prev) => (prev === data.itemId ? null : prev));
+          resetDragState();
+          return;
+        }
+
+        let targetX = finalLeft - canvasRect.left;
+        let targetY = finalTop - canvasRect.top;
+        targetX = Math.max(0, Math.min(targetX, canvasRect.width - activeWidth));
+        targetY = Math.max(0, Math.min(targetY, canvasRect.height - activeHeight));
+
+        if (isAlignmentAssistEnabled && activeItem.kind !== "mirror") {
+          const snapped = snapToGuides(targetX, targetY, data.itemId);
+          targetX = snapped.x;
+          targetY = snapped.y;
+        }
 
         setItems((prev) =>
           prev.map((item) => {
             if (item.id !== data.itemId) return item;
+
             if (item.kind !== "mirror") {
-              const snapped = snapToGuides(adjustedX, adjustedY);
-              return { ...item, x: snapped.x, y: snapped.y };
+              return { ...item, x: targetX, y: targetY };
             }
-            const dx = adjustedX - item.x;
-            const dy = adjustedY - item.y;
-            const startX = (item.startX ?? item.x) + dx;
-            const startY = (item.startY ?? item.y) + dy;
-            const endX = (item.endX ?? item.x + item.width) + dx;
-            const endY = (item.endY ?? item.y + item.height) + dy;
+
+            const dx = targetX - item.x;
+            const dy = targetY - item.y;
             return {
               ...item,
-              x: adjustedX,
-              y: adjustedY,
-              startX,
-              startY,
-              endX,
-              endY,
+              x: targetX,
+              y: targetY,
+              startX: (item.startX ?? item.x) + dx,
+              startY: (item.startY ?? item.y) + dy,
+              endX: (item.endX ?? item.x + item.width) + dx,
+              endY: (item.endY ?? item.y + item.height) + dy,
             };
           })
         );
-        setActiveType(null);
-        setAlignmentGuides({ vertical: [], horizontal: [] });
-        setDragSnapOffset({ itemId: null, x: 0, y: 0 });
-        setPaletteSnapOffset({ x: 0, y: 0 });
-        setPalettePointerOffset({ x: 0, y: 0 });
-        palettePointerStartRef.current = null;
-        dragStartPointerRef.current = null;
+
+        resetDragState();
         return;
       }
 
-      if (data?.type === "palette") {
+      if (data.type === "palette") {
+        if (!isInsideCanvas) {
+          resetDragState();
+          return;
+        }
+
         if (isCustomSideLayoutsEnabled && data.assetKind === "mirror") {
-          setActiveType(null);
-          setPaletteSnapOffset({ x: 0, y: 0 });
-          setPalettePointerOffset({ x: 0, y: 0 });
-          palettePointerStartRef.current = null;
-          dragStartPointerRef.current = null;
+          resetDragState();
           return;
         }
 
         if (data.assetKind === "mirror" && items.some((item) => item.kind === "mirror")) {
-          setActiveType(null);
-          setPaletteSnapOffset({ x: 0, y: 0 });
-          setPalettePointerOffset({ x: 0, y: 0 });
-          palettePointerStartRef.current = null;
+          resetDragState();
           return;
         }
 
+        let x = finalLeft - canvasRect.left + palettePointerOffset.x;
+        let y = finalTop - canvasRect.top + palettePointerOffset.y;
+
         const isCenterPlaced = data.assetKind === "icon" || data.assetKind === "toggle";
-        if (isCenterPlaced) {
+        const shouldCenterAnchor = shouldCenterPaletteAnchor(data.assetKind ?? "text");
+        if (shouldCenterAnchor) {
           const startPointer = dragStartPointerRef.current;
           const pointerX =
             startPointer?.x !== undefined
@@ -5109,17 +5151,12 @@ export default function EditorPage() {
 
           x = pointerX - canvasRect.left - activeWidth / 2;
           y = pointerY - canvasRect.top - activeHeight / 2;
-        } else {
-          x += paletteSnapOffset.x;
-          y += paletteSnapOffset.y;
-          x += palettePointerOffset.x;
-          y += palettePointerOffset.y;
         }
 
         x = Math.max(0, Math.min(x, canvasRect.width - activeWidth));
         y = Math.max(0, Math.min(y, canvasRect.height - activeHeight));
 
-        if (data.assetKind !== "mirror" && !isCenterPlaced) {
+        if (isAlignmentAssistEnabled && data.assetKind !== "mirror" && !isCenterPlaced) {
           const snapped = snapToGuides(x, y);
           x = snapped.x;
           y = snapped.y;
@@ -5160,6 +5197,7 @@ export default function EditorPage() {
         const mirrorTop = Math.min(mirrorStartY, mirrorEndY);
         const mirrorWidth = Math.max(1, Math.abs(mirrorEndX - mirrorStartX));
         const mirrorHeight = Math.max(1, Math.abs(mirrorEndY - mirrorStartY));
+
         setItems((prev) => [
           ...prev,
           {
@@ -5190,30 +5228,24 @@ export default function EditorPage() {
             swapRedSide: kind === "swap" ? "left" : undefined,
             swapActiveSide: kind === "swap" ? "left" : undefined,
             stageParentId: stagingParentId ?? undefined,
+            coverVisible: kind === "cover" ? true : undefined,
           },
         ]);
         setSelectedItemId(newId);
-        setActiveType(null);
-        setAlignmentGuides({ vertical: [], horizontal: [] });
-        setDragSnapOffset({ itemId: null, x: 0, y: 0 });
-        setPaletteSnapOffset({ x: 0, y: 0 });
-        setPalettePointerOffset({ x: 0, y: 0 });
-        palettePointerStartRef.current = null;
-        dragStartPointerRef.current = null;
+
+        resetDragState();
       }
     },
     [
-      dragSnapOffset,
-      isAlignmentAssistEnabled,
       isPreviewMode,
-      isCustomSideLayoutsEnabled,
       items,
       visibleItems,
-      editorTeamSide,
-      stagingParentId,
+      isAlignmentAssistEnabled,
       palettePointerOffset.x,
       palettePointerOffset.y,
-      paletteSnapOffset,
+      isCustomSideLayoutsEnabled,
+      editorTeamSide,
+      stagingParentId,
     ]
   );
 
@@ -5429,6 +5461,17 @@ export default function EditorPage() {
                 <Check className="h-4 w-4" />
                 {isProjectCompleted ? "Completed" : "Complete"}
               </Button>
+              {canShowQrButton ? (
+                <Button
+                  variant="outline"
+                  type="button"
+                  className="h-10 gap-2 rounded-lg border-white/15 bg-slate-900/60 px-4 text-white hover:bg-slate-800/80"
+                  onClick={() => setIsQrDialogOpen(true)}
+                >
+                  <QrCode className="h-4 w-4" />
+                  QR
+                </Button>
+              ) : null}
               <Button
                 variant="outline"
                 type="button"
@@ -5511,6 +5554,15 @@ export default function EditorPage() {
               <h2 className="text-3xl font-semibold tracking-tight">Assets</h2>
             </div>
 
+            <div className="mb-3 px-1">
+              <Input
+                value={assetSearch}
+                onChange={(event) => setAssetSearch(event.target.value)}
+                placeholder="Search assets"
+                className="h-10 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
+              />
+            </div>
+
             <div className="mb-3 flex items-center justify-between px-1 text-xs font-bold uppercase tracking-[0.15em] text-white/55">
               <span>Elements</span>
               <ChevronRight className="h-4 w-4" />
@@ -5526,51 +5578,69 @@ export default function EditorPage() {
                   isEditorReadOnly ? "pointer-events-none opacity-50" : ""
                 }`}
               >
-                <PaletteButton onPalettePointerDown={handlePalettePointerDown} />
-                <PaletteActionButton
-                  kind="undo"
-                  title="Undo"
-                  description="Undo previous change"
-                  icon={<Undo2 className="h-4 w-4" />}
-                  onPalettePointerDown={handlePalettePointerDown}
-                />
-                <PaletteActionButton
-                  kind="redo"
-                  title="Redo"
-                  description="Redo reverted change"
-                  icon={<Redo2 className="h-4 w-4" />}
-                  onPalettePointerDown={handlePalettePointerDown}
-                />
-                <PaletteActionButton
-                  kind="submit"
-                  title="Submit"
-                  description="Submit current input values"
-                  icon={<Send className="h-4 w-4" />}
-                  onPalettePointerDown={handlePalettePointerDown}
-                />
-                <PaletteActionButton
-                  kind="reset"
-                  title="Reset"
-                  description="Clear all inputs"
-                  icon={<RotateCcw className="h-4 w-4" />}
-                  onPalettePointerDown={handlePalettePointerDown}
-                />
-                <PaletteIconButton onPalettePointerDown={handlePalettePointerDown} />
-                <PaletteMirrorButton
-                  onPalettePointerDown={handlePalettePointerDown}
-                  disabled={isCustomSideLayoutsEnabled}
-                />
-                <PaletteInputButton onPalettePointerDown={handlePalettePointerDown} />
-                <PaletteLogButton onPalettePointerDown={handlePalettePointerDown} />
-                <PaletteToggleButton onPalettePointerDown={handlePalettePointerDown} />
-                <PaletteCoverButton onPalettePointerDown={handlePalettePointerDown} />
-              </div>
-              <div className="mt-6 flex items-center justify-between px-1 text-xs font-bold uppercase tracking-[0.15em] text-white/45">
-                <span>Layout</span>
-                <ChevronRight className="h-4 w-4" />
-              </div>
-              <div className={`mt-3 pr-2 ${isEditorReadOnly ? "pointer-events-none opacity-50" : ""}`}>
-                <PaletteSwapButton onPalettePointerDown={handlePalettePointerDown} />
+                {matchesAssetSearch(["button", "text"]) ? (
+                  <PaletteButton onPalettePointerDown={handlePalettePointerDown} />
+                ) : null}
+                {matchesAssetSearch(["undo"]) ? (
+                  <PaletteActionButton
+                    kind="undo"
+                    title="Undo"
+                    description="Undo previous change"
+                    icon={<Undo2 className="h-4 w-4" />}
+                    onPalettePointerDown={handlePalettePointerDown}
+                  />
+                ) : null}
+                {matchesAssetSearch(["redo"]) ? (
+                  <PaletteActionButton
+                    kind="redo"
+                    title="Redo"
+                    description="Redo reverted change"
+                    icon={<Redo2 className="h-4 w-4" />}
+                    onPalettePointerDown={handlePalettePointerDown}
+                  />
+                ) : null}
+                {matchesAssetSearch(["submit", "send"]) ? (
+                  <PaletteActionButton
+                    kind="submit"
+                    title="Submit"
+                    description="Submit current input values"
+                    icon={<Send className="h-4 w-4" />}
+                    onPalettePointerDown={handlePalettePointerDown}
+                  />
+                ) : null}
+                {matchesAssetSearch(["reset", "clear"]) ? (
+                  <PaletteActionButton
+                    kind="reset"
+                    title="Reset"
+                    description="Clear all inputs"
+                    icon={<RotateCcw className="h-4 w-4" />}
+                    onPalettePointerDown={handlePalettePointerDown}
+                  />
+                ) : null}
+                {matchesAssetSearch(["icon", "bot"]) ? (
+                  <PaletteIconButton onPalettePointerDown={handlePalettePointerDown} />
+                ) : null}
+                {matchesAssetSearch(["mirror", "line"]) ? (
+                  <PaletteMirrorButton
+                    onPalettePointerDown={handlePalettePointerDown}
+                    disabled={isCustomSideLayoutsEnabled}
+                  />
+                ) : null}
+                {matchesAssetSearch(["input", "text field"]) ? (
+                  <PaletteInputButton onPalettePointerDown={handlePalettePointerDown} />
+                ) : null}
+                {matchesAssetSearch(["log", "output"]) ? (
+                  <PaletteLogButton onPalettePointerDown={handlePalettePointerDown} />
+                ) : null}
+                {matchesAssetSearch(["toggle", "switch"]) ? (
+                  <PaletteToggleButton onPalettePointerDown={handlePalettePointerDown} />
+                ) : null}
+                {matchesAssetSearch(["cover", "overlay"]) ? (
+                  <PaletteCoverButton onPalettePointerDown={handlePalettePointerDown} />
+                ) : null}
+                {matchesAssetSearch(["swap", "side", "layout"]) ? (
+                  <PaletteSwapButton onPalettePointerDown={handlePalettePointerDown} />
+                ) : null}
               </div>
             </ScrollArea>
           </aside>
@@ -5989,6 +6059,38 @@ export default function EditorPage() {
                   </div>
                 </div>
               </div>
+            ) : selectedItem?.kind === "cover" ? (
+              <div className="grid gap-4">
+                <div className="grid gap-2">
+                  <Label className="text-sm text-white/80">Visibility</Label>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={selectedItem.coverVisible !== false}
+                    className={`relative inline-flex h-10 w-20 items-center rounded-full border px-1 transition-colors ${
+                      selectedItem.coverVisible !== false
+                        ? "border-sky-300/50 bg-sky-400/35"
+                        : "border-white/20 bg-slate-800/80"
+                    }`}
+                    onClick={() =>
+                      handleSelectedCoverVisibilityChange(
+                        !(selectedItem.coverVisible !== false)
+                      )
+                    }
+                  >
+                    <span
+                      className={`inline-block h-7 w-7 rounded-full bg-white transition-transform ${
+                        selectedItem.coverVisible !== false
+                          ? "translate-x-10"
+                          : "translate-x-0"
+                      }`}
+                    />
+                  </button>
+                </div>
+                <div className="rounded-md border border-white/10 bg-slate-900/80 px-3 py-2 text-xs text-white/70">
+                  When visible, cover uses preview styling and appears in completed/preview mode.
+                </div>
+              </div>
             ) : selectedItem?.kind === "toggle" ? (
               <div className="grid gap-4">
                 <div className="grid gap-2">
@@ -6235,7 +6337,7 @@ export default function EditorPage() {
                 }}
               >
                 <Settings className="mr-2 h-4 w-4" />
-                Field settings
+                Project settings
               </Button>
               <Button
                 variant="outline"
@@ -6389,7 +6491,7 @@ export default function EditorPage() {
               style={{
                 width: activeSize.width,
                 height: activeSize.height,
-                transform: `translate(${paletteSnapOffset.x + palettePointerOffset.x}px, ${paletteSnapOffset.y + palettePointerOffset.y}px)`,
+                transform: `translate(${palettePointerOffset.x}px, ${palettePointerOffset.y}px)`,
               }}
             >
               {activeKind === "mirror" ? (
@@ -6639,9 +6741,7 @@ export default function EditorPage() {
                 role="switch"
                 aria-checked={isAlignmentAssistEnabled}
                 aria-label="Toggle alignment assist"
-                onClick={() =>
-                  setIsAlignmentAssistEnabled((current) => !current)
-                }
+                onClick={() => setIsAlignmentAssistEnabled((current) => !current)}
                 className={`relative inline-flex h-6 w-11 items-center rounded-full border transition-colors ${
                   isAlignmentAssistEnabled
                     ? "border-white/60 bg-white/80"
@@ -6651,6 +6751,42 @@ export default function EditorPage() {
                 <span
                   className={`inline-block h-4 w-4 transform rounded-full bg-black transition-transform ${
                     isAlignmentAssistEnabled
+                      ? "translate-x-6"
+                      : "translate-x-1"
+                  }`}
+                />
+              </button>
+            </div>
+            <div className="mt-3 flex items-center justify-between rounded-md border border-white/10 px-3 py-2">
+              <div className="grid gap-0.5">
+                <Label htmlFor="project-public-toggle">Project sharing</Label>
+                <p className="text-xs text-white/60">
+                  {requestedUploadId || latestUploadId
+                    ? "Allow import by content hash"
+                    : "Save project first to enable sharing"}
+                </p>
+              </div>
+              <button
+                id="project-public-toggle"
+                type="button"
+                role="switch"
+                aria-checked={Boolean(projectMeta?.isPublic)}
+                aria-label="Toggle project sharing"
+                onClick={() => void handleProjectVisibilityToggle()}
+                disabled={!(requestedUploadId || latestUploadId)}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full border transition-colors ${
+                  projectMeta?.isPublic
+                    ? "border-white/60 bg-white/80"
+                    : "border-white/30 bg-white/10"
+                } ${
+                  requestedUploadId || latestUploadId
+                    ? ""
+                    : "cursor-not-allowed opacity-50"
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-black transition-transform ${
+                    projectMeta?.isPublic
                       ? "translate-x-6"
                       : "translate-x-1"
                   }`}
@@ -6761,6 +6897,49 @@ export default function EditorPage() {
                 }}
               >
                 Keep selected side
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={isQrDialogOpen}
+          onOpenChange={(open) => setIsQrDialogOpen(open)}
+        >
+          <DialogContent className="border-white/10 bg-slate-950 text-white">
+            <DialogHeader>
+              <DialogTitle>Project QR Code</DialogTitle>
+              <DialogDescription className="text-white/60">
+                Scan to copy the content hash for import.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="grid gap-3">
+              <div className="mx-auto overflow-hidden rounded-lg border border-white/10 bg-white p-2">
+                {qrCodeUrl ? (
+                  <img
+                    src={qrCodeUrl}
+                    alt="Project content hash QR code"
+                    width={320}
+                    height={320}
+                    className="h-56 w-56"
+                  />
+                ) : (
+                  <div className="flex h-56 w-56 items-center justify-center text-xs text-slate-600">
+                    Hash unavailable
+                  </div>
+                )}
+              </div>
+              <div className="rounded-md border border-white/10 bg-slate-900/80 px-3 py-2 text-xs text-white/80">
+                Hash: {projectContentHash || "Unavailable"}
+              </div>
+            </div>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                className="border-white/10 bg-slate-900 text-white hover:bg-slate-800"
+                onClick={() => setIsQrDialogOpen(false)}
+              >
+                Close
               </Button>
             </DialogFooter>
           </DialogContent>

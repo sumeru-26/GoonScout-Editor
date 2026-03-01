@@ -35,6 +35,7 @@ type Project = {
   configUpdatedAt?: string;
   stageCount: number;
   backgroundImage: string | null;
+  isPublic?: boolean;
 };
 
 const statusLabel: Record<ProjectStatus, string> = {
@@ -82,12 +83,19 @@ export default function ProjectManagerPage() {
   const [isCreating, setIsCreating] = React.useState(false);
   const [isUploading, setIsUploading] = React.useState(false);
   const [isCreateDialogOpen, setIsCreateDialogOpen] = React.useState(false);
+  const [isUploadDialogOpen, setIsUploadDialogOpen] = React.useState(false);
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = React.useState(false);
   const [isDeletingProject, setIsDeletingProject] = React.useState(false);
   const [projectToDelete, setProjectToDelete] = React.useState<
     { uploadId: string; name: string } | null
   >(null);
   const [createProjectName, setCreateProjectName] = React.useState("Untitled Project");
+  const [createProjectIsPublic, setCreateProjectIsPublic] = React.useState(false);
+  const [uploadMode, setUploadMode] = React.useState<"file" | "hash">("file");
+  const [uploadProjectName, setUploadProjectName] = React.useState("Imported Project");
+  const [uploadProjectIsPublic, setUploadProjectIsPublic] = React.useState(false);
+  const [uploadContentHash, setUploadContentHash] = React.useState("");
+  const [uploadFile, setUploadFile] = React.useState<File | null>(null);
   const [activeStatus, setActiveStatus] = React.useState<ProjectStatus>("active");
   const [search, setSearch] = React.useState("");
   const [openMenuId, setOpenMenuId] = React.useState<string | null>(null);
@@ -207,7 +215,7 @@ export default function ProjectManagerPage() {
       const response = await fetch("/api/projects", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: projectName }),
+        body: JSON.stringify({ name: projectName, isPublic: createProjectIsPublic }),
       });
 
       if (!response.ok) {
@@ -236,15 +244,28 @@ export default function ProjectManagerPage() {
     } finally {
       setIsCreating(false);
     }
-  }, [createProjectName, router]);
+  }, [createProjectIsPublic, createProjectName, router]);
 
   const openCreateProjectDialog = React.useCallback(() => {
     setCreateProjectName("Untitled Project");
+    setCreateProjectIsPublic(false);
     setIsCreateDialogOpen(true);
   }, []);
 
+  const openUploadProjectDialog = React.useCallback(() => {
+    setUploadMode("file");
+    setUploadProjectName("Imported Project");
+    setUploadProjectIsPublic(false);
+    setUploadContentHash("");
+    setUploadFile(null);
+    setIsUploadDialogOpen(true);
+  }, []);
+
   const updateProject = React.useCallback(
-    async (uploadId: string, updates: { status?: ProjectStatus; name?: string }) => {
+    async (
+      uploadId: string,
+      updates: { status?: ProjectStatus; name?: string; isPublic?: boolean }
+    ) => {
       const response = await fetch(`/api/projects/${uploadId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -299,36 +320,97 @@ export default function ProjectManagerPage() {
   }, [handlePermanentDelete, projectToDelete]);
 
   const handleUploadClick = React.useCallback(() => {
-    fileInputRef.current?.click();
-  }, []);
+    openUploadProjectDialog();
+  }, [openUploadProjectDialog]);
 
   const handleImportFileChange = React.useCallback(
     async (event: React.ChangeEvent<HTMLInputElement>) => {
       const file = event.target.files?.[0];
       event.target.value = "";
       if (!file) return;
+      setUploadFile(file);
+    },
+    []
+  );
 
-      setIsUploading(true);
-      try {
-        const rawText = await file.text();
-        const parsed = JSON.parse(rawText) as unknown;
+  const handleUploadProject = React.useCallback(async () => {
+    const projectName = uploadProjectName.trim();
+    if (!projectName) {
+      toast.error("Project name is required.");
+      return;
+    }
 
-        const source =
-          parsed && typeof parsed === "object"
-            ? (parsed as Record<string, unknown>)
-            : null;
-
-        const payload = Array.isArray(source?.payload)
-          ? source?.payload
-          : Array.isArray(parsed)
-            ? parsed
-            : null;
-
-        if (!payload) {
-          throw new Error("Uploaded JSON must include a payload array.");
+    setIsUploading(true);
+    try {
+      const parseJsonIfString = (value: unknown): unknown => {
+        if (typeof value !== "string") return value;
+        const trimmed = value.trim();
+        if (!trimmed) return value;
+        if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) {
+          return value;
         }
 
-        const backgroundImage =
+        try {
+          return JSON.parse(trimmed);
+        } catch {
+          return value;
+        }
+      };
+
+      const toRecord = (value: unknown): Record<string, unknown> | null => {
+        const parsed = parseJsonIfString(value);
+        return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+          ? (parsed as Record<string, unknown>)
+          : null;
+      };
+
+      const extractPersistedPayload = (value: unknown): unknown | null => {
+        const parsed = parseJsonIfString(value);
+        if (parsed === null || parsed === undefined) return null;
+        if (Array.isArray(parsed)) return parsed;
+
+        const source = toRecord(parsed);
+        if (!source) return null;
+
+        const directPayload = parseJsonIfString(source.payload);
+        if (directPayload !== null && directPayload !== undefined) {
+          if (Array.isArray(directPayload)) return directPayload;
+
+          const directPayloadRecord = toRecord(directPayload);
+          if (directPayloadRecord) {
+            const nestedPayload = parseJsonIfString(directPayloadRecord.payload);
+            if (nestedPayload !== null && nestedPayload !== undefined) {
+              return nestedPayload;
+            }
+            return directPayloadRecord;
+          }
+
+          return directPayload;
+        }
+
+        return source;
+      };
+
+      let payload: unknown | null = null;
+      let backgroundImage: string | null = null;
+      let editorState: unknown = null;
+
+      if (uploadMode === "file") {
+        if (!uploadFile) {
+          throw new Error("Select a JSON file first.");
+        }
+
+        const rawText = await uploadFile.text();
+        const parsed = JSON.parse(rawText) as unknown;
+
+        const source = toRecord(parsed);
+        payload = extractPersistedPayload(source ?? parsed);
+
+        if (payload === null) {
+          throw new Error("Uploaded JSON must include a valid payload object or array.");
+        }
+
+        backgroundImage =
           source &&
           source.background &&
           typeof source.background === "object" &&
@@ -338,43 +420,106 @@ export default function ProjectManagerPage() {
             ? ((source.background as Record<string, unknown>).fallbackImage as string)
             : null;
 
-        const editorState = source?.editorState ?? null;
-
-        const uploadResponse = await fetch("/api/field-configs", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            payload,
-            editorState,
-            backgroundImage,
-            isDraft: false,
-          }),
-        });
-
-        if (!uploadResponse.ok) {
-          throw new Error("Upload failed.");
+        editorState = source?.editorState ?? null;
+      } else {
+        const hash = uploadContentHash.trim();
+        if (!hash) {
+          throw new Error("Content hash is required.");
         }
 
-        const uploadResult = (await uploadResponse.json()) as { uploadId?: string };
-        if (!uploadResult.uploadId) {
-          throw new Error("Upload response missing upload id.");
+        const publicResponse = await fetch(
+          `/api/field-configs/public/hash/${encodeURIComponent(hash)}`,
+          {
+            method: "GET",
+            headers: { "Content-Type": "application/json" },
+          }
+        );
+
+        if (!publicResponse.ok) {
+          throw new Error("No public project found for this content hash.");
         }
 
-        const baseName = file.name.replace(/\.json$/i, "").trim();
-        const name = baseName.length > 0 ? baseName : "Imported Project";
+        const publicResult = (await publicResponse.json()) as {
+          config?: { payload?: unknown; backgroundImage?: string | null };
+          payload?: unknown;
+          backgroundImage?: string | null;
+        };
 
-        await updateProject(uploadResult.uploadId, { name, status: "active" });
-        toast.success("Project uploaded.");
-      } catch (error) {
-        const message =
-          error instanceof Error ? error.message : "Upload failed.";
-        toast.error(message);
-      } finally {
-        setIsUploading(false);
+        const publicResultRecord = toRecord(publicResult);
+        const configRecord = toRecord(publicResultRecord?.config ?? publicResultRecord);
+        const configPayload =
+          configRecord?.payload ?? publicResultRecord?.payload;
+        const payloadRoot =
+          configPayload === undefined ? configRecord : configPayload;
+
+        payload = extractPersistedPayload(payloadRoot);
+
+        if (payload === null) {
+          throw new Error("Public project payload is invalid.");
+        }
+
+        const publicSource = toRecord(payloadRoot) ?? configRecord;
+
+        backgroundImage =
+          typeof configRecord?.backgroundImage === "string"
+            ? configRecord.backgroundImage
+            : typeof publicResultRecord?.backgroundImage === "string"
+              ? publicResultRecord.backgroundImage
+            : publicSource &&
+                publicSource.background &&
+                typeof publicSource.background === "object" &&
+                publicSource.background !== null &&
+                typeof (publicSource.background as Record<string, unknown>)
+                  .fallbackImage === "string"
+              ? ((publicSource.background as Record<string, unknown>)
+                  .fallbackImage as string)
+              : null;
+
+        editorState = publicSource?.editorState ?? null;
       }
-    },
-    [updateProject]
-  );
+
+      const uploadResponse = await fetch("/api/field-configs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          payload,
+          editorState,
+          backgroundImage,
+          isDraft: false,
+        }),
+      });
+
+      if (!uploadResponse.ok) {
+        throw new Error("Upload failed.");
+      }
+
+      const uploadResult = (await uploadResponse.json()) as { uploadId?: string };
+      if (!uploadResult.uploadId) {
+        throw new Error("Upload response missing upload id.");
+      }
+
+      await updateProject(uploadResult.uploadId, {
+        name: projectName,
+        status: "active",
+        isPublic: uploadProjectIsPublic,
+      });
+
+      toast.success("Project uploaded.");
+      setIsUploadDialogOpen(false);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Upload failed.";
+      toast.error(message);
+    } finally {
+      setIsUploading(false);
+    }
+  }, [
+    updateProject,
+    uploadContentHash,
+    uploadFile,
+    uploadMode,
+    uploadProjectIsPublic,
+    uploadProjectName,
+  ]);
 
   return (
     <div className="min-h-screen bg-slate-900 text-white">
@@ -686,6 +831,34 @@ export default function ProjectManagerPage() {
                 void handleCreateProject();
               }}
             />
+            <div className="mt-1 flex items-center justify-between rounded-md border border-white/10 px-3 py-2">
+              <div className="grid gap-0.5">
+                <span className="text-sm text-white/85">Public project</span>
+                <span className="text-xs text-white/55">
+                  Allow other users to import by content hash
+                </span>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={createProjectIsPublic}
+                aria-label="Toggle public project"
+                onClick={() => setCreateProjectIsPublic((current) => !current)}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full border transition-colors ${
+                  createProjectIsPublic
+                    ? "border-white/60 bg-white/80"
+                    : "border-white/30 bg-white/10"
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-black transition-transform ${
+                    createProjectIsPublic
+                      ? "translate-x-6"
+                      : "translate-x-1"
+                  }`}
+                />
+              </button>
+            </div>
           </div>
 
           <DialogFooter>
@@ -705,6 +878,121 @@ export default function ProjectManagerPage() {
               disabled={isCreating}
             >
               {isCreating ? "Creating..." : "Create"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={isUploadDialogOpen} onOpenChange={setIsUploadDialogOpen}>
+        <DialogContent className="border-white/10 bg-slate-950 text-white sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Upload Project</DialogTitle>
+            <DialogDescription className="text-white/65">
+              Import from a JSON file or a public content hash.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid gap-3">
+            <Input
+              value={uploadProjectName}
+              onChange={(event) => setUploadProjectName(event.target.value)}
+              placeholder="Project name"
+              className="h-10 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
+            />
+
+            <div className="grid grid-cols-2 gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                className={`border-white/20 bg-slate-900/70 text-white hover:bg-slate-800 ${
+                  uploadMode === "file" ? "ring-1 ring-blue-400/70" : ""
+                }`}
+                onClick={() => setUploadMode("file")}
+              >
+                Upload file
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className={`border-white/20 bg-slate-900/70 text-white hover:bg-slate-800 ${
+                  uploadMode === "hash" ? "ring-1 ring-blue-400/70" : ""
+                }`}
+                onClick={() => setUploadMode("hash")}
+              >
+                Content hash
+              </Button>
+            </div>
+
+            {uploadMode === "file" ? (
+              <div className="grid gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="border-white/20 bg-slate-900/70 text-white hover:bg-slate-800"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  Select JSON file
+                </Button>
+                <p className="text-xs text-white/55">
+                  {uploadFile ? `Selected: ${uploadFile.name}` : "No file selected"}
+                </p>
+              </div>
+            ) : (
+              <Input
+                value={uploadContentHash}
+                onChange={(event) => setUploadContentHash(event.target.value)}
+                placeholder="8-digit content hash"
+                className="h-10 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
+              />
+            )}
+
+            <div className="mt-1 flex items-center justify-between rounded-md border border-white/10 px-3 py-2">
+              <div className="grid gap-0.5">
+                <span className="text-sm text-white/85">Public project</span>
+                <span className="text-xs text-white/55">
+                  Allow others to import this project by hash
+                </span>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={uploadProjectIsPublic}
+                aria-label="Toggle uploaded project public"
+                onClick={() => setUploadProjectIsPublic((current) => !current)}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full border transition-colors ${
+                  uploadProjectIsPublic
+                    ? "border-white/60 bg-white/80"
+                    : "border-white/30 bg-white/10"
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-black transition-transform ${
+                    uploadProjectIsPublic
+                      ? "translate-x-6"
+                      : "translate-x-1"
+                  }`}
+                />
+              </button>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              className="border-white/20 bg-slate-900/60 text-white hover:bg-slate-800"
+              onClick={() => setIsUploadDialogOpen(false)}
+              disabled={isUploading}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              className="bg-blue-600 text-white hover:bg-blue-500"
+              onClick={() => void handleUploadProject()}
+              disabled={isUploading}
+            >
+              {isUploading ? "Uploading..." : "Upload"}
             </Button>
           </DialogFooter>
         </DialogContent>

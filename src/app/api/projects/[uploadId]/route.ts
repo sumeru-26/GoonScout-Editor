@@ -18,6 +18,7 @@ type ProjectMetadataRow = {
   updated_at: Date;
   content_hash: string;
   is_draft: boolean;
+  is_public: boolean;
 };
 
 const resolveAuthenticatedUserId = async () => {
@@ -96,7 +97,8 @@ export async function GET(_: Request, context: RouteContext) {
         p.status,
         p.updated_at,
         f.content_hash::text as content_hash,
-        f.is_draft
+        f.is_draft,
+        f.is_public
       from public.project_manager_entries p
       join public.field_configs f on f.upload_id = p.upload_id
       where p.upload_id = ${normalizedUploadId}::uuid
@@ -119,6 +121,7 @@ export async function GET(_: Request, context: RouteContext) {
           updatedAt: row.updated_at,
           contentHash: row.content_hash,
           isDraft: row.is_draft,
+          isPublic: row.is_public,
         },
       },
       { status: 200 }
@@ -148,6 +151,7 @@ export async function PATCH(request: Request, context: RouteContext) {
     const body = (await request.json().catch(() => ({}))) as {
       name?: string;
       status?: string;
+      isPublic?: boolean;
     };
 
     const nextStatus = normalizeStatus(body.status);
@@ -155,8 +159,10 @@ export async function PATCH(request: Request, context: RouteContext) {
       typeof body.name === "string" && body.name.trim().length > 0
         ? body.name.trim()
         : null;
+    const hasIsPublicUpdate = typeof body.isPublic === "boolean";
+    const nextIsPublic = hasIsPublicUpdate ? Boolean(body.isPublic) : null;
 
-    if (!nextStatus && !nextName) {
+    if (!nextStatus && !nextName && !hasIsPublicUpdate) {
       return NextResponse.json({ error: "No valid updates provided." }, { status: 400 });
     }
 
@@ -178,6 +184,7 @@ export async function PATCH(request: Request, context: RouteContext) {
       name: string;
       status: string;
       updated_at: Date;
+      is_public: boolean;
     }>`
       update public.project_manager_entries p
       set
@@ -189,8 +196,31 @@ export async function PATCH(request: Request, context: RouteContext) {
         and f.upload_id = p.upload_id
         and p.user_id = ${userId}
         and f.user_id = ${userId}
-      returning p.upload_id, p.name, p.status, p.updated_at
+      returning p.upload_id, p.name, p.status, p.updated_at, f.is_public
     `.execute(db);
+
+    if (hasIsPublicUpdate) {
+      await sql`
+        update public.field_configs
+        set
+          is_public = ${nextIsPublic},
+          updated_at = now()
+        where upload_id = ${normalizedUploadId}::uuid
+          and user_id = ${userId}
+      `.execute(db);
+    }
+
+    const metadataResult = await sql<{
+      is_public: boolean;
+    }>`
+      select is_public
+      from public.field_configs
+      where upload_id = ${normalizedUploadId}::uuid
+        and user_id = ${userId}
+      limit 1
+    `.execute(db);
+
+    const metadata = metadataResult.rows[0] ?? null;
 
     const row = result.rows[0];
     if (!row) {
@@ -204,6 +234,7 @@ export async function PATCH(request: Request, context: RouteContext) {
           name: row.name,
           status: row.status,
           updatedAt: row.updated_at,
+          isPublic: metadata?.is_public ?? row.is_public,
         },
       },
       { status: 200 }
