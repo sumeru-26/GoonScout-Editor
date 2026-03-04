@@ -16,12 +16,13 @@ type ProjectRow = {
   config_updated_at: Date;
   payload: unknown;
   background_image: string | null;
+  is_public: boolean;
 };
 
 const buildShareCode8 = () =>
   `${Math.floor(Math.random() * 90_000_000) + 10_000_000}`;
 
-const createProjectConfigWithRetry = async (input: { userId: string }) => {
+const createProjectConfigWithRetry = async (input: { userId: string; isPublic: boolean }) => {
   const maxAttempts = 5;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -39,7 +40,8 @@ const createProjectConfigWithRetry = async (input: { userId: string }) => {
           payload,
           background_image,
           content_hash,
-          is_draft
+          is_draft,
+          is_public
         )
         values (
           ${randomUUID()}::uuid,
@@ -48,7 +50,8 @@ const createProjectConfigWithRetry = async (input: { userId: string }) => {
           ${JSON.stringify([])}::jsonb,
           null,
           ${buildShareCode8()},
-          true
+          true,
+          ${input.isPublic}
         )
         returning upload_id, updated_at, payload, background_image
       `.execute(db);
@@ -204,7 +207,8 @@ export async function GET(request: Request) {
         p.updated_at,
         f.updated_at as config_updated_at,
         f.payload,
-        f.background_image
+        f.background_image,
+        f.is_public
       from public.project_manager_entries p
       join public.field_configs f on f.upload_id = p.upload_id
       where p.user_id = ${userId}
@@ -221,6 +225,7 @@ export async function GET(request: Request) {
       configUpdatedAt: row.config_updated_at,
       stageCount: inferStageCount(row.payload),
       backgroundImage: row.background_image,
+      isPublic: row.is_public,
     }));
 
     return NextResponse.json({ projects }, { status: 200 });
@@ -242,6 +247,7 @@ export async function POST(request: Request) {
 
     const body = (await request.json().catch(() => ({}))) as {
       name?: string;
+      isPublic?: boolean;
     };
 
     const projectName =
@@ -249,7 +255,9 @@ export async function POST(request: Request) {
         ? body.name.trim()
         : "Untitled Project";
 
-    const config = await createProjectConfigWithRetry({ userId });
+    const isPublic = Boolean(body.isPublic ?? false);
+
+    const config = await createProjectConfigWithRetry({ userId, isPublic });
 
     await sql`
       insert into public.project_manager_entries (upload_id, user_id, name, status)
@@ -265,6 +273,7 @@ export async function POST(request: Request) {
           updatedAt: config.updated_at,
           stageCount: inferStageCount(config.payload),
           backgroundImage: config.background_image,
+          isPublic,
         },
       },
       { status: 201 }
