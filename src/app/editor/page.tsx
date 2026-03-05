@@ -15,6 +15,7 @@ import {
 } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
 import { Button } from "@/components/ui/button";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import * as LucideIcons from "lucide-react";
 
 import {
@@ -60,6 +61,7 @@ const MIRROR_LINE_SIZE = { width: 160, height: 80 } as const;
 const COVER_SIZE = { width: 220, height: 120 } as const;
 const INPUT_SIZE = { width: 220, height: 56 } as const;
 const TOGGLE_SIZE = { width: 64, height: 36 } as const;
+const AUTO_TOGGLE_SIZE = { width: 180, height: 40 } as const;
 const LOG_SIZE = { width: 280, height: 120 } as const;
 const FIELD_HEIGHT = 560;
 const ICON_GRID_COLUMNS = 6;
@@ -115,6 +117,7 @@ type AssetKind =
   | "cover"
   | "input"
   | "toggle"
+  | "auto-toggle"
   | "undo"
   | "redo"
   | "submit"
@@ -145,6 +148,8 @@ type CanvasItem = {
   toggleOn?: boolean;
   toggleTextAlign?: "left" | "center" | "right";
   toggleTextSize?: number;
+  autoToggleMode?: "auto" | "teleop";
+  autoToggleDurationSeconds?: number;
   teamSide?: TeamSide;
   increment?: number;
   swapRedSide?: "left" | "right";
@@ -167,6 +172,8 @@ const getAssetSize = (kind: AssetKind) =>
           ? INPUT_SIZE
           : kind === "toggle"
             ? TOGGLE_SIZE
+            : kind === "auto-toggle"
+              ? AUTO_TOGGLE_SIZE
             : kind === "log"
               ? LOG_SIZE
               : BUTTON_SIZE;
@@ -184,6 +191,8 @@ const getDefaultLabelForKind = (kind: AssetKind) =>
           ? "Input label"
           : kind === "toggle"
             ? "Toggle"
+            : kind === "auto-toggle"
+              ? "Auto Toggle"
             : kind === "swap"
               ? "Swap sides"
               : kind === "undo"
@@ -338,6 +347,7 @@ const normalizeLoadedItemKind = (kind: unknown): AssetKind => {
     kind === "cover" ||
     kind === "input" ||
     kind === "toggle" ||
+    kind === "auto-toggle" ||
     kind === "undo" ||
     kind === "redo" ||
     kind === "submit" ||
@@ -721,6 +731,30 @@ const parseImportedEditorState = (
         toggleTextAlign: align,
         toggleTextSize: readNumber(data.textSize, 10),
         tag,
+        teamSide: toTeamSide(data.teamSide),
+      };
+    }
+
+    if (isRecord(entry["auto-toggle"])) {
+      const data = entry["auto-toggle"];
+      const width = scaleWidth(data.width, AUTO_TOGGLE_SIZE.width);
+      const height = scaleHeight(data.height, AUTO_TOGGLE_SIZE.height);
+      const centerItemX = scaleX(data.x);
+      const centerItemY = scaleY(data.y);
+      registerStageLink(data.stageParentTag, id);
+      return {
+        id,
+        kind: "auto-toggle",
+        x: centerItemX - width / 2,
+        y: centerItemY - height / 2,
+        width,
+        height,
+        label: typeof data.label === "string" ? data.label : "Auto Toggle",
+        autoToggleMode: data.mode === "teleop" ? "teleop" : "auto",
+        autoToggleDurationSeconds:
+          typeof data.timerSeconds === "number" && Number.isFinite(data.timerSeconds)
+            ? Math.max(0, data.timerSeconds)
+            : 15,
         teamSide: toTeamSide(data.teamSide),
       };
     }
@@ -1183,6 +1217,39 @@ function PaletteToggleButton({ onPalettePointerDown }: PaletteButtonProps) {
   );
 }
 
+function PaletteAutoToggleButton({ onPalettePointerDown }: PaletteButtonProps) {
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+    id: "palette-auto-toggle",
+    data: { type: "palette", assetKind: "auto-toggle" } satisfies DragData,
+  });
+
+  const style: React.CSSProperties = {
+    opacity: isDragging ? 0 : 1,
+  };
+
+  return (
+    <Button
+      ref={setNodeRef}
+      style={style}
+      variant="outline"
+      className="mx-auto h-[58px] w-[calc(100%-8px)] justify-start gap-3 rounded-xl border-white/10 bg-slate-900/70 px-3 text-left text-white transition-all duration-150 hover:border-white/20 hover:bg-slate-800/80"
+      onPointerDownCapture={(event) => onPalettePointerDown("auto-toggle", event)}
+      {...attributes}
+      {...listeners}
+      type="button"
+      aria-label="Auto toggle"
+    >
+      <span className="flex h-8 w-8 items-center justify-center rounded-md bg-indigo-500/20 text-indigo-200">
+        <ToggleLeft className="h-4 w-4" />
+      </span>
+      <span className="flex flex-col items-start leading-tight">
+        <span className="text-sm font-semibold">Auto Toggle</span>
+        <span className="text-xs text-white/55">Auto → Teleop with timer</span>
+      </span>
+    </Button>
+  );
+}
+
 function PaletteLogButton({ onPalettePointerDown }: PaletteButtonProps) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: "palette-log",
@@ -1294,7 +1361,7 @@ function CanvasButton({
           ? "scale-[0.97] ring-2 ring-sky-300/70 !bg-slate-800"
           : ""
       }`}
-      onPointerDown={(event) => {
+      onPointerDownCapture={(event) => {
         if (!isPreviewMode) {
           onSelect(item.id, { append: event.button === 2 });
           return;
@@ -1314,12 +1381,7 @@ function CanvasButton({
         onPreviewPressEnd(item.id);
       }}
       onClick={() => {
-        if (!isPreviewMode) {
-          if (item.kind === "icon") {
-            onEditLabel(item);
-          }
-          return;
-        }
+        if (!isPreviewMode) return;
         if (isActionButtonKind(item.kind)) {
           onPreviewButtonAction(item);
           return;
@@ -1330,6 +1392,12 @@ function CanvasButton({
         }
         if (item.kind === "swap" && isPreviewMode) {
           onSwapSides();
+        }
+      }}
+      onDoubleClick={() => {
+        if (isPreviewMode) return;
+        if (item.kind === "icon") {
+          onEditLabel(item);
         }
       }}
       onContextMenu={(event) => {
@@ -1445,7 +1513,7 @@ function CanvasMirrorLine({
       ref={setNodeRef}
       style={style}
       className="absolute"
-      onPointerDown={(event) => {
+      onPointerDownCapture={(event) => {
         if (isPreviewMode || event.button === 2) return;
         onSelect(item.id);
       }}
@@ -1532,7 +1600,7 @@ function CanvasCover({
           ? "border-white/10 bg-slate-900 transition-all duration-150 ease-out"
           : "border-dashed border-white/35 bg-white/5 !transition-none"
       }`}
-      onPointerDown={(event) => {
+      onPointerDownCapture={(event) => {
         if (isPreviewMode || event.button === 2) return;
         onSelect(item.id);
       }}
@@ -1603,7 +1671,7 @@ function CanvasInput({
       className={`group absolute flex flex-col gap-2 ${
         isPreviewMode ? "transition-all duration-150 ease-out" : "!transition-none"
       }`}
-      onPointerDown={(event) => {
+      onPointerDownCapture={(event) => {
         if (!isPreviewMode) onSelect(item.id, { append: event.button === 2 });
       }}
       onContextMenu={(event) => {
@@ -1612,6 +1680,9 @@ function CanvasInput({
         onSelect(item.id, { append: true });
       }}
       onClick={() => {
+        if (isPreviewMode) return;
+      }}
+      onDoubleClick={() => {
         if (isPreviewMode) return;
         onEditInput(item);
       }}
@@ -1677,7 +1748,7 @@ function CanvasLog({
       className={`group absolute rounded-md border border-white/15 bg-slate-900/90 p-2 ${
         isPreviewMode ? "transition-all duration-150 ease-out" : "!transition-none"
       }`}
-      onPointerDown={(event) => {
+      onPointerDownCapture={(event) => {
         if (!isPreviewMode) onSelect(item.id, { append: event.button === 2 });
       }}
       onContextMenu={(event) => {
@@ -1754,7 +1825,7 @@ function CanvasToggle({
       className={`group absolute ${
         isPreviewMode ? "transition-all duration-150 ease-out" : "!transition-none"
       }`}
-      onPointerDown={(event) => {
+      onPointerDownCapture={(event) => {
         if (!isPreviewMode) onSelect(item.id, { append: event.button === 2 });
       }}
       onContextMenu={(event) => {
@@ -1792,6 +1863,98 @@ function CanvasToggle({
           }`}
         />
       </div>
+      {!isPreviewMode ? (
+        <span
+          role="presentation"
+          onPointerDown={(event) => onResizeStart(event, item)}
+          className="absolute bottom-0 right-0 hidden h-3 w-3 cursor-se-resize rounded-sm border border-white/60 bg-white/80 group-hover:block"
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function CanvasAutoToggle({
+  item,
+  onResizeStart,
+  onSelect,
+  onToggle,
+  countdownSeconds,
+  snapOffset,
+  isPreviewMode,
+}: {
+  item: CanvasItem;
+  onResizeStart: (event: React.PointerEvent, item: CanvasItem) => void;
+  onSelect: (itemId: string, options?: { append?: boolean }) => void;
+  onToggle: (itemId: string) => void;
+  countdownSeconds?: number;
+  snapOffset?: { x: number; y: number };
+  isPreviewMode?: boolean;
+}) {
+  const { attributes, listeners, setNodeRef, transform } = useDraggable({
+    id: item.id,
+    disabled: Boolean(isPreviewMode),
+    data: { type: "canvas", itemId: item.id } satisfies DragData,
+  });
+
+  const style: React.CSSProperties = {
+    transform: toDragTransform(true, transform, snapOffset),
+    left: item.x,
+    top: item.y,
+    width: item.width,
+    height: item.height,
+  };
+
+  const mode = item.autoToggleMode ?? "auto";
+  const autoLabel =
+    mode === "auto" && typeof countdownSeconds === "number"
+      ? `${Math.max(0, countdownSeconds)}s`
+      : "Auto";
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className={`group absolute ${
+        isPreviewMode ? "transition-all duration-150 ease-out" : "!transition-none"
+      }`}
+      onPointerDownCapture={(event) => {
+        if (!isPreviewMode) onSelect(item.id, { append: event.button === 2 });
+      }}
+      onContextMenu={(event) => {
+        if (isPreviewMode) return;
+        event.preventDefault();
+        onSelect(item.id, { append: true });
+      }}
+      onClick={() => {
+        if (isPreviewMode) {
+          onToggle(item.id);
+        }
+      }}
+      {...attributes}
+      {...listeners}
+      data-canvas-item="true"
+    >
+      <ToggleGroup
+        type="single"
+        value={mode}
+        className="grid h-full w-full grid-cols-2 gap-1 rounded-md border border-white/20 bg-slate-900/90 p-1"
+      >
+        <ToggleGroupItem
+          value="auto"
+          aria-label="Toggle auto"
+          className="h-full rounded-sm border border-transparent text-[11px] text-white/85 data-[state=on]:border-2 data-[state=on]:border-white data-[state=on]:bg-white data-[state=on]:font-semibold data-[state=on]:text-black"
+        >
+          {autoLabel}
+        </ToggleGroupItem>
+        <ToggleGroupItem
+          value="teleop"
+          aria-label="Toggle teleop"
+          className="h-full rounded-sm border border-transparent text-[11px] text-white/85 data-[state=on]:border-2 data-[state=on]:border-white data-[state=on]:bg-white data-[state=on]:font-semibold data-[state=on]:text-black"
+        >
+          Teleop
+        </ToggleGroupItem>
+      </ToggleGroup>
       {!isPreviewMode ? (
         <span
           role="presentation"
@@ -1861,6 +2024,14 @@ const MemoCanvasToggle = React.memo(
     prev.isPreviewMode === next.isPreviewMode &&
     areSnapOffsetsEqual(prev.snapOffset, next.snapOffset)
 );
+const MemoCanvasAutoToggle = React.memo(
+  CanvasAutoToggle,
+  (prev, next) =>
+    prev.item === next.item &&
+    prev.countdownSeconds === next.countdownSeconds &&
+    prev.isPreviewMode === next.isPreviewMode &&
+    areSnapOffsetsEqual(prev.snapOffset, next.snapOffset)
+);
 
 export default function EditorPage() {
   const router = useRouter();
@@ -1923,6 +2094,9 @@ export default function EditorPage() {
   );
   const [previewInputValues, setPreviewInputValues] = React.useState<
     Record<string, string>
+  >({});
+  const [autoToggleCountdowns, setAutoToggleCountdowns] = React.useState<
+    Record<string, number>
   >({});
   const [previewLogText, setPreviewLogText] = React.useState("");
   const [selectedItemId, setSelectedItemId] = React.useState<string | null>(null);
@@ -2044,6 +2218,8 @@ export default function EditorPage() {
   const dragSelectionIdsRef = React.useRef<string[]>([]);
   const flushDragRafRef = React.useRef<number | null>(null);
   const lastDragMoveAtRef = React.useRef(0);
+  const autoToggleTimeoutsRef = React.useRef<Record<string, number>>({});
+  const autoToggleIntervalsRef = React.useRef<Record<string, number>>({});
 
   React.useEffect(() => {
     alignmentGuidesRef.current = alignmentGuides;
@@ -2143,6 +2319,47 @@ export default function EditorPage() {
       keywords.some((keyword) => keyword.toLowerCase().includes(assetSearchQuery)),
     [assetSearchQuery]
   );
+
+  const clearAutoToggleTimer = React.useCallback((itemId: string) => {
+    const timeoutId = autoToggleTimeoutsRef.current[itemId];
+    if (typeof timeoutId === "number") {
+      window.clearTimeout(timeoutId);
+      delete autoToggleTimeoutsRef.current[itemId];
+    }
+    const intervalId = autoToggleIntervalsRef.current[itemId];
+    if (typeof intervalId === "number") {
+      window.clearInterval(intervalId);
+      delete autoToggleIntervalsRef.current[itemId];
+    }
+    setAutoToggleCountdowns((prev) => {
+      if (!(itemId in prev)) return prev;
+      const next = { ...prev };
+      delete next[itemId];
+      return next;
+    });
+  }, []);
+
+  React.useEffect(() => {
+    return () => {
+      Object.values(autoToggleTimeoutsRef.current).forEach((timeoutId) => {
+        window.clearTimeout(timeoutId);
+      });
+      Object.values(autoToggleIntervalsRef.current).forEach((intervalId) => {
+        window.clearInterval(intervalId);
+      });
+      autoToggleTimeoutsRef.current = {};
+      autoToggleIntervalsRef.current = {};
+    };
+  }, []);
+
+  React.useEffect(() => {
+    const existingIds = new Set(items.map((item) => item.id));
+    Object.keys(autoToggleIntervalsRef.current).forEach((itemId) => {
+      if (!existingIds.has(itemId)) {
+        clearAutoToggleTimer(itemId);
+      }
+    });
+  }, [clearAutoToggleTimer, items]);
 
   const visibleItems = React.useMemo(() => {
     if (stagingParentId) {
@@ -2440,7 +2657,7 @@ export default function EditorPage() {
 
   const scheduleDragMove = React.useCallback(
     (snapshot: DragMoveSnapshot) => {
-      const THROTTLE_MS = 60;
+      const THROTTLE_MS = 100;
       const now = performance.now();
       if (now - lastDragMoveAtRef.current < THROTTLE_MS) {
         return;
@@ -2865,6 +3082,116 @@ export default function EditorPage() {
       )
     );
   }, []);
+
+  const handleAutoToggleItem = React.useCallback(
+    (itemId: string) => {
+      const target = items.find((item) => item.id === itemId);
+      if (!target || target.kind !== "auto-toggle") return;
+
+      if (typeof autoToggleIntervalsRef.current[itemId] === "number") {
+        clearAutoToggleTimer(itemId);
+        setItems((prev) =>
+          prev.map((item) =>
+            item.id === itemId && item.kind === "auto-toggle"
+              ? {
+                  ...item,
+                  autoToggleMode: "teleop",
+                }
+              : item
+          )
+        );
+        return;
+      }
+
+      const durationSeconds =
+        typeof target.autoToggleDurationSeconds === "number" &&
+        Number.isFinite(target.autoToggleDurationSeconds)
+          ? Math.max(0, target.autoToggleDurationSeconds)
+          : 15;
+
+      setItems((prev) =>
+        prev.map((item) =>
+          item.id === itemId && item.kind === "auto-toggle"
+            ? {
+                ...item,
+                autoToggleMode: "auto",
+              }
+            : item
+        )
+      );
+
+      if (durationSeconds <= 0) {
+        clearAutoToggleTimer(itemId);
+        setItems((prev) =>
+          prev.map((item) =>
+            item.id === itemId && item.kind === "auto-toggle"
+              ? {
+                  ...item,
+                  autoToggleMode: "teleop",
+                }
+              : item
+          )
+        );
+        return;
+      }
+
+      setAutoToggleCountdowns((prev) => ({
+        ...prev,
+        [itemId]: Math.max(0, Math.ceil(durationSeconds)),
+      }));
+
+      const startedAt = Date.now();
+      const durationMs = durationSeconds * 1000;
+
+      autoToggleIntervalsRef.current[itemId] = window.setInterval(() => {
+        const elapsedMs = Date.now() - startedAt;
+        const remainingMs = Math.max(0, durationMs - elapsedMs);
+        const remainingSeconds = Math.ceil(remainingMs / 1000);
+
+        setAutoToggleCountdowns((prev) => {
+          if (prev[itemId] === remainingSeconds) return prev;
+          return {
+            ...prev,
+            [itemId]: remainingSeconds,
+          };
+        });
+
+        if (remainingSeconds <= 0) {
+          clearAutoToggleTimer(itemId);
+          setItems((prev) =>
+            prev.map((item) =>
+              item.id === itemId && item.kind === "auto-toggle"
+                ? {
+                    ...item,
+                    autoToggleMode: "teleop",
+                  }
+                : item
+            )
+          );
+        }
+      }, 200);
+    },
+    [clearAutoToggleTimer, items]
+  );
+
+  const handleSelectedAutoToggleTimerChange = React.useCallback(
+    (value: number) => {
+      if (!selectedItemId) return;
+      const nextValue = Number.isFinite(value) ? Math.max(0, value) : 0;
+      setItems((prev) =>
+        prev.map((item) =>
+          item.id === selectedItemId && item.kind === "auto-toggle"
+            ? {
+                ...item,
+                autoToggleDurationSeconds: nextValue,
+              }
+            : item
+        )
+      );
+      clearAutoToggleTimer(selectedItemId);
+    },
+    [clearAutoToggleTimer, selectedItemId]
+  );
 
   const enterStagingForItemId = React.useCallback((itemId: string) => {
     setStagingParentId(itemId);
@@ -3550,6 +3877,20 @@ export default function EditorPage() {
               value: Boolean(item.toggleOn),
               textAlign: item.toggleTextAlign ?? "center",
               textSize: item.toggleTextSize ?? 10,
+              stageParentTag,
+              width: scaleWidth(item.width),
+              height: scaleHeight(item.height),
+            },
+          };
+        case "auto-toggle":
+          return {
+            "auto-toggle": {
+              teamSide: item.teamSide,
+              x: scaleX(centerItemX),
+              y: scaleY(centerItemY),
+              label: item.label,
+              mode: item.autoToggleMode ?? "auto",
+              timerSeconds: item.autoToggleDurationSeconds ?? 15,
               stageParentTag,
               width: scaleWidth(item.width),
               height: scaleHeight(item.height),
@@ -5345,7 +5686,10 @@ export default function EditorPage() {
         let x = finalLeft - canvasRect.left + palettePointerOffset.x;
         let y = finalTop - canvasRect.top + palettePointerOffset.y;
 
-        const isCenterPlaced = data.assetKind === "icon" || data.assetKind === "toggle";
+        const isCenterPlaced =
+          data.assetKind === "icon" ||
+          data.assetKind === "toggle" ||
+          data.assetKind === "auto-toggle";
         const shouldCenterAnchor = shouldCenterPaletteAnchor(data.assetKind ?? "text");
         if (shouldCenterAnchor) {
           const startPointer = dragStartPointerRef.current;
@@ -5430,6 +5774,8 @@ export default function EditorPage() {
             toggleOn: kind === "toggle" ? false : undefined,
             toggleTextAlign: kind === "toggle" ? "center" : undefined,
             toggleTextSize: kind === "toggle" ? 10 : undefined,
+            autoToggleMode: kind === "auto-toggle" ? "auto" : undefined,
+            autoToggleDurationSeconds: kind === "auto-toggle" ? 15 : undefined,
             teamSide:
               isCustomSideLayoutsEnabled && kind !== "mirror"
                 ? editorTeamSide
@@ -5459,6 +5805,15 @@ export default function EditorPage() {
   );
 
   const handleResetEditor = React.useCallback(() => {
+    Object.values(autoToggleTimeoutsRef.current).forEach((timeoutId) => {
+      window.clearTimeout(timeoutId);
+    });
+    Object.values(autoToggleIntervalsRef.current).forEach((intervalId) => {
+      window.clearInterval(intervalId);
+    });
+    autoToggleTimeoutsRef.current = {};
+    autoToggleIntervalsRef.current = {};
+    setAutoToggleCountdowns({});
     setItems([]);
     setBackgroundImage(null);
     setAspectWidth("16");
@@ -5506,8 +5861,10 @@ export default function EditorPage() {
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target as HTMLElement | null;
       if (!target) return;
+      const isInsideCanvas = Boolean(canvasRef.current?.contains(target));
+      if (!isInsideCanvas) return;
       const canvasItem = target.closest('[data-canvas-item="true"]') as HTMLElement | null;
-      if (canvasItem && canvasItem.dataset.canvasKind !== "cover") return;
+      if (canvasItem) return;
       setSelectedItemIds([]);
       setSelectedItemId(null);
     };
@@ -5878,6 +6235,9 @@ export default function EditorPage() {
                 {matchesAssetSearch(["toggle", "switch"]) ? (
                   <PaletteToggleButton onPalettePointerDown={handlePalettePointerDown} />
                 ) : null}
+                {matchesAssetSearch(["auto", "teleop", "toggle"]) ? (
+                  <PaletteAutoToggleButton onPalettePointerDown={handlePalettePointerDown} />
+                ) : null}
                 {matchesAssetSearch(["cover", "overlay"]) ? (
                   <PaletteCoverButton onPalettePointerDown={handlePalettePointerDown} />
                 ) : null}
@@ -6015,6 +6375,17 @@ export default function EditorPage() {
                         onResizeStart={handleResizeStart}
                         onSelect={handleCanvasItemSelect}
                         onToggle={handleToggleItem}
+                        snapOffset={snapOffset}
+                        isPreviewMode={isEditorReadOnly}
+                      />
+                    ) : item.kind === "auto-toggle" ? (
+                      <MemoCanvasAutoToggle
+                        key={item.id}
+                        item={item}
+                        onResizeStart={handleResizeStart}
+                        onSelect={handleCanvasItemSelect}
+                        onToggle={handleAutoToggleItem}
+                        countdownSeconds={autoToggleCountdowns[item.id]}
                         snapOffset={snapOffset}
                         isPreviewMode={isEditorReadOnly}
                       />
@@ -6439,6 +6810,27 @@ export default function EditorPage() {
                   />
                 </div>
               </div>
+            ) : selectedItem?.kind === "auto-toggle" ? (
+              <div className="grid gap-4">
+                <div className="grid gap-2">
+                  <Label htmlFor="auto-toggle-timer" className="text-sm text-white/80">
+                    Auto-to-Teleop timer (seconds)
+                  </Label>
+                  <Input
+                    id="auto-toggle-timer"
+                    type="number"
+                    min={0}
+                    step={1}
+                    value={selectedItem.autoToggleDurationSeconds ?? 15}
+                    onChange={(event) =>
+                      handleSelectedAutoToggleTimerChange(
+                        Number(event.target.value) || 0,
+                      )
+                    }
+                    className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
+                  />
+                </div>
+              </div>
             ) : selectedItem?.kind === "input" ? (
               <div className="grid gap-4">
                 <div className="grid gap-2">
@@ -6790,6 +7182,17 @@ export default function EditorPage() {
                   <div className="text-center text-[11px] text-white/80">{activeLabel}</div>
                   <div className="relative h-[calc(100%-18px)] w-full rounded-full border border-sky-300/40 bg-sky-400/25">
                     <span className="absolute right-1 top-1/2 h-[68%] aspect-square -translate-y-1/2 rounded-full bg-white" />
+                  </div>
+                </div>
+              ) : activeKind === "auto-toggle" ? (
+                <div className="h-full w-full">
+                  <div className="grid h-full w-full grid-cols-2 gap-1 rounded-md border border-white/25 bg-slate-900/90 p-1">
+                    <div className="flex items-center justify-center rounded-sm border-2 border-white bg-white text-[11px] font-semibold text-black">
+                      Auto
+                    </div>
+                    <div className="flex items-center justify-center rounded-sm border border-transparent text-[11px] text-white/80">
+                      Teleop
+                    </div>
                   </div>
                 </div>
               ) : (
