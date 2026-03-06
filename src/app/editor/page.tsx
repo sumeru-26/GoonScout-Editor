@@ -2822,7 +2822,7 @@ export default function EditorPage() {
       {
         key: "export",
         title: "Download Export",
-        body: "Download JSON includes element schema, stage relationships, and backend image pointers when an upload ID exists.",
+        body: "Download JSON is the exact payload sent to the backend.",
         placement: "bottom",
       },
     ],
@@ -4017,7 +4017,7 @@ export default function EditorPage() {
   const handleExport = React.useCallback(() => {
     const result = buildExportPayload();
     if (!result) return;
-    setExportJson(result.json);
+    setExportJson(JSON.stringify(result.payload, null, 2));
     setIsExportDialogOpen(true);
   }, [buildExportPayload]);
 
@@ -4178,7 +4178,7 @@ export default function EditorPage() {
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = "field-layout.json";
+    anchor.download = "field-payload.json";
     anchor.click();
     URL.revokeObjectURL(url);
   }, [exportJson]);
@@ -7842,9 +7842,9 @@ export default function EditorPage() {
         <Dialog open={isExportDialogOpen} onOpenChange={setIsExportDialogOpen}>
           <DialogContent className="max-w-2xl">
             <DialogHeader>
-              <DialogTitle>Export layout</DialogTitle>
+              <DialogTitle>Export payload</DialogTitle>
               <DialogDescription>
-                Copy the JSON or download it as a file.
+                This is the exact `payload` JSON sent to the backend.
               </DialogDescription>
             </DialogHeader>
             <ScrollArea className="max-h-[60vh] rounded-md bg-black/80 p-4 text-sm text-white">

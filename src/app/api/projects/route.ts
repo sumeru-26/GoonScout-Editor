@@ -16,7 +16,7 @@ type ProjectRow = {
   config_updated_at: Date;
   payload: unknown;
   background_image: string | null;
-  is_public: boolean;
+  is_public?: boolean;
 };
 
 const buildShareCode8 = () =>
@@ -199,23 +199,56 @@ export async function GET(request: Request) {
     const status: ProjectStatus =
       rawStatus === "archive" || rawStatus === "trash" ? rawStatus : "active";
 
-    const result = await sql<ProjectRow>`
-      select
-        p.upload_id,
-        p.name,
-        p.status,
-        p.updated_at,
-        f.updated_at as config_updated_at,
-        f.payload,
-        f.background_image,
-        f.is_public
-      from public.project_manager_entries p
-      join public.field_configs f on f.upload_id = p.upload_id
-      where p.user_id = ${userId}
-        and f.user_id = ${userId}
-        and p.status = ${status}
-      order by p.updated_at desc
-    `.execute(db);
+    let result;
+    try {
+      result = await sql<ProjectRow>`
+        select
+          p.upload_id,
+          p.name,
+          p.status,
+          p.updated_at,
+          f.updated_at as config_updated_at,
+          f.payload,
+          f.background_image,
+          f.is_public
+        from public.project_manager_entries p
+        join public.field_configs f on f.upload_id = p.upload_id
+        where p.user_id = ${userId}
+          and f.user_id = ${userId}
+          and p.status = ${status}
+        order by p.updated_at desc
+      `.execute(db);
+    } catch (error) {
+      const pgCode =
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        typeof (error as { code?: unknown }).code === "string"
+          ? (error as { code: string }).code
+          : null;
+
+      if (pgCode !== "42703") {
+        throw error;
+      }
+
+      result = await sql<ProjectRow>`
+        select
+          p.upload_id,
+          p.name,
+          p.status,
+          p.updated_at,
+          f.updated_at as config_updated_at,
+          f.payload,
+          f.background_image,
+          false as is_public
+        from public.project_manager_entries p
+        join public.field_configs f on f.upload_id = p.upload_id
+        where p.user_id = ${userId}
+          and f.user_id = ${userId}
+          and p.status = ${status}
+        order by p.updated_at desc
+      `.execute(db);
+    }
 
     const projects = result.rows.map((row) => ({
       uploadId: row.upload_id,

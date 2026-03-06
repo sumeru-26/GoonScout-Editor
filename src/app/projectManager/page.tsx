@@ -164,13 +164,23 @@ export default function ProjectManagerPage() {
   }, [router]);
 
   const fetchProjects = React.useCallback(async (status: ProjectStatus) => {
-    const response = await fetch(`/api/projects?status=${status}`);
-    if (!response.ok) {
-      throw new Error(`Failed to load ${statusLabel[status]}.`);
-    }
+    try {
+      const response = await fetch(`/api/projects?status=${status}`);
+      if (!response.ok) {
+        const body = (await response.json().catch(() => ({}))) as {
+          error?: string;
+        };
+        throw new Error(body.error || `Failed to load ${statusLabel[status]}.`);
+      }
 
-    const result = (await response.json()) as { projects?: Project[] };
-    return result.projects ?? [];
+      const result = (await response.json()) as { projects?: Project[] };
+      return result.projects ?? [];
+    } catch (error) {
+      if (error instanceof Error && error.name === "TypeError") {
+        throw new Error("Network issue while loading projects. Check your connection.");
+      }
+      throw error;
+    }
   }, []);
 
   const refreshProjects = React.useCallback(async () => {
@@ -193,8 +203,14 @@ export default function ProjectManagerPage() {
   }, [fetchProjects]);
 
   React.useEffect(() => {
+    if (isSessionPending) return;
+    if (!sessionData?.user?.id) {
+      setIsLoading(false);
+      return;
+    }
+
     void refreshProjects();
-  }, [refreshProjects]);
+  }, [isSessionPending, refreshProjects, sessionData?.user?.id]);
 
   const displayedProjects = React.useMemo(() => {
     const term = search.trim().toLowerCase();
