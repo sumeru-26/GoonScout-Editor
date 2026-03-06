@@ -577,7 +577,8 @@ const parseImportedEditorState = (
     return Math.max(1, (normalized / 100) * canvasHeight);
   };
 
-  const tagToId = new Map<string, string>();
+  // Allow multiple IDs per tag for duplicate tags
+  const tagToIds = new Map<string, string[]>();
   const pendingStageLinks: Array<{ id: string; stageParentTag: string }> = [];
 
   const items: CanvasItem[] = rawPayload.map((entry, index) => {
@@ -624,7 +625,10 @@ const parseImportedEditorState = (
                 : null;
       const resolvedKind: AssetKind = actionKind ?? "text";
       const tag = readTag(data.tag);
-      if (resolvedKind === "text" && tag) tagToId.set(tag, id);
+      if (resolvedKind === "text" && tag) {
+        if (!tagToIds.has(tag)) tagToIds.set(tag, []);
+        tagToIds.get(tag)!.push(id);
+      }
       registerStageLink(data.stageParentTag, id);
       return {
         id,
@@ -657,7 +661,10 @@ const parseImportedEditorState = (
       const centerItemX = scaleX(data.x);
       const centerItemY = scaleY(data.y);
       const tag = readTag(data.tag);
-      if (tag) tagToId.set(tag, id);
+      if (tag) {
+        if (!tagToIds.has(tag)) tagToIds.set(tag, []);
+        tagToIds.get(tag)!.push(id);
+      }
       registerStageLink(data.stageParentTag, id);
       return {
         id,
@@ -687,7 +694,10 @@ const parseImportedEditorState = (
       const centerItemX = scaleX(data.x);
       const centerItemY = scaleY(data.y);
       const tag = readTag(data.tag);
-      if (tag) tagToId.set(tag, id);
+      if (tag) {
+        if (!tagToIds.has(tag)) tagToIds.set(tag, []);
+        tagToIds.get(tag)!.push(id);
+      }
       registerStageLink(data.stageParentTag, id);
       return {
         id,
@@ -711,7 +721,10 @@ const parseImportedEditorState = (
       const centerItemX = scaleX(data.x);
       const centerItemY = scaleY(data.y);
       const tag = readTag(data.tag);
-      if (tag) tagToId.set(tag, id);
+      if (tag) {
+        if (!tagToIds.has(tag)) tagToIds.set(tag, []);
+        tagToIds.get(tag)!.push(id);
+      }
       registerStageLink(data.stageParentTag, id);
       const align =
         data.textAlign === "left" ||
@@ -849,15 +862,17 @@ const parseImportedEditorState = (
   const itemsWithStages = items.map((item) => {
     const pending = pendingStageLinks.find((entry) => entry.id === item.id);
     if (!pending) return item;
-    const stageParentId = tagToId.get(pending.stageParentTag);
-    if (!stageParentId) {
+    const stageParentIds = tagToIds.get(pending.stageParentTag);
+    if (!stageParentIds || stageParentIds.length === 0) {
       throw new Error(
         `Invalid stage relationship: parent tag \"${pending.stageParentTag}\" was not found.`
       );
     }
+    // If multiple, link to the first for backward compatibility, or adjust as needed
     return {
       ...item,
-      stageParentId,
+      stageParentId: stageParentIds[0],
+      stageParentIds,
     };
   });
 
@@ -3766,18 +3781,6 @@ export default function EditorPage() {
 
     if (tags.some((tag) => /\s/.test(tag))) {
       toast.error("Tags cannot contain spaces.");
-      return null;
-    }
-
-    const seenTags = new Set<string>();
-    const hasDuplicate = tags.some((tag) => {
-      if (seenTags.has(tag)) return true;
-      seenTags.add(tag);
-      return false;
-    });
-
-    if (hasDuplicate) {
-      toast.error("Make sure you have no duplicate tags!");
       return null;
     }
 
