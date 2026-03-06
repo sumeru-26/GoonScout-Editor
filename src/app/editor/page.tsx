@@ -4620,6 +4620,53 @@ export default function EditorPage() {
 
     const restore = async () => {
       try {
+        const readBackgroundValue = (value: unknown): string | null => {
+          if (typeof value !== "string") return null;
+          const trimmed = value.trim();
+          return trimmed.length > 0 ? trimmed : null;
+        };
+
+        const resolveBackgroundFromConfig = async (
+          configValue: unknown,
+          fallbackUploadId?: string
+        ) => {
+          const configRecord = isRecord(configValue) ? configValue : null;
+          const directBackground =
+            readBackgroundValue(configRecord?.backgroundImage) ??
+            readBackgroundValue(configRecord?.background_image);
+          if (directBackground) return directBackground;
+
+          const uploadId =
+            readBackgroundValue(configRecord?.uploadId) ??
+            readBackgroundValue(configRecord?.upload_id) ??
+            readBackgroundValue(fallbackUploadId);
+
+          if (!uploadId) return null;
+
+          const backgroundResponse = await fetch(
+            `/api/field-configs/public/${encodeURIComponent(uploadId)}/background-image`,
+            {
+              method: "GET",
+              headers: { "Content-Type": "application/json" },
+            }
+          );
+
+          if (!backgroundResponse.ok) return null;
+
+          const backgroundResult = (await backgroundResponse.json()) as unknown;
+          const backgroundRecord = isRecord(backgroundResult) ? backgroundResult : null;
+          const nestedConfig =
+            isRecord(backgroundRecord?.config) ? backgroundRecord.config : null;
+
+          return (
+            readBackgroundValue(backgroundRecord?.backgroundImage) ??
+            readBackgroundValue(backgroundRecord?.background_image) ??
+            readBackgroundValue(nestedConfig?.backgroundImage) ??
+            readBackgroundValue(nestedConfig?.background_image) ??
+            null
+          );
+        };
+
         if (shouldStartBlank) {
           if (!isCancelled) {
             setItems([]);
@@ -4657,7 +4704,14 @@ export default function EditorPage() {
           }
 
           const selectedResult = (await selectedResponse.json()) as {
-            config?: { payload?: unknown; updatedAt?: string; uploadId?: string } | null;
+            config?: {
+              payload?: unknown;
+              backgroundImage?: string | null;
+              background_image?: string | null;
+              updatedAt?: string;
+              uploadId?: string;
+              upload_id?: string;
+            } | null;
           };
 
           if (selectedResult.config?.payload) {
@@ -4671,12 +4725,16 @@ export default function EditorPage() {
             );
 
             if (!isCancelled) {
+              const resolvedBackgroundImage = await resolveBackgroundFromConfig(
+                selectedResult.config,
+                requestedUploadId
+              );
               setItems(nextState.items);
               setAspectWidth(nextState.aspectWidth || "16");
               setAspectHeight(nextState.aspectHeight || "9");
               setAspectWidthDraft(nextState.aspectWidth || "16");
               setAspectHeightDraft(nextState.aspectHeight || "9");
-              setBackgroundImage(nextState.backgroundImage ?? null);
+              setBackgroundImage(resolvedBackgroundImage ?? nextState.backgroundImage ?? null);
               setIsCustomSideLayoutsEnabled(Boolean(nextState.useCustomSideLayouts));
               setEditorTeamSide(nextState.editorTeamSide ?? "red");
               setPreviewTeamSide(nextState.previewTeamSide ?? "red");
@@ -4685,7 +4743,11 @@ export default function EditorPage() {
               setPreviewStageParentId(null);
               setIsPreviewMode(false);
               setAutosaveUpdatedAt(selectedResult.config?.updatedAt ?? null);
-              setLatestUploadId(selectedResult.config?.uploadId ?? requestedUploadId);
+              setLatestUploadId(
+                selectedResult.config?.uploadId ??
+                  selectedResult.config?.upload_id ??
+                  requestedUploadId
+              );
               setAutosaveState("saved");
             }
           }
@@ -4704,7 +4766,14 @@ export default function EditorPage() {
         }
 
         const result = (await response.json()) as {
-          config?: { payload?: unknown; updatedAt?: string; uploadId?: string } | null;
+          config?: {
+            payload?: unknown;
+            backgroundImage?: string | null;
+            background_image?: string | null;
+            updatedAt?: string;
+            uploadId?: string;
+            upload_id?: string;
+          } | null;
         };
 
         const restoreCanvas = resolveRestoreCanvasSize(result.config?.payload);
@@ -4714,15 +4783,19 @@ export default function EditorPage() {
           restoreCanvas.height
         );
         if (!isCancelled && restored) {
+          const resolvedBackgroundImage = await resolveBackgroundFromConfig(
+            result.config,
+            result.config?.uploadId ?? result.config?.upload_id ?? undefined
+          );
           setItems(restored.items);
           setAspectWidth(restored.aspectWidth);
           setAspectHeight(restored.aspectHeight);
-          setBackgroundImage(restored.backgroundImage);
+          setBackgroundImage(resolvedBackgroundImage ?? restored.backgroundImage);
           setIsCustomSideLayoutsEnabled(Boolean(restored.useCustomSideLayouts));
           setEditorTeamSide(restored.editorTeamSide ?? "red");
           setPreviewTeamSide(restored.previewTeamSide ?? "red");
           setAutosaveUpdatedAt(result.config?.updatedAt ?? null);
-          setLatestUploadId(result.config?.uploadId ?? null);
+          setLatestUploadId(result.config?.uploadId ?? result.config?.upload_id ?? null);
           setAutosaveState("saved");
         }
       } catch {
