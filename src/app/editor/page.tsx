@@ -1347,6 +1347,8 @@ function CanvasButton({
     width: item.width,
     height: item.height,
     opacity: 1,
+    transition: isPreviewMode ? undefined : "none",
+    willChange: "transform",
   };
 
   const swapRedSide = item.swapRedSide ?? "left";
@@ -1521,6 +1523,8 @@ function CanvasMirrorLine({
     top,
     width,
     height,
+    transition: isPreviewMode ? undefined : "none",
+    willChange: "transform",
   };
 
   return React.useMemo(() => (
@@ -1602,6 +1606,8 @@ function CanvasCover({
     top: item.y,
     width: item.width,
     height: item.height,
+    transition: isPreviewMode ? undefined : "none",
+    willChange: "transform",
   };
 
   const isCoverVisible = item.coverVisible !== false;
@@ -1677,6 +1683,8 @@ function CanvasInput({
     top: item.y,
     width: item.width,
     height: item.height,
+    transition: isPreviewMode ? undefined : "none",
+    willChange: "transform",
   };
 
   return (
@@ -1754,6 +1762,8 @@ function CanvasLog({
     top: item.y,
     width: item.width,
     height: item.height,
+    transition: isPreviewMode ? undefined : "none",
+    willChange: "transform",
   };
 
   return (
@@ -1819,6 +1829,8 @@ function CanvasToggle({
     top: item.y,
     width: item.width,
     height: item.height,
+    transition: isPreviewMode ? undefined : "none",
+    willChange: "transform",
   };
 
   const isOn = Boolean(item.toggleOn);
@@ -1918,6 +1930,8 @@ function CanvasAutoToggle({
     top: item.y,
     width: item.width,
     height: item.height,
+    transition: isPreviewMode ? undefined : "none",
+    willChange: "transform",
   };
 
   const mode = item.autoToggleMode ?? "auto";
@@ -3757,8 +3771,23 @@ export default function EditorPage() {
   }, [inputEditingId, inputLabelDraft, inputPlaceholderDraft, inputTagDraft]);
 
   const buildExportPayload = React.useCallback(() => {
-    const canvasRect = canvasRef.current?.getBoundingClientRect();
-    if (!canvasRect) return null;
+    const canvasElement = canvasRef.current;
+    if (!canvasElement) return null;
+
+    const numericAspectWidth = Number(aspectWidth);
+    const numericAspectHeight = Number(aspectHeight);
+    const resolvedAspectRatio =
+      Number.isFinite(numericAspectWidth) &&
+      Number.isFinite(numericAspectHeight) &&
+      numericAspectWidth > 0 &&
+      numericAspectHeight > 0
+        ? numericAspectWidth / numericAspectHeight
+        : 16 / 9;
+    const canvasWidth =
+      canvasElement.offsetWidth > 0
+        ? canvasElement.offsetWidth
+        : FIELD_HEIGHT * resolvedAspectRatio;
+    const canvasHeight = canvasElement.offsetHeight > 0 ? canvasElement.offsetHeight : FIELD_HEIGHT;
 
     const tagById = new Map(
       items.map((item) => [item.id, normalizeTag(item.tag ?? "")] as const)
@@ -3784,10 +3813,10 @@ export default function EditorPage() {
       return null;
     }
 
-    const centerX = canvasRect.width / 2;
-    const centerY = canvasRect.height / 2;
-    const halfWidth = canvasRect.width / 2;
-    const halfHeight = canvasRect.height / 2;
+    const centerX = canvasWidth / 2;
+    const centerY = canvasHeight / 2;
+    const halfWidth = canvasWidth / 2;
+    const halfHeight = canvasHeight / 2;
     const normalize = (value: number) => Number(value.toFixed(2));
     const clampToRange = (value: number) => Math.max(-100, Math.min(100, value));
     const scaleX = (value: number) =>
@@ -3795,9 +3824,9 @@ export default function EditorPage() {
     const scaleY = (value: number) =>
       normalize(clampToRange(((centerY - value) / halfHeight) * 100));
     const scaleWidth = (value: number) =>
-      normalize(clampToRange((value / canvasRect.width) * 100));
+      normalize(clampToRange((value / canvasWidth) * 100));
     const scaleHeight = (value: number) =>
-      normalize(clampToRange((value / canvasRect.height) * 100));
+      normalize(clampToRange((value / canvasHeight) * 100));
 
     const payload = items.map((item) => {
       const centerItemX = item.x + item.width / 2;
@@ -3982,7 +4011,7 @@ export default function EditorPage() {
       previewTeamSide,
       editorState: {
         items: items.map((item) =>
-          serializeCanvasItem(item, canvasRect.width, canvasRect.height)
+          serializeCanvasItem(item, canvasWidth, canvasHeight)
         ),
         aspectWidth,
         aspectHeight,
@@ -4032,10 +4061,10 @@ export default function EditorPage() {
   const handleUploadConfig = React.useCallback(async () => {
     if (uploadPayload.length === 0) return;
     try {
-      const canvasRect = canvasRef.current?.getBoundingClientRect();
+      const canvasElement = canvasRef.current;
       const numericAspectWidth = Number(aspectWidth);
       const numericAspectHeight = Number(aspectHeight);
-      const aspectRatio =
+      const resolvedAspectRatio =
         Number.isFinite(numericAspectWidth) &&
         Number.isFinite(numericAspectHeight) &&
         numericAspectWidth > 0 &&
@@ -4043,9 +4072,13 @@ export default function EditorPage() {
           ? numericAspectWidth / numericAspectHeight
           : 16 / 9;
       const canvasWidth =
-        canvasRect && canvasRect.width > 0 ? canvasRect.width : FIELD_HEIGHT * aspectRatio;
+        canvasElement && canvasElement.offsetWidth > 0
+          ? canvasElement.offsetWidth
+          : FIELD_HEIGHT * resolvedAspectRatio;
       const canvasHeight =
-        canvasRect && canvasRect.height > 0 ? canvasRect.height : FIELD_HEIGHT;
+        canvasElement && canvasElement.offsetHeight > 0
+          ? canvasElement.offsetHeight
+          : FIELD_HEIGHT;
 
       const editorState: SerializedEditorState = {
         items: items.map((item) =>
@@ -4202,6 +4235,10 @@ export default function EditorPage() {
     width: fieldWidth,
     height: FIELD_HEIGHT,
   });
+  const [previewBaseStageSize, setPreviewBaseStageSize] = React.useState<{
+    width: number;
+    height: number;
+  } | null>(null);
 
   const applyImageAspectRatio = React.useCallback((src: string) => {
     const img = new Image();
@@ -4343,9 +4380,18 @@ export default function EditorPage() {
   );
 
   const buildEditorState = React.useCallback((): SerializedEditorState => {
+    const canvasElement = canvasRef.current;
+    const canvasWidth =
+      canvasElement && canvasElement.offsetWidth > 0
+        ? canvasElement.offsetWidth
+        : fieldWidth;
+    const canvasHeight =
+      canvasElement && canvasElement.offsetHeight > 0
+        ? canvasElement.offsetHeight
+        : FIELD_HEIGHT;
     return {
       items: items.map((item) =>
-        serializeCanvasItem(item, stageSize.width, stageSize.height)
+        serializeCanvasItem(item, canvasWidth, canvasHeight)
       ),
       aspectWidth,
       aspectHeight,
@@ -4360,11 +4406,10 @@ export default function EditorPage() {
     aspectWidth,
     backgroundImage,
     editorTeamSide,
+    fieldWidth,
     isCustomSideLayoutsEnabled,
     items,
     previewTeamSide,
-    stageSize.height,
-    stageSize.width,
   ]);
 
   const buildDraftPayload = React.useCallback(() => {
@@ -6113,11 +6158,16 @@ export default function EditorPage() {
                   setIsPreviewMode((current) => {
                     const next = !current;
                     if (next) {
+                      setPreviewBaseStageSize({
+                        width: stageSizeRef.current.width,
+                        height: stageSizeRef.current.height,
+                      });
                       setStagingParentId(null);
                       setPreviewTeamSide(editorTeamSide);
                       setPreviewInputValues({});
                       setPreviewLogText("");
                     } else {
+                      setPreviewBaseStageSize(null);
                       setPreviewStageParentId(null);
                       setPreviewInputValues({});
                       setPreviewLogText("");
@@ -6218,13 +6268,21 @@ export default function EditorPage() {
           </div>
         </header>
 
-        <main className="mx-auto grid w-full max-w-[1760px] grid-cols-1 gap-4 px-5 py-5 xl:grid-cols-[260px_minmax(0,1fr)_260px]">
+        <main
+          className={`mx-auto w-full px-5 ${
+            isPreviewMode
+              ? "grid h-[calc(100vh-86px)] max-w-none grid-cols-1 px-0 py-0"
+              : "grid max-w-[1760px] grid-cols-1 gap-4 py-5 xl:grid-cols-[260px_minmax(0,1fr)_260px]"
+          }`}
+        >
           <aside
             ref={(node: HTMLDivElement | null) => {
               setAssetsRef(node);
               assetsPanelRef.current = node;
             }}
-            className="flex h-[min(72vh,700px)] min-h-0 flex-col overflow-hidden rounded-2xl border border-white/[0.03] bg-slate-900/70 p-4 text-white shadow-2xl backdrop-blur"
+            className={`${
+              isPreviewMode ? "hidden" : "flex h-[min(72vh,700px)]"
+            } min-h-0 flex-col overflow-hidden rounded-2xl border border-white/[0.03] bg-slate-900/70 p-4 text-white shadow-2xl backdrop-blur`}
           >
             <div className="mb-4 px-1">
               <h2 className="text-3xl font-semibold tracking-tight">Assets</h2>
@@ -6324,10 +6382,14 @@ export default function EditorPage() {
             </ScrollArea>
           </aside>
 
-          <section className="min-w-0">
+          <section className={`min-w-0 ${isPreviewMode ? "h-full" : ""}`}>
             <div
               ref={canvasPanelRef}
-              className="relative flex h-[min(72vh,700px)] min-h-0 items-center justify-center overflow-hidden rounded-2xl border border-white/[0.03] bg-slate-900/60 p-1 shadow-2xl backdrop-blur"
+              className={`relative flex min-h-0 items-center justify-center overflow-hidden ${
+                isPreviewMode
+                  ? "h-full rounded-none border-0 bg-transparent shadow-none backdrop-blur-0"
+                  : "h-[min(72vh,700px)] rounded-2xl border border-white/[0.03] bg-slate-900/60 p-1 shadow-2xl backdrop-blur"
+              }`}
             >
               <div
                 ref={stageWrapRef}
@@ -6335,12 +6397,28 @@ export default function EditorPage() {
               >
                 <div
                   className="relative"
-                  style={{ width: stageSize.width, height: stageSize.height }}
+                  style={
+                    isPreviewMode && previewBaseStageSize
+                      ? {
+                          width: previewBaseStageSize.width,
+                          height: previewBaseStageSize.height,
+                          transform: `scale(${Math.min(
+                            stageSize.width / previewBaseStageSize.width,
+                            stageSize.height / previewBaseStageSize.height
+                          )})`,
+                          transformOrigin: "center center",
+                        }
+                      : { width: stageSize.width, height: stageSize.height }
+                  }
                 >
                   <section
                     ref={setCanvasRef}
-                    className={`relative h-full w-full overflow-hidden rounded-xl border border-white/[0.03] bg-slate-950/90 transition-colors ${
-                      isOver ? "ring-1 ring-blue-300/25" : ""
+                    className={`relative h-full w-full overflow-hidden transition-colors ${
+                      isPreviewMode
+                        ? "rounded-none border-0 bg-slate-950"
+                        : "rounded-xl border border-white/[0.03] bg-slate-950/90"
+                    } ${
+                      isOver && !isPreviewMode ? "ring-1 ring-blue-300/25" : ""
                     }`}
                     onContextMenu={(event) => {
                       event.preventDefault();
@@ -6508,7 +6586,11 @@ export default function EditorPage() {
             </div>
           </section>
 
-          <div className="flex h-[min(72vh,700px)] min-h-0 flex-col gap-3">
+          <div
+            className={`${
+              isPreviewMode ? "hidden" : "flex h-[min(72vh,700px)]"
+            } min-h-0 flex-col gap-3`}
+          >
           <aside
             ref={propertiesPanelRef}
             className={`flex min-h-0 flex-1 flex-col overflow-y-auto rounded-2xl border border-white/[0.03] bg-slate-900/70 p-4 text-white shadow-2xl backdrop-blur [scrollbar-color:rgba(100,116,139,0.45)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-slate-600/50 ${
