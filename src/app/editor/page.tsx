@@ -52,6 +52,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Switch } from "@/components/ui/switch";
 import { authClient } from "@/lib/auth-client";
 import { useRouter, useSearchParams } from "next/navigation";
 
@@ -60,7 +61,7 @@ const ICON_BUTTON_SIZE = { width: 40, height: 40 } as const;
 const MIRROR_LINE_SIZE = { width: 160, height: 80 } as const;
 const COVER_SIZE = { width: 220, height: 120 } as const;
 const INPUT_SIZE = { width: 220, height: 56 } as const;
-const TOGGLE_SIZE = { width: 64, height: 36 } as const;
+const TOGGLE_SIZE = { width: 52, height: 28 } as const;
 const AUTO_TOGGLE_SIZE = { width: 180, height: 40 } as const;
 const LOG_SIZE = { width: 280, height: 120 } as const;
 const FIELD_HEIGHT = 560;
@@ -177,6 +178,11 @@ const getAssetSize = (kind: AssetKind) =>
             : kind === "log"
               ? LOG_SIZE
               : BUTTON_SIZE;
+
+const getResizeMinSize = (kind: AssetKind) =>
+  kind === "toggle"
+    ? { width: 28, height: 18 }
+    : { width: 64, height: 36 };
 
   const shouldCenterPaletteAnchor = (kind: AssetKind) => kind !== "mirror";
 
@@ -1364,6 +1370,12 @@ function CanvasButton({
           ? "!border-2 !border-red-400"
           : "!border-2 !border-blue-400"
       : "border-white/20";
+  const buttonToneClass =
+    item.kind === "submit"
+      ? "!bg-white !text-black hover:!bg-white/90"
+      : item.kind === "reset"
+        ? "!bg-[#9e4042] !text-white hover:!bg-[#9e4042]/90"
+        : "!bg-slate-900 !text-white hover:!bg-slate-900";
 
   return (
     <Button
@@ -1371,7 +1383,7 @@ function CanvasButton({
       style={style}
       variant="outline"
       size={item.kind === "icon" ? "icon" : "default"}
-      className={`group absolute rounded-lg ${swapOutlineClass} !bg-slate-900 !text-white hover:!bg-slate-900 ${
+      className={`group absolute rounded-lg ${swapOutlineClass} ${buttonToneClass} ${
         isPreviewMode ? "transition-all duration-150" : "!transition-none"
       } ${
         isPreviewMode && isPreviewPressed
@@ -1785,8 +1797,7 @@ function CanvasLog({
       {...listeners}
       data-canvas-item="true"
     >
-      <Label className="mb-1 block text-xs text-white/80">{item.label || "Log"}</Label>
-      <div className="h-[calc(100%-18px)] overflow-auto rounded border border-white/10 bg-slate-950/90 p-2 text-[11px] leading-snug text-white/80">
+      <div className="h-full overflow-auto rounded border border-white/10 bg-slate-950/90 p-2 text-[11px] leading-snug text-white/80">
         <pre className="whitespace-pre-wrap break-words font-sans">
           {logText || "Submit in preview to display input values."}
         </pre>
@@ -1843,7 +1854,16 @@ function CanvasToggle({
         ? "text-right"
         : "text-center";
   const showLabel = Boolean(item.label);
-  const trackHeight = showLabel ? "h-[calc(100%-16px)]" : "h-full";
+  const switchScale = Math.max(
+    0.35,
+    Math.min(
+      3.5,
+      Math.min(item.width / TOGGLE_SIZE.width, item.height / TOGGLE_SIZE.height)
+    )
+  );
+  const switchPixelWidth = 32 * switchScale;
+  const switchPixelHeight = 18 * switchScale;
+  const resolvedTextSize = Math.max(6, textSize * switchScale);
 
   return (
     <div
@@ -1860,35 +1880,38 @@ function CanvasToggle({
         event.preventDefault();
         onSelect(item.id, { append: true });
       }}
-      onClick={() => {
-        if (isPreviewMode) {
-          onToggle(item.id);
-        }
-      }}
       {...attributes}
       {...listeners}
       data-canvas-item="true"
     >
-      {showLabel ? (
-        <Label
-          className={`mb-1 block text-xs text-white/80 ${textClass}`}
-          style={{ fontSize: textSize }}
+      <div className="flex h-full w-full items-center gap-2 overflow-visible">
+        <div
+          className="flex flex-none items-center justify-start"
+          style={{
+            width: switchPixelWidth,
+            height: switchPixelHeight,
+            transform: `scale(${switchScale})`,
+            transformOrigin: "left center",
+          }}
         >
-          {item.label}
-        </Label>
-      ) : null}
-      <div
-        className={`relative ${trackHeight} w-full rounded-full border transition-colors ${
-          isOn
-            ? "border-sky-300/50 bg-sky-400/35"
-            : "border-white/25 bg-slate-800/80"
-        }`}
-      >
-        <span
-          className={`absolute top-1/2 h-[68%] aspect-square -translate-y-1/2 rounded-full bg-white transition-all ${
-            isOn ? "right-1" : "left-1"
-          }`}
-        />
+          <Switch
+            id={`toggle-${item.id}`}
+            checked={isOn}
+            disabled={!isPreviewMode}
+            onCheckedChange={() => {
+              if (!isPreviewMode) return;
+              onToggle(item.id);
+            }}
+          />
+        </div>
+        {showLabel ? (
+          <Label
+            className={`shrink-0 whitespace-nowrap leading-none text-white/80 ${textClass}`}
+            style={{ fontSize: resolvedTextSize }}
+          >
+            {item.label}
+          </Label>
+        ) : null}
       </div>
       {!isPreviewMode ? (
         <span
@@ -2110,6 +2133,10 @@ export default function EditorPage() {
   const [isAlignmentAssistEnabled, setIsAlignmentAssistEnabled] =
     React.useState(true);
   const [isPreviewMode, setIsPreviewMode] = React.useState(false);
+  const [previewBaseStageSize, setPreviewBaseStageSize] = React.useState<{
+    width: number;
+    height: number;
+  } | null>(null);
   const [isCustomSideLayoutsEnabled, setIsCustomSideLayoutsEnabled] =
     React.useState(false);
   const [editorTeamSide, setEditorTeamSide] = React.useState<TeamSide>("red");
@@ -2213,6 +2240,9 @@ export default function EditorPage() {
   const [iconScrollTop, setIconScrollTop] = React.useState(0);
   const iconEditingIdRef = React.useRef<string | null>(null);
   const canvasRef = React.useRef<HTMLDivElement | null>(null);
+  const previewBaseStageSizeRef = React.useRef<{ width: number; height: number } | null>(
+    null
+  );
   const [alignmentGuides, setAlignmentGuides] = React.useState<{
     vertical: number[];
     horizontal: number[];
@@ -2764,8 +2794,7 @@ export default function EditorPage() {
     [items]
   );
 
-  const isStageBlurActive =
-    Boolean(stagingParentId) || (isPreviewMode && Boolean(previewStageParentId));
+  const isStageBlurActive = Boolean(stagingParentId);
 
   const selectedIsStageableRoot =
     Boolean(selectedItem) &&
@@ -3337,12 +3366,10 @@ export default function EditorPage() {
   const handlePreviewButtonAction = React.useCallback(
     (item: CanvasItem) => {
       if (item.kind === "undo") {
-        handleUndo();
         return;
       }
 
       if (item.kind === "redo") {
-        handleRedo();
         return;
       }
 
@@ -3365,7 +3392,7 @@ export default function EditorPage() {
         setPreviewLogText(JSON.stringify(submitted, null, 2));
       }
     },
-    [handleRedo, handleUndo, items, previewInputValues]
+    [items, previewInputValues]
   );
 
   const sensors = useSensors(
@@ -3788,6 +3815,14 @@ export default function EditorPage() {
         ? canvasElement.offsetWidth
         : FIELD_HEIGHT * resolvedAspectRatio;
     const canvasHeight = canvasElement.offsetHeight > 0 ? canvasElement.offsetHeight : FIELD_HEIGHT;
+    const serializationCanvasWidth =
+      isPreviewMode && previewBaseStageSizeRef.current
+        ? previewBaseStageSizeRef.current.width
+        : canvasWidth;
+    const serializationCanvasHeight =
+      isPreviewMode && previewBaseStageSizeRef.current
+        ? previewBaseStageSizeRef.current.height
+        : canvasHeight;
 
     const tagById = new Map(
       items.map((item) => [item.id, normalizeTag(item.tag ?? "")] as const)
@@ -3813,10 +3848,10 @@ export default function EditorPage() {
       return null;
     }
 
-    const centerX = canvasWidth / 2;
-    const centerY = canvasHeight / 2;
-    const halfWidth = canvasWidth / 2;
-    const halfHeight = canvasHeight / 2;
+    const centerX = serializationCanvasWidth / 2;
+    const centerY = serializationCanvasHeight / 2;
+    const halfWidth = serializationCanvasWidth / 2;
+    const halfHeight = serializationCanvasHeight / 2;
     const normalize = (value: number) => Number(value.toFixed(2));
     const clampToRange = (value: number) => Math.max(-100, Math.min(100, value));
     const scaleX = (value: number) =>
@@ -3824,9 +3859,9 @@ export default function EditorPage() {
     const scaleY = (value: number) =>
       normalize(clampToRange(((centerY - value) / halfHeight) * 100));
     const scaleWidth = (value: number) =>
-      normalize(clampToRange((value / canvasWidth) * 100));
+      normalize(clampToRange((value / serializationCanvasWidth) * 100));
     const scaleHeight = (value: number) =>
-      normalize(clampToRange((value / canvasHeight) * 100));
+      normalize(clampToRange((value / serializationCanvasHeight) * 100));
 
     const payload = items.map((item) => {
       const centerItemX = item.x + item.width / 2;
@@ -4011,7 +4046,7 @@ export default function EditorPage() {
       previewTeamSide,
       editorState: {
         items: items.map((item) =>
-          serializeCanvasItem(item, canvasWidth, canvasHeight)
+          serializeCanvasItem(item, serializationCanvasWidth, serializationCanvasHeight)
         ),
         aspectWidth,
         aspectHeight,
@@ -4038,6 +4073,7 @@ export default function EditorPage() {
     aspectWidth,
     editorTeamSide,
     isCustomSideLayoutsEnabled,
+    isPreviewMode,
     items,
     latestUploadId,
     previewTeamSide,
@@ -4079,10 +4115,22 @@ export default function EditorPage() {
         canvasElement && canvasElement.offsetHeight > 0
           ? canvasElement.offsetHeight
           : FIELD_HEIGHT;
+      const serializationCanvasWidth =
+        isPreviewMode && previewBaseStageSizeRef.current
+          ? previewBaseStageSizeRef.current.width
+          : canvasWidth;
+      const serializationCanvasHeight =
+        isPreviewMode && previewBaseStageSizeRef.current
+          ? previewBaseStageSizeRef.current.height
+          : canvasHeight;
 
       const editorState: SerializedEditorState = {
         items: items.map((item) =>
-          serializeCanvasItem(item, canvasWidth, canvasHeight)
+          serializeCanvasItem(
+            item,
+            serializationCanvasWidth,
+            serializationCanvasHeight
+          )
         ),
         aspectWidth,
         aspectHeight,
@@ -4122,6 +4170,7 @@ export default function EditorPage() {
     aspectWidth,
     backgroundImage,
     editorTeamSide,
+    isPreviewMode,
     isCustomSideLayoutsEnabled,
     items,
     latestUploadId,
@@ -4235,10 +4284,6 @@ export default function EditorPage() {
     width: fieldWidth,
     height: FIELD_HEIGHT,
   });
-  const [previewBaseStageSize, setPreviewBaseStageSize] = React.useState<{
-    width: number;
-    height: number;
-  } | null>(null);
 
   const applyImageAspectRatio = React.useCallback((src: string) => {
     const img = new Image();
@@ -4389,9 +4434,17 @@ export default function EditorPage() {
       canvasElement && canvasElement.offsetHeight > 0
         ? canvasElement.offsetHeight
         : FIELD_HEIGHT;
+    const serializationCanvasWidth =
+      isPreviewMode && previewBaseStageSizeRef.current
+        ? previewBaseStageSizeRef.current.width
+        : canvasWidth;
+    const serializationCanvasHeight =
+      isPreviewMode && previewBaseStageSizeRef.current
+        ? previewBaseStageSizeRef.current.height
+        : canvasHeight;
     return {
       items: items.map((item) =>
-        serializeCanvasItem(item, canvasWidth, canvasHeight)
+        serializeCanvasItem(item, serializationCanvasWidth, serializationCanvasHeight)
       ),
       aspectWidth,
       aspectHeight,
@@ -4407,6 +4460,7 @@ export default function EditorPage() {
     backgroundImage,
     editorTeamSide,
     fieldWidth,
+    isPreviewMode,
     isCustomSideLayoutsEnabled,
     items,
     previewTeamSide,
@@ -5244,15 +5298,19 @@ export default function EditorPage() {
       if (!canvasSize) return;
 
       if (resize) {
-        const maxWidth = Math.max(64, canvasSize.width - resize.originX);
-        const maxHeight = Math.max(36, canvasSize.height - resize.originY);
+        const resizeItem = visibleItemsRef.current.find((item) => item.id === resize.id);
+        const minSize = resizeItem
+          ? getResizeMinSize(resizeItem.kind)
+          : { width: 64, height: 36 };
+        const maxWidth = Math.max(minSize.width, canvasSize.width - resize.originX);
+        const maxHeight = Math.max(minSize.height, canvasSize.height - resize.originY);
 
         const rawWidth = Math.max(
-          64,
+          minSize.width,
           Math.min(resize.startWidth + (clientX - resize.startX), maxWidth)
         );
         const rawHeight = Math.max(
-          36,
+          minSize.height,
           Math.min(resize.startHeight + (clientY - resize.startY), maxHeight)
         );
 
@@ -5374,11 +5432,11 @@ export default function EditorPage() {
         };
 
         const nextWidth = Math.max(
-          64,
+          minSize.width,
           Math.min(resolvedRight.value - activeLeft, maxWidth)
         );
         const nextHeight = Math.max(
-          36,
+          minSize.height,
           Math.min(resolvedBottom.value - activeTop, maxHeight)
         );
 
@@ -6106,6 +6164,49 @@ export default function EditorPage() {
     };
   }, [currentTutorialStep, getTutorialTargetElement, isTutorialOpen]);
 
+  const renderedLayeredVisibleItems = React.useMemo(() => {
+    if (!isPreviewMode || !previewBaseStageSize) {
+      return layeredVisibleItems;
+    }
+
+    const scaleX =
+      previewBaseStageSize.width > 0
+        ? stageSize.width / previewBaseStageSize.width
+        : 1;
+    const scaleY =
+      previewBaseStageSize.height > 0
+        ? stageSize.height / previewBaseStageSize.height
+        : 1;
+
+    if (scaleX === 1 && scaleY === 1) {
+      return layeredVisibleItems;
+    }
+
+    return layeredVisibleItems.map((item) => {
+      if (item.kind === "mirror") {
+        return {
+          ...item,
+          x: item.x * scaleX,
+          y: item.y * scaleY,
+          width: item.width * scaleX,
+          height: item.height * scaleY,
+          startX: typeof item.startX === "number" ? item.startX * scaleX : undefined,
+          startY: typeof item.startY === "number" ? item.startY * scaleY : undefined,
+          endX: typeof item.endX === "number" ? item.endX * scaleX : undefined,
+          endY: typeof item.endY === "number" ? item.endY * scaleY : undefined,
+        };
+      }
+
+      return {
+        ...item,
+        x: item.x * scaleX,
+        y: item.y * scaleY,
+        width: item.width * scaleX,
+        height: item.height * scaleY,
+      };
+    });
+  }, [isPreviewMode, layeredVisibleItems, previewBaseStageSize, stageSize.height, stageSize.width]);
+
   return (
     <DndContext
       sensors={sensors}
@@ -6162,12 +6263,19 @@ export default function EditorPage() {
                         width: stageSizeRef.current.width,
                         height: stageSizeRef.current.height,
                       });
+                      previewBaseStageSizeRef.current = {
+                        width: stageSizeRef.current.width,
+                        height: stageSizeRef.current.height,
+                      };
                       setStagingParentId(null);
+                      setPreviewStageParentId(null);
+                      setPreviewPressedItemId(null);
                       setPreviewTeamSide(editorTeamSide);
                       setPreviewInputValues({});
                       setPreviewLogText("");
                     } else {
                       setPreviewBaseStageSize(null);
+                      previewBaseStageSizeRef.current = null;
                       setPreviewStageParentId(null);
                       setPreviewInputValues({});
                       setPreviewLogText("");
@@ -6397,19 +6505,7 @@ export default function EditorPage() {
               >
                 <div
                   className="relative"
-                  style={
-                    isPreviewMode && previewBaseStageSize
-                      ? {
-                          width: previewBaseStageSize.width,
-                          height: previewBaseStageSize.height,
-                          transform: `scale(${Math.min(
-                            stageSize.width / previewBaseStageSize.width,
-                            stageSize.height / previewBaseStageSize.height
-                          )})`,
-                          transformOrigin: "center center",
-                        }
-                      : { width: stageSize.width, height: stageSize.height }
-                  }
+                  style={{ width: stageSize.width, height: stageSize.height }}
                 >
                   <section
                     ref={setCanvasRef}
@@ -6449,7 +6545,7 @@ export default function EditorPage() {
                   {!isPreviewMode &&
                     (alignmentGuides.vertical.length > 0 ||
                       alignmentGuides.horizontal.length > 0) && (
-                      <div className="pointer-events-none absolute inset-0">
+                      <div className="pointer-events-none absolute inset-0 z-40">
                         {[...new Set(alignmentGuides.vertical.map(v => Math.round(v)))].map((xGuide) => (
                           <div
                             key={`v-${xGuide}`}
@@ -6472,7 +6568,7 @@ export default function EditorPage() {
                     </p>
                   )}
                     {!isTutorialOpen &&
-                    layeredVisibleItems.map((item) => {
+                    renderedLayeredVisibleItems.map((item) => {
                     if (isPreviewMode && item.kind === "mirror") {
                       return null;
                     }
