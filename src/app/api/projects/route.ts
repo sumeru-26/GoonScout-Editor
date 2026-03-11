@@ -168,6 +168,7 @@ const inferStageCount = (payload: unknown) => {
       (record.button as Record<string, unknown> | undefined) ??
       (record["icon-button"] as Record<string, unknown> | undefined) ??
       (record["text-input"] as Record<string, unknown> | undefined) ??
+      (record["team-select"] as Record<string, unknown> | undefined) ??
       (record["toggle-switch"] as Record<string, unknown> | undefined);
 
     if (!element) continue;

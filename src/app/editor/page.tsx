@@ -16,6 +16,12 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { Button } from "@/components/ui/button";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import * as LucideIcons from "lucide-react";
 
 import {
@@ -61,9 +67,12 @@ const ICON_BUTTON_SIZE = { width: 40, height: 40 } as const;
 const MIRROR_LINE_SIZE = { width: 160, height: 80 } as const;
 const COVER_SIZE = { width: 220, height: 120 } as const;
 const INPUT_SIZE = { width: 220, height: 56 } as const;
+const TEAM_SELECT_SIZE = { width: 220, height: 44 } as const;
 const TOGGLE_SIZE = { width: 52, height: 28 } as const;
 const AUTO_TOGGLE_SIZE = { width: 180, height: 40 } as const;
 const LOG_SIZE = { width: 280, height: 120 } as const;
+const TEAM_SELECT_OPTION_COUNT = 6;
+const TEAM_SELECT_OPTION_LABEL = "9999";
 const FIELD_HEIGHT = 560;
 const ICON_GRID_COLUMNS = 6;
 const ICON_CELL_SIZE = 48;
@@ -117,6 +126,7 @@ type AssetKind =
   | "swap"
   | "cover"
   | "input"
+  | "team-select"
   | "toggle"
   | "auto-toggle"
   | "undo"
@@ -146,6 +156,7 @@ type CanvasItem = {
   endX?: number;
   endY?: number;
   placeholder?: string;
+  teamSelectValue?: string;
   toggleOn?: boolean;
   toggleTextAlign?: "left" | "center" | "right";
   toggleTextSize?: number;
@@ -171,6 +182,8 @@ const getAssetSize = (kind: AssetKind) =>
         ? COVER_SIZE
         : kind === "input"
           ? INPUT_SIZE
+          : kind === "team-select"
+            ? TEAM_SELECT_SIZE
           : kind === "toggle"
             ? TOGGLE_SIZE
             : kind === "auto-toggle"
@@ -195,6 +208,8 @@ const getDefaultLabelForKind = (kind: AssetKind) =>
         ? "Cover"
         : kind === "input"
           ? "Input label"
+          : kind === "team-select"
+            ? "Team Select"
           : kind === "toggle"
             ? "Toggle"
             : kind === "auto-toggle"
@@ -352,6 +367,7 @@ const normalizeLoadedItemKind = (kind: unknown): AssetKind => {
     kind === "swap" ||
     kind === "cover" ||
     kind === "input" ||
+    kind === "team-select" ||
     kind === "toggle" ||
     kind === "auto-toggle" ||
     kind === "undo" ||
@@ -715,6 +731,31 @@ const parseImportedEditorState = (
         label: typeof data.label === "string" ? data.label : "Input label",
         placeholder:
           typeof data.placeholder === "string" ? data.placeholder : "Enter text",
+        tag,
+        teamSide: toTeamSide(data.teamSide),
+      };
+    }
+
+    if (isRecord(entry["team-select"])) {
+      const data = entry["team-select"];
+      const width = scaleWidth(data.width, TEAM_SELECT_SIZE.width);
+      const height = scaleHeight(data.height, TEAM_SELECT_SIZE.height);
+      const centerItemX = scaleX(data.x);
+      const centerItemY = scaleY(data.y);
+      const tag = readTag(data.tag);
+      if (tag) {
+        if (!tagToIds.has(tag)) tagToIds.set(tag, []);
+        tagToIds.get(tag)!.push(id);
+      }
+      registerStageLink(data.stageParentTag, id);
+      return {
+        id,
+        kind: "team-select",
+        x: centerItemX - width / 2,
+        y: centerItemY - height / 2,
+        width,
+        height,
+        label: typeof data.label === "string" ? data.label : "Team Select",
         tag,
         teamSide: toTeamSide(data.teamSide),
       };
@@ -1200,6 +1241,39 @@ function PaletteInputButton({ onPalettePointerDown }: PaletteButtonProps) {
       <span className="flex flex-col items-start leading-tight">
         <span className="text-sm font-semibold">Text Field</span>
         <span className="text-xs text-white/55">User text input field</span>
+      </span>
+    </Button>
+  );
+}
+
+function PaletteTeamSelectButton({ onPalettePointerDown }: PaletteButtonProps) {
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+    id: "palette-team-select",
+    data: { type: "palette", assetKind: "team-select" } satisfies DragData,
+  });
+
+  const style: React.CSSProperties = {
+    opacity: isDragging ? 0 : 1,
+  };
+
+  return (
+    <Button
+      ref={setNodeRef}
+      style={style}
+      variant="outline"
+      className="mx-auto h-[58px] w-[calc(100%-8px)] justify-start gap-3 rounded-xl border-white/10 bg-slate-900/70 px-3 text-left text-white transition-all duration-150 hover:border-white/20 hover:bg-slate-800/80"
+      onPointerDownCapture={(event) => onPalettePointerDown("team-select", event)}
+      {...attributes}
+      {...listeners}
+      type="button"
+      aria-label="Team select"
+    >
+      <span className="flex h-8 w-8 items-center justify-center rounded-md bg-white/10 text-white">
+        <ChevronDown className="h-4 w-4" />
+      </span>
+      <span className="flex flex-col items-start leading-tight">
+        <span className="text-sm font-semibold">Team Select</span>
+        <span className="text-xs text-white/55">Dropdown + radio selection</span>
       </span>
     </Button>
   );
@@ -1747,6 +1821,123 @@ function CanvasInput({
   );
 }
 
+function CanvasTeamSelect({
+  item,
+  onResizeStart,
+  onPreviewValueChange,
+  onSelect,
+  previewValue,
+  snapOffset,
+  isPreviewMode,
+}: {
+  item: CanvasItem;
+  onResizeStart: (event: React.PointerEvent, item: CanvasItem) => void;
+  onPreviewValueChange: (item: CanvasItem, value: string) => void;
+  onSelect: (itemId: string, options?: { append?: boolean }) => void;
+  previewValue: string;
+  snapOffset?: { x: number; y: number };
+  isPreviewMode?: boolean;
+}) {
+  const { attributes, listeners, setNodeRef, transform } = useDraggable({
+    id: item.id,
+    disabled: Boolean(isPreviewMode),
+    data: { type: "canvas", itemId: item.id } satisfies DragData,
+  });
+
+  const [open, setOpen] = React.useState(false);
+  const selectedValue = previewValue || "team-option-1";
+  const options = React.useMemo(
+    () =>
+      Array.from({ length: TEAM_SELECT_OPTION_COUNT }, (_, index) => ({
+        value: `team-option-${index + 1}`,
+        label: TEAM_SELECT_OPTION_LABEL,
+      })),
+    []
+  );
+
+  const style: React.CSSProperties = {
+    transform: toDragTransform(true, transform, snapOffset),
+    left: item.x,
+    top: item.y,
+    width: item.width,
+    height: item.height,
+    transition: isPreviewMode ? undefined : "none",
+    willChange: "transform",
+  };
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className={`group absolute ${
+        isPreviewMode ? "transition-all duration-150 ease-out" : "!transition-none"
+      }`}
+      onPointerDownCapture={(event) => {
+        if (!isPreviewMode) onSelect(item.id, { append: event.button === 2 });
+      }}
+      onContextMenu={(event) => {
+        if (isPreviewMode) return;
+        event.preventDefault();
+        onSelect(item.id, { append: true });
+      }}
+      {...attributes}
+      {...listeners}
+      data-canvas-item="true"
+    >
+      <DropdownMenu
+        open={isPreviewMode ? open : false}
+        onOpenChange={(nextOpen) => {
+          if (!isPreviewMode) return;
+          setOpen(nextOpen);
+        }}
+      >
+        <DropdownMenuTrigger asChild>
+          <Button
+            type="button"
+            variant="outline"
+            className="h-full w-full justify-between rounded-md border-white/20 bg-slate-900/90 text-white hover:bg-slate-800/90"
+            disabled={!isPreviewMode}
+          >
+            <span className="truncate">{item.label || "Team Select"}</span>
+            <ChevronDown className="h-4 w-4 opacity-70" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent
+          align="start"
+          className="w-48 border-white/15 bg-slate-900 text-white"
+        >
+          <RadioGroup
+            value={selectedValue}
+            onValueChange={(value) => {
+              if (!isPreviewMode) return;
+              onPreviewValueChange(item, value);
+            }}
+            className="grid gap-2"
+          >
+            {options.map((option) => (
+              <Label
+                key={option.value}
+                htmlFor={`${item.id}-${option.value}`}
+                className="flex cursor-pointer items-center gap-2 rounded-sm px-1 py-1 text-sm text-white/90 hover:bg-white/10"
+              >
+                <RadioGroupItem id={`${item.id}-${option.value}`} value={option.value} />
+                {option.label}
+              </Label>
+            ))}
+          </RadioGroup>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      {!isPreviewMode ? (
+        <span
+          role="presentation"
+          onPointerDown={(event) => onResizeStart(event, item)}
+          className="absolute bottom-1 right-1 hidden h-3 w-3 cursor-se-resize rounded-sm border border-white/60 bg-white/80 group-hover:block"
+        />
+      ) : null}
+    </div>
+  );
+}
+
 function CanvasLog({
   item,
   onResizeStart,
@@ -2061,6 +2252,14 @@ const MemoCanvasInput = React.memo(
     prev.isPreviewMode === next.isPreviewMode &&
     areSnapOffsetsEqual(prev.snapOffset, next.snapOffset)
 );
+const MemoCanvasTeamSelect = React.memo(
+  CanvasTeamSelect,
+  (prev, next) =>
+    prev.item === next.item &&
+    prev.previewValue === next.previewValue &&
+    prev.isPreviewMode === next.isPreviewMode &&
+    areSnapOffsetsEqual(prev.snapOffset, next.snapOffset)
+);
 const MemoCanvasLog = React.memo(
   CanvasLog,
   (prev, next) =>
@@ -2149,6 +2348,9 @@ export default function EditorPage() {
     null
   );
   const [previewInputValues, setPreviewInputValues] = React.useState<
+    Record<string, string>
+  >({});
+  const [previewTeamSelectValues, setPreviewTeamSelectValues] = React.useState<
     Record<string, string>
   >({});
   const [autoToggleCountdowns, setAutoToggleCountdowns] = React.useState<
@@ -3325,6 +3527,17 @@ export default function EditorPage() {
     []
   );
 
+  const handlePreviewTeamSelectChange = React.useCallback(
+    (item: CanvasItem, value: string) => {
+      const key = normalizeTag(item.tag ?? "") || item.id;
+      setPreviewTeamSelectValues((prev) => ({
+        ...prev,
+        [key]: value,
+      }));
+    },
+    []
+  );
+
   const applyEditorSnapshot = React.useCallback(
     (snapshot: EditorSnapshot) => {
       isApplyingHistoryRef.current = true;
@@ -3375,24 +3588,28 @@ export default function EditorPage() {
 
       if (item.kind === "reset") {
         setPreviewInputValues({});
+        setPreviewTeamSelectValues({});
         setPreviewLogText("");
         return;
       }
 
       if (item.kind === "submit") {
         const submitted = items
-          .filter((entry) => entry.kind === "input")
+          .filter((entry) => entry.kind === "input" || entry.kind === "team-select")
           .reduce<Record<string, string>>((accumulator, entry) => {
             const inputKey = normalizeTag(entry.tag ?? "") || entry.id;
             const outputKey = normalizeTag(entry.tag ?? "") || entry.label || entry.id;
-            accumulator[outputKey] = previewInputValues[inputKey] ?? "";
+            accumulator[outputKey] =
+              entry.kind === "team-select"
+                ? previewTeamSelectValues[inputKey] ?? TEAM_SELECT_OPTION_LABEL
+                : previewInputValues[inputKey] ?? "";
             return accumulator;
           }, {});
 
         setPreviewLogText(JSON.stringify(submitted, null, 2));
       }
     },
-    [items, previewInputValues]
+    [items, previewInputValues, previewTeamSelectValues]
   );
 
   const sensors = useSensors(
@@ -3928,6 +4145,19 @@ export default function EditorPage() {
               y: scaleY(centerItemY),
               label: item.label,
               placeholder: item.placeholder ?? "",
+              stageParentTag,
+              width: scaleWidth(item.width),
+              height: scaleHeight(item.height),
+            },
+          };
+        case "team-select":
+          return {
+            "team-select": {
+              tag: item.tag ?? "",
+              teamSide: item.teamSide,
+              x: scaleX(centerItemX),
+              y: scaleY(centerItemY),
+              label: item.label || "Team Select",
               stageParentTag,
               width: scaleWidth(item.width),
               height: scaleHeight(item.height),
@@ -5950,6 +6180,7 @@ export default function EditorPage() {
             endX: kind === "mirror" ? mirrorEndX : undefined,
             endY: kind === "mirror" ? mirrorEndY : undefined,
             placeholder: kind === "input" ? "Enter text" : undefined,
+            teamSelectValue: kind === "team-select" ? "team-option-1" : undefined,
             toggleOn: kind === "toggle" ? false : undefined,
             toggleTextAlign: kind === "toggle" ? "center" : undefined,
             toggleTextSize: kind === "toggle" ? 10 : undefined,
@@ -5993,6 +6224,9 @@ export default function EditorPage() {
     autoToggleTimeoutsRef.current = {};
     autoToggleIntervalsRef.current = {};
     setAutoToggleCountdowns({});
+    setPreviewInputValues({});
+    setPreviewTeamSelectValues({});
+    setPreviewLogText("");
     setItems([]);
     setBackgroundImage(null);
     setAspectWidth("16");
@@ -6272,12 +6506,14 @@ export default function EditorPage() {
                       setPreviewPressedItemId(null);
                       setPreviewTeamSide(editorTeamSide);
                       setPreviewInputValues({});
+                      setPreviewTeamSelectValues({});
                       setPreviewLogText("");
                     } else {
                       setPreviewBaseStageSize(null);
                       previewBaseStageSizeRef.current = null;
                       setPreviewStageParentId(null);
                       setPreviewInputValues({});
+                      setPreviewTeamSelectValues({});
                       setPreviewLogText("");
                     }
                     return next;
@@ -6471,6 +6707,11 @@ export default function EditorPage() {
                 {matchesAssetSearch(["input", "text field"]) ? (
                   <PaletteInputButton onPalettePointerDown={handlePalettePointerDown} />
                 ) : null}
+                {matchesAssetSearch(["team", "select", "dropdown", "radio"]) ? (
+                  <PaletteTeamSelectButton
+                    onPalettePointerDown={handlePalettePointerDown}
+                  />
+                ) : null}
                 {matchesAssetSearch(["log", "output"]) ? (
                   <PaletteLogButton onPalettePointerDown={handlePalettePointerDown} />
                 ) : null}
@@ -6605,6 +6846,21 @@ export default function EditorPage() {
                         onPreviewValueChange={handlePreviewInputChange}
                         onSelect={handleCanvasItemSelect}
                         previewValue={previewInputValues[normalizeTag(item.tag ?? "") || item.id] ?? ""}
+                        snapOffset={snapOffset}
+                        isPreviewMode={isEditorReadOnly}
+                      />
+                    ) : item.kind === "team-select" ? (
+                      <MemoCanvasTeamSelect
+                        key={item.id}
+                        item={item}
+                        onResizeStart={handleResizeStart}
+                        onPreviewValueChange={handlePreviewTeamSelectChange}
+                        onSelect={handleCanvasItemSelect}
+                        previewValue={
+                          previewTeamSelectValues[
+                            normalizeTag(item.tag ?? "") || item.id
+                          ] ?? "team-option-1"
+                        }
                         snapOffset={snapOffset}
                         isPreviewMode={isEditorReadOnly}
                       />
@@ -7127,6 +7383,12 @@ export default function EditorPage() {
                   />
                 </div>
               </div>
+            ) : selectedItem?.kind === "team-select" ? (
+              <div className="grid gap-4">
+                <div className="rounded-md border border-white/10 bg-slate-900/80 px-3 py-2 text-xs text-white/70">
+                  Team Select has no configurable properties.
+                </div>
+              </div>
             ) : selectedItem && isActionButtonKind(selectedItem.kind) ? (
               <div className="grid gap-4">
                 <div className="grid gap-2">
@@ -7424,6 +7686,14 @@ export default function EditorPage() {
                   <div className="text-xs text-white/80">Input label</div>
                   <Input placeholder="Enter text" readOnly />
                 </div>
+              ) : activeKind === "team-select" ? (
+                <Button
+                  variant="outline"
+                  className="h-full w-full justify-between rounded-md border-white/25 !bg-slate-900/80 !text-white hover:!bg-slate-900/80"
+                >
+                  Team Select
+                  <ChevronDown className="h-4 w-4 opacity-70" />
+                </Button>
               ) : activeKind === "log" ? (
                 <div className="h-full w-full rounded-md border border-white/15 bg-slate-900/90 p-2">
                   <div className="mb-1 text-xs text-white/80">Log</div>
