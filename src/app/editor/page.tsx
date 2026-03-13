@@ -68,11 +68,14 @@ const MIRROR_LINE_SIZE = { width: 160, height: 80 } as const;
 const COVER_SIZE = { width: 220, height: 120 } as const;
 const INPUT_SIZE = { width: 220, height: 56 } as const;
 const TEAM_SELECT_SIZE = { width: 220, height: 44 } as const;
+const MATCH_SELECT_SIZE = { width: 220, height: 44 } as const;
 const TOGGLE_SIZE = { width: 52, height: 28 } as const;
 const AUTO_TOGGLE_SIZE = { width: 180, height: 40 } as const;
 const LOG_SIZE = { width: 280, height: 120 } as const;
 const TEAM_SELECT_OPTION_COUNT = 6;
 const TEAM_SELECT_OPTION_LABEL = "9999";
+const MATCH_SELECT_MIN_VALUE = 1;
+const MATCH_SELECT_MAX_VALUE = 999;
 const FIELD_HEIGHT = 560;
 const ICON_GRID_COLUMNS = 6;
 const ICON_CELL_SIZE = 48;
@@ -127,6 +130,7 @@ type AssetKind =
   | "cover"
   | "input"
   | "team-select"
+  | "match-select"
   | "toggle"
   | "auto-toggle"
   | "undo"
@@ -138,6 +142,7 @@ type AssetKind =
 type ActionButtonKind = "undo" | "redo" | "submit" | "reset";
 
 type TeamSide = "red" | "blue";
+type InputValueMode = "text" | "numbers" | "both";
 
 type CanvasItem = {
   id: string;
@@ -156,7 +161,9 @@ type CanvasItem = {
   endX?: number;
   endY?: number;
   placeholder?: string;
+  inputValueMode?: InputValueMode;
   teamSelectValue?: string;
+  matchSelectValue?: number;
   toggleOn?: boolean;
   toggleTextAlign?: "left" | "center" | "right";
   toggleTextSize?: number;
@@ -184,6 +191,8 @@ const getAssetSize = (kind: AssetKind) =>
           ? INPUT_SIZE
           : kind === "team-select"
             ? TEAM_SELECT_SIZE
+            : kind === "match-select"
+              ? MATCH_SELECT_SIZE
           : kind === "toggle"
             ? TOGGLE_SIZE
             : kind === "auto-toggle"
@@ -209,7 +218,9 @@ const getDefaultLabelForKind = (kind: AssetKind) =>
         : kind === "input"
           ? "Input label"
           : kind === "team-select"
-            ? "Team Select"
+            ? "Drop Down"
+          : kind === "match-select"
+            ? "Match Select"
           : kind === "toggle"
             ? "Toggle"
             : kind === "auto-toggle"
@@ -230,6 +241,26 @@ const getDefaultLabelForKind = (kind: AssetKind) =>
 
                   const isMassDragExcludedKind = (kind: AssetKind) =>
                     kind === "cover" || kind === "mirror";
+
+const getTeamSelectOptionValue = (index: number) => `team-option-${index + 1}`;
+
+const getDefaultTeamSelectOptionValue = () => getTeamSelectOptionValue(0);
+
+const clampMatchSelectValue = (value: number) =>
+  Math.max(MATCH_SELECT_MIN_VALUE, Math.min(MATCH_SELECT_MAX_VALUE, value));
+
+const normalizeInputValueMode = (value: unknown): InputValueMode =>
+  value === "text" || value === "numbers" || value === "both" ? value : "both";
+
+const sanitizeInputValueByMode = (value: string, mode: InputValueMode): string => {
+  if (mode === "numbers") {
+    return value.replace(/[^0-9]/g, "");
+  }
+  if (mode === "text") {
+    return value.replace(/[^a-zA-Z\s]/g, "");
+  }
+  return value;
+};
 
 type DragType = "palette" | "canvas";
 
@@ -258,6 +289,7 @@ type PersistedEditorState = {
   aspectWidth: string;
   aspectHeight: string;
   backgroundImage: string | null;
+  eventKey?: string;
   coordinateSpace?: string;
   useCustomSideLayouts?: boolean;
   editorTeamSide?: TeamSide;
@@ -278,6 +310,7 @@ type EditorSnapshot = {
   aspectWidth: string;
   aspectHeight: string;
   backgroundImage: string | null;
+  eventKey: string;
   useCustomSideLayouts: boolean;
   editorTeamSide: TeamSide;
   previewTeamSide: TeamSide;
@@ -368,6 +401,7 @@ const normalizeLoadedItemKind = (kind: unknown): AssetKind => {
     kind === "cover" ||
     kind === "input" ||
     kind === "team-select" ||
+    kind === "match-select" ||
     kind === "toggle" ||
     kind === "auto-toggle" ||
     kind === "undo" ||
@@ -430,9 +464,26 @@ const fromPersistedItem = (
         ? denormalizeY(yValue, options.canvasHeight)
         : yValue;
 
+    const loadedKind = normalizeLoadedItemKind(value.kind);
+    const legacyDropdownMode =
+      typeof value.dropdownAssetType === "string" ? value.dropdownAssetType : undefined;
+    const resolvedKind: AssetKind =
+      loadedKind === "team-select" && legacyDropdownMode === "match-select"
+        ? "match-select"
+        : loadedKind;
+
   return {
     ...(value as Omit<CanvasItem, "kind">),
-    kind: normalizeLoadedItemKind(value.kind),
+      kind: resolvedKind,
+      matchSelectValue:
+        resolvedKind === "match-select"
+          ? clampMatchSelectValue(
+              typeof value.matchSelectValue === "number" &&
+                Number.isFinite(value.matchSelectValue)
+                ? value.matchSelectValue
+                : MATCH_SELECT_MIN_VALUE
+            )
+          : undefined,
     x: isNormalized ? centerX - resolvedWidth / 2 : centerX,
     y: isNormalized ? centerY - resolvedHeight / 2 : centerY,
     width: resolvedWidth,
@@ -486,6 +537,7 @@ const parsePersistedEditorState = (
     typeof source.aspectHeight === "string" ? source.aspectHeight : "9";
   const backgroundImage =
     typeof source.backgroundImage === "string" ? source.backgroundImage : null;
+  const eventKey = typeof source.eventKey === "string" ? source.eventKey : "";
   const useCustomSideLayouts = Boolean(source.useCustomSideLayouts ?? false);
   const editorTeamSide: TeamSide =
     source.editorTeamSide === "blue" ? "blue" : "red";
@@ -525,6 +577,7 @@ const parsePersistedEditorState = (
     aspectWidth,
     aspectHeight,
     backgroundImage,
+    eventKey,
     coordinateSpace:
       typeof source.coordinateSpace === "string" ? source.coordinateSpace : undefined,
     useCustomSideLayouts,
@@ -731,6 +784,9 @@ const parseImportedEditorState = (
         label: typeof data.label === "string" ? data.label : "Input label",
         placeholder:
           typeof data.placeholder === "string" ? data.placeholder : "Enter text",
+        inputValueMode: normalizeInputValueMode(
+          data.inputValueMode ?? data.valueType
+        ),
         tag,
         teamSide: toTeamSide(data.teamSide),
       };
@@ -755,7 +811,35 @@ const parseImportedEditorState = (
         y: centerItemY - height / 2,
         width,
         height,
-        label: typeof data.label === "string" ? data.label : "Team Select",
+        label: typeof data.label === "string" ? data.label : "Drop Down",
+        tag,
+        teamSide: toTeamSide(data.teamSide),
+      };
+    }
+
+    if (isRecord(entry["match-select"])) {
+      const data = entry["match-select"];
+      const width = scaleWidth(data.width, MATCH_SELECT_SIZE.width);
+      const height = scaleHeight(data.height, MATCH_SELECT_SIZE.height);
+      const centerItemX = scaleX(data.x);
+      const centerItemY = scaleY(data.y);
+      const tag = readTag(data.tag);
+      if (tag) {
+        if (!tagToIds.has(tag)) tagToIds.set(tag, []);
+        tagToIds.get(tag)!.push(id);
+      }
+      registerStageLink(data.stageParentTag, id);
+      return {
+        id,
+        kind: "match-select",
+        x: centerItemX - width / 2,
+        y: centerItemY - height / 2,
+        width,
+        height,
+        label: typeof data.label === "string" ? data.label : "Match Select",
+        matchSelectValue: clampMatchSelectValue(
+          readNumber(data.value, MATCH_SELECT_MIN_VALUE)
+        ),
         tag,
         teamSide: toTeamSide(data.teamSide),
       };
@@ -938,6 +1022,7 @@ const parseImportedEditorState = (
     aspectWidth: "16",
     aspectHeight: "9",
     backgroundImage: fallbackImage,
+    eventKey: typeof source?.eventKey === "string" ? source.eventKey : "",
     useCustomSideLayouts,
     editorTeamSide,
     previewTeamSide,
@@ -1261,19 +1346,52 @@ function PaletteTeamSelectButton({ onPalettePointerDown }: PaletteButtonProps) {
       ref={setNodeRef}
       style={style}
       variant="outline"
-      className="mx-auto h-[58px] w-[calc(100%-8px)] justify-start gap-3 rounded-xl border-white/10 bg-slate-900/70 px-3 text-left text-white transition-all duration-150 hover:border-white/20 hover:bg-slate-800/80"
+      className="mx-auto h-[58px] w-[calc(100%-8px)] justify-start gap-3 rounded-xl border-white/10 !bg-slate-900 px-3 text-left text-white transition-all duration-150 hover:border-white/20 hover:!bg-slate-800 disabled:opacity-100"
       onPointerDownCapture={(event) => onPalettePointerDown("team-select", event)}
       {...attributes}
       {...listeners}
       type="button"
-      aria-label="Team select"
+      aria-label="Drop down"
     >
       <span className="flex h-8 w-8 items-center justify-center rounded-md bg-white/10 text-white">
         <ChevronDown className="h-4 w-4" />
       </span>
       <span className="flex flex-col items-start leading-tight">
-        <span className="text-sm font-semibold">Team Select</span>
-        <span className="text-xs text-white/55">Dropdown + radio selection</span>
+        <span className="text-sm font-semibold">Drop Down</span>
+        <span className="text-xs text-white/55">Team dropdown selector</span>
+      </span>
+    </Button>
+  );
+}
+
+function PaletteMatchSelectButton({ onPalettePointerDown }: PaletteButtonProps) {
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+    id: "palette-match-select",
+    data: { type: "palette", assetKind: "match-select" } satisfies DragData,
+  });
+
+  const style: React.CSSProperties = {
+    opacity: isDragging ? 0 : 1,
+  };
+
+  return (
+    <Button
+      ref={setNodeRef}
+      style={style}
+      variant="outline"
+      className="mx-auto h-[58px] w-[calc(100%-8px)] justify-start gap-3 rounded-xl border-white/10 bg-slate-900/70 px-3 text-left text-white transition-all duration-150 hover:border-white/20 hover:bg-slate-800/80"
+      onPointerDownCapture={(event) => onPalettePointerDown("match-select", event)}
+      {...attributes}
+      {...listeners}
+      type="button"
+      aria-label="Match select"
+    >
+      <span className="flex h-8 w-8 items-center justify-center rounded-md bg-white/10 text-white text-[10px] font-bold">
+        -/+ 
+      </span>
+      <span className="flex flex-col items-start leading-tight">
+        <span className="text-sm font-semibold">Match Select</span>
+        <span className="text-xs text-white/55">For match selecting</span>
       </span>
     </Button>
   );
@@ -1763,6 +1881,9 @@ function CanvasInput({
     data: { type: "canvas", itemId: item.id } satisfies DragData,
   });
 
+  const inputValueMode = normalizeInputValueMode(item.inputValueMode);
+  const normalizedPreviewValue = sanitizeInputValueByMode(previewValue, inputValueMode);
+
   const style: React.CSSProperties = {
     transform: toDragTransform(true, transform, snapOffset),
     left: item.x,
@@ -1801,13 +1922,17 @@ function CanvasInput({
     >
       <Label className="text-xs text-white/80">{item.label}</Label>
       <Input
-        value={isPreviewMode ? previewValue : ""}
+        value={isPreviewMode ? normalizedPreviewValue : ""}
         placeholder={item.placeholder ?? "Enter text"}
+        inputMode={inputValueMode === "numbers" ? "numeric" : "text"}
         className="h-full"
         readOnly={!isPreviewMode}
         onChange={(event) => {
           if (!isPreviewMode) return;
-          onPreviewValueChange(item, event.target.value);
+          onPreviewValueChange(
+            item,
+            sanitizeInputValueByMode(event.target.value, inputValueMode)
+          );
         }}
       />
       {!isPreviewMode ? (
@@ -1845,11 +1970,11 @@ function CanvasTeamSelect({
   });
 
   const [open, setOpen] = React.useState(false);
-  const selectedValue = previewValue || "team-option-1";
+  const selectedValue = previewValue || getDefaultTeamSelectOptionValue();
   const options = React.useMemo(
     () =>
       Array.from({ length: TEAM_SELECT_OPTION_COUNT }, (_, index) => ({
-        value: `team-option-${index + 1}`,
+        value: getTeamSelectOptionValue(index),
         label: TEAM_SELECT_OPTION_LABEL,
       })),
     []
@@ -1895,10 +2020,10 @@ function CanvasTeamSelect({
           <Button
             type="button"
             variant="outline"
-            className="h-full w-full justify-between rounded-md border-white/20 bg-slate-900/90 text-white hover:bg-slate-800/90"
+            className="h-full w-full justify-between rounded-md border-white/20 !bg-slate-900 text-white hover:!bg-slate-800 disabled:opacity-100"
             disabled={!isPreviewMode}
           >
-            <span className="truncate">{item.label || "Team Select"}</span>
+            <span className="truncate">Drop Down</span>
             <ChevronDown className="h-4 w-4 opacity-70" />
           </Button>
         </DropdownMenuTrigger>
@@ -1927,6 +2052,97 @@ function CanvasTeamSelect({
           </RadioGroup>
         </DropdownMenuContent>
       </DropdownMenu>
+      {!isPreviewMode ? (
+        <span
+          role="presentation"
+          onPointerDown={(event) => onResizeStart(event, item)}
+          className="absolute bottom-1 right-1 hidden h-3 w-3 cursor-se-resize rounded-sm border border-white/60 bg-white/80 group-hover:block"
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function CanvasMatchSelect({
+  item,
+  onResizeStart,
+  onPreviewValueChange,
+  onSelect,
+  previewValue,
+  snapOffset,
+  isPreviewMode,
+}: {
+  item: CanvasItem;
+  onResizeStart: (event: React.PointerEvent, item: CanvasItem) => void;
+  onPreviewValueChange: (item: CanvasItem, value: number) => void;
+  onSelect: (itemId: string, options?: { append?: boolean }) => void;
+  previewValue: number;
+  snapOffset?: { x: number; y: number };
+  isPreviewMode?: boolean;
+}) {
+  const { attributes, listeners, setNodeRef, transform } = useDraggable({
+    id: item.id,
+    disabled: Boolean(isPreviewMode),
+    data: { type: "canvas", itemId: item.id } satisfies DragData,
+  });
+
+  const currentValue = clampMatchSelectValue(previewValue || MATCH_SELECT_MIN_VALUE);
+
+  const style: React.CSSProperties = {
+    transform: toDragTransform(true, transform, snapOffset),
+    left: item.x,
+    top: item.y,
+    width: item.width,
+    height: item.height,
+    transition: isPreviewMode ? undefined : "none",
+    willChange: "transform",
+  };
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className={`group absolute ${
+        isPreviewMode ? "transition-all duration-150 ease-out" : "!transition-none"
+      }`}
+      onPointerDownCapture={(event) => {
+        if (!isPreviewMode) onSelect(item.id, { append: event.button === 2 });
+      }}
+      onContextMenu={(event) => {
+        if (isPreviewMode) return;
+        event.preventDefault();
+        onSelect(item.id, { append: true });
+      }}
+      {...attributes}
+      {...listeners}
+      data-canvas-item="true"
+    >
+      <Label className="pointer-events-none absolute -top-5 left-1/2 -translate-x-1/2 text-xs text-white/80">
+        {item.label || "Match Select"}
+      </Label>
+      <div className="grid h-full w-full grid-cols-[1fr_1.2fr_1fr] gap-1 rounded-md border border-white/20 bg-slate-900/90 p-1">
+        <Button
+          type="button"
+          variant="outline"
+          className="h-full border-white/20 bg-slate-900 text-white hover:bg-slate-800 disabled:opacity-60"
+          onClick={() => onPreviewValueChange(item, currentValue - 1)}
+          disabled={!isPreviewMode}
+        >
+          -
+        </Button>
+        <div className="flex items-center justify-center rounded-sm border border-white/15 bg-slate-950 text-sm font-semibold text-white">
+          {currentValue}
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          className="h-full border-white/20 bg-slate-900 text-white hover:bg-slate-800 disabled:opacity-60"
+          onClick={() => onPreviewValueChange(item, currentValue + 1)}
+          disabled={!isPreviewMode}
+        >
+          +
+        </Button>
+      </div>
       {!isPreviewMode ? (
         <span
           role="presentation"
@@ -2260,6 +2476,14 @@ const MemoCanvasTeamSelect = React.memo(
     prev.isPreviewMode === next.isPreviewMode &&
     areSnapOffsetsEqual(prev.snapOffset, next.snapOffset)
 );
+const MemoCanvasMatchSelect = React.memo(
+  CanvasMatchSelect,
+  (prev, next) =>
+    prev.item === next.item &&
+    prev.previewValue === next.previewValue &&
+    prev.isPreviewMode === next.isPreviewMode &&
+    areSnapOffsetsEqual(prev.snapOffset, next.snapOffset)
+);
 const MemoCanvasLog = React.memo(
   CanvasLog,
   (prev, next) =>
@@ -2329,6 +2553,8 @@ export default function EditorPage() {
   const [aspectHeight, setAspectHeight] = React.useState("9");
   const [aspectWidthDraft, setAspectWidthDraft] = React.useState("16");
   const [aspectHeightDraft, setAspectHeightDraft] = React.useState("9");
+  const [eventKey, setEventKey] = React.useState("");
+  const [eventKeyDraft, setEventKeyDraft] = React.useState("");
   const [isAlignmentAssistEnabled, setIsAlignmentAssistEnabled] =
     React.useState(true);
   const [isPreviewMode, setIsPreviewMode] = React.useState(false);
@@ -2352,6 +2578,9 @@ export default function EditorPage() {
   >({});
   const [previewTeamSelectValues, setPreviewTeamSelectValues] = React.useState<
     Record<string, string>
+  >({});
+  const [previewMatchSelectValues, setPreviewMatchSelectValues] = React.useState<
+    Record<string, number>
   >({});
   const [autoToggleCountdowns, setAutoToggleCountdowns] = React.useState<
     Record<string, number>
@@ -2957,6 +3186,7 @@ export default function EditorPage() {
       aspectWidth,
       aspectHeight,
       backgroundImage,
+      eventKey,
       useCustomSideLayouts: isCustomSideLayoutsEnabled,
       editorTeamSide,
       previewTeamSide,
@@ -2966,6 +3196,7 @@ export default function EditorPage() {
     aspectWidth,
     backgroundImage,
     editorTeamSide,
+    eventKey,
     isCustomSideLayoutsEnabled,
     items,
     previewTeamSide,
@@ -3167,6 +3398,23 @@ export default function EditorPage() {
             ? {
                 ...item,
                 placeholder: value,
+              }
+            : item
+        )
+      );
+    },
+    [selectedItemId]
+  );
+
+  const handleSelectedInputValueModeChange = React.useCallback(
+    (value: InputValueMode) => {
+      if (!selectedItemId) return;
+      setItems((prev) =>
+        prev.map((item) =>
+          item.id === selectedItemId && item.kind === "input"
+            ? {
+                ...item,
+                inputValueMode: value,
               }
             : item
         )
@@ -3518,10 +3766,12 @@ export default function EditorPage() {
 
   const handlePreviewInputChange = React.useCallback(
     (item: CanvasItem, value: string) => {
+      const mode = normalizeInputValueMode(item.inputValueMode);
+      const sanitizedValue = sanitizeInputValueByMode(value, mode);
       const key = normalizeTag(item.tag ?? "") || item.id;
       setPreviewInputValues((prev) => ({
         ...prev,
-        [key]: value,
+        [key]: sanitizedValue,
       }));
     },
     []
@@ -3529,10 +3779,21 @@ export default function EditorPage() {
 
   const handlePreviewTeamSelectChange = React.useCallback(
     (item: CanvasItem, value: string) => {
-      const key = normalizeTag(item.tag ?? "") || item.id;
+      const key = item.id;
       setPreviewTeamSelectValues((prev) => ({
         ...prev,
         [key]: value,
+      }));
+    },
+    []
+  );
+
+  const handlePreviewMatchSelectChange = React.useCallback(
+    (item: CanvasItem, value: number) => {
+      const key = item.id;
+      setPreviewMatchSelectValues((prev) => ({
+        ...prev,
+        [key]: clampMatchSelectValue(value),
       }));
     },
     []
@@ -3545,6 +3806,8 @@ export default function EditorPage() {
       setAspectWidth(snapshot.aspectWidth);
       setAspectHeight(snapshot.aspectHeight);
       setBackgroundImage(snapshot.backgroundImage);
+      setEventKey(snapshot.eventKey);
+      setEventKeyDraft(snapshot.eventKey);
       setIsCustomSideLayoutsEnabled(snapshot.useCustomSideLayouts);
       setEditorTeamSide(snapshot.editorTeamSide);
       setPreviewTeamSide(snapshot.previewTeamSide);
@@ -3589,19 +3852,42 @@ export default function EditorPage() {
       if (item.kind === "reset") {
         setPreviewInputValues({});
         setPreviewTeamSelectValues({});
+        setPreviewMatchSelectValues({});
         setPreviewLogText("");
         return;
       }
 
       if (item.kind === "submit") {
         const submitted = items
-          .filter((entry) => entry.kind === "input" || entry.kind === "team-select")
+          .filter(
+            (entry) =>
+              entry.kind === "input" ||
+              entry.kind === "team-select" ||
+              entry.kind === "match-select"
+          )
           .reduce<Record<string, string>>((accumulator, entry) => {
-            const inputKey = normalizeTag(entry.tag ?? "") || entry.id;
-            const outputKey = normalizeTag(entry.tag ?? "") || entry.label || entry.id;
+            const inputKey =
+              entry.kind === "team-select"
+                ? entry.id
+                : entry.kind === "match-select"
+                  ? entry.id
+                : normalizeTag(entry.tag ?? "") || entry.id;
+            const outputKey =
+              entry.kind === "team-select"
+                ? "Drop Down"
+                : entry.kind === "match-select"
+                  ? "Match Select"
+                : normalizeTag(entry.tag ?? "") || entry.label || entry.id;
             accumulator[outputKey] =
               entry.kind === "team-select"
-                ? previewTeamSelectValues[inputKey] ?? TEAM_SELECT_OPTION_LABEL
+                ? previewTeamSelectValues[inputKey] ?? getDefaultTeamSelectOptionValue()
+                : entry.kind === "match-select"
+                  ? String(
+                      previewMatchSelectValues[inputKey] ??
+                        clampMatchSelectValue(
+                          entry.matchSelectValue ?? MATCH_SELECT_MIN_VALUE
+                        )
+                    )
                 : previewInputValues[inputKey] ?? "";
             return accumulator;
           }, {});
@@ -3609,7 +3895,7 @@ export default function EditorPage() {
         setPreviewLogText(JSON.stringify(submitted, null, 2));
       }
     },
-    [items, previewInputValues, previewTeamSelectValues]
+    [items, previewInputValues, previewMatchSelectValues, previewTeamSelectValues]
   );
 
   const sensors = useSensors(
@@ -4145,19 +4431,36 @@ export default function EditorPage() {
               y: scaleY(centerItemY),
               label: item.label,
               placeholder: item.placeholder ?? "",
+              valueType: normalizeInputValueMode(item.inputValueMode),
               stageParentTag,
               width: scaleWidth(item.width),
               height: scaleHeight(item.height),
             },
           };
-        case "team-select":
+        case "team-select": {
           return {
             "team-select": {
+              teamSide: item.teamSide,
+              x: scaleX(centerItemX),
+              y: scaleY(centerItemY),
+              label: "Drop Down",
+              stageParentTag,
+              width: scaleWidth(item.width),
+              height: scaleHeight(item.height),
+            },
+          };
+        }
+        case "match-select":
+          return {
+            "match-select": {
               tag: item.tag ?? "",
               teamSide: item.teamSide,
               x: scaleX(centerItemX),
               y: scaleY(centerItemY),
-              label: item.label || "Team Select",
+              label: item.label || "Match Select",
+              value: clampMatchSelectValue(
+                item.matchSelectValue ?? MATCH_SELECT_MIN_VALUE
+              ),
               stageParentTag,
               width: scaleWidth(item.width),
               height: scaleHeight(item.height),
@@ -4281,6 +4584,7 @@ export default function EditorPage() {
         aspectWidth,
         aspectHeight,
         backgroundImage,
+        eventKey,
         coordinateSpace: NORMALIZED_COORDINATE_SPACE,
         useCustomSideLayouts: isCustomSideLayoutsEnabled,
         editorTeamSide,
@@ -4302,6 +4606,7 @@ export default function EditorPage() {
     aspectHeight,
     aspectWidth,
     editorTeamSide,
+    eventKey,
     isCustomSideLayoutsEnabled,
     isPreviewMode,
     items,
@@ -4365,6 +4670,7 @@ export default function EditorPage() {
         aspectWidth,
         aspectHeight,
         backgroundImage,
+        eventKey,
         coordinateSpace: NORMALIZED_COORDINATE_SPACE,
         useCustomSideLayouts: isCustomSideLayoutsEnabled,
         editorTeamSide,
@@ -4400,6 +4706,7 @@ export default function EditorPage() {
     aspectWidth,
     backgroundImage,
     editorTeamSide,
+    eventKey,
     isPreviewMode,
     isCustomSideLayoutsEnabled,
     items,
@@ -4416,6 +4723,8 @@ export default function EditorPage() {
       setAspectWidthDraft(nextState.aspectWidth || "16");
       setAspectHeightDraft(nextState.aspectHeight || "9");
       setBackgroundImage(nextState.backgroundImage ?? null);
+      setEventKey(nextState.eventKey ?? "");
+      setEventKeyDraft(nextState.eventKey ?? "");
       setIsCustomSideLayoutsEnabled(Boolean(nextState.useCustomSideLayouts));
       setEditorTeamSide(nextState.editorTeamSide ?? "red");
       setPreviewTeamSide(nextState.previewTeamSide ?? "red");
@@ -4559,8 +4868,9 @@ export default function EditorPage() {
     if (width <= 0 || height <= 0) return;
     setAspectWidth(String(width));
     setAspectHeight(String(height));
+    setEventKey(eventKeyDraft.trim());
     setIsAspectDialogOpen(false);
-  }, [aspectHeightDraft, aspectWidthDraft]);
+  }, [aspectHeightDraft, aspectWidthDraft, eventKeyDraft]);
 
   const disableCustomSideLayoutsKeeping = React.useCallback(
     (sideToKeep: TeamSide) => {
@@ -4679,6 +4989,7 @@ export default function EditorPage() {
       aspectWidth,
       aspectHeight,
       backgroundImage,
+      eventKey,
       coordinateSpace: NORMALIZED_COORDINATE_SPACE,
       useCustomSideLayouts: isCustomSideLayoutsEnabled,
       editorTeamSide,
@@ -4689,6 +5000,7 @@ export default function EditorPage() {
     aspectWidth,
     backgroundImage,
     editorTeamSide,
+    eventKey,
     fieldWidth,
     isPreviewMode,
     isCustomSideLayoutsEnabled,
@@ -5004,6 +5316,8 @@ export default function EditorPage() {
             setAspectWidthDraft("16");
             setAspectHeightDraft("9");
             setBackgroundImage(null);
+            setEventKey("");
+            setEventKeyDraft("");
             setIsCustomSideLayoutsEnabled(false);
             setEditorTeamSide("red");
             setPreviewTeamSide("red");
@@ -5064,6 +5378,8 @@ export default function EditorPage() {
               setAspectWidthDraft(nextState.aspectWidth || "16");
               setAspectHeightDraft(nextState.aspectHeight || "9");
               setBackgroundImage(resolvedBackgroundImage ?? nextState.backgroundImage ?? null);
+              setEventKey(nextState.eventKey ?? "");
+              setEventKeyDraft(nextState.eventKey ?? "");
               setIsCustomSideLayoutsEnabled(Boolean(nextState.useCustomSideLayouts));
               setEditorTeamSide(nextState.editorTeamSide ?? "red");
               setPreviewTeamSide(nextState.previewTeamSide ?? "red");
@@ -5120,6 +5436,8 @@ export default function EditorPage() {
           setAspectWidth(restored.aspectWidth);
           setAspectHeight(restored.aspectHeight);
           setBackgroundImage(resolvedBackgroundImage ?? restored.backgroundImage);
+          setEventKey(restored.eventKey ?? "");
+          setEventKeyDraft(restored.eventKey ?? "");
           setIsCustomSideLayoutsEnabled(Boolean(restored.useCustomSideLayouts));
           setEditorTeamSide(restored.editorTeamSide ?? "red");
           setPreviewTeamSide(restored.previewTeamSide ?? "red");
@@ -6180,7 +6498,11 @@ export default function EditorPage() {
             endX: kind === "mirror" ? mirrorEndX : undefined,
             endY: kind === "mirror" ? mirrorEndY : undefined,
             placeholder: kind === "input" ? "Enter text" : undefined,
-            teamSelectValue: kind === "team-select" ? "team-option-1" : undefined,
+            inputValueMode: kind === "input" ? "both" : undefined,
+            teamSelectValue:
+              kind === "team-select" ? getDefaultTeamSelectOptionValue() : undefined,
+            matchSelectValue:
+              kind === "match-select" ? MATCH_SELECT_MIN_VALUE : undefined,
             toggleOn: kind === "toggle" ? false : undefined,
             toggleTextAlign: kind === "toggle" ? "center" : undefined,
             toggleTextSize: kind === "toggle" ? 10 : undefined,
@@ -6226,6 +6548,7 @@ export default function EditorPage() {
     setAutoToggleCountdowns({});
     setPreviewInputValues({});
     setPreviewTeamSelectValues({});
+    setPreviewMatchSelectValues({});
     setPreviewLogText("");
     setItems([]);
     setBackgroundImage(null);
@@ -6233,6 +6556,8 @@ export default function EditorPage() {
     setAspectHeight("9");
     setAspectWidthDraft("16");
     setAspectHeightDraft("9");
+    setEventKey("");
+    setEventKeyDraft("");
     setIsCustomSideLayoutsEnabled(false);
     setEditorTeamSide("red");
     setPreviewTeamSide("red");
@@ -6460,7 +6785,7 @@ export default function EditorPage() {
                 onClick={() => router.push("/projectManager")}
                 className="text-left text-4xl font-black tracking-tight text-white transition-opacity hover:opacity-85"
               >
-                GoonScout
+                GScout
               </button>
               {requestedUploadId ? (
                 <div className="mt-1 flex items-center gap-3 text-sm text-white/80">
@@ -6507,6 +6832,7 @@ export default function EditorPage() {
                       setPreviewTeamSide(editorTeamSide);
                       setPreviewInputValues({});
                       setPreviewTeamSelectValues({});
+                      setPreviewMatchSelectValues({});
                       setPreviewLogText("");
                     } else {
                       setPreviewBaseStageSize(null);
@@ -6514,6 +6840,7 @@ export default function EditorPage() {
                       setPreviewStageParentId(null);
                       setPreviewInputValues({});
                       setPreviewTeamSelectValues({});
+                      setPreviewMatchSelectValues({});
                       setPreviewLogText("");
                     }
                     return next;
@@ -6707,8 +7034,13 @@ export default function EditorPage() {
                 {matchesAssetSearch(["input", "text field"]) ? (
                   <PaletteInputButton onPalettePointerDown={handlePalettePointerDown} />
                 ) : null}
-                {matchesAssetSearch(["team", "select", "dropdown", "radio"]) ? (
+                {matchesAssetSearch(["drop down", "dropdown", "team", "select", "radio"]) ? (
                   <PaletteTeamSelectButton
+                    onPalettePointerDown={handlePalettePointerDown}
+                  />
+                ) : null}
+                {matchesAssetSearch(["match", "increment", "plus", "minus", "select"]) ? (
+                  <PaletteMatchSelectButton
                     onPalettePointerDown={handlePalettePointerDown}
                   />
                 ) : null}
@@ -6857,9 +7189,24 @@ export default function EditorPage() {
                         onPreviewValueChange={handlePreviewTeamSelectChange}
                         onSelect={handleCanvasItemSelect}
                         previewValue={
-                          previewTeamSelectValues[
-                            normalizeTag(item.tag ?? "") || item.id
-                          ] ?? "team-option-1"
+                          previewTeamSelectValues[item.id] ??
+                          getDefaultTeamSelectOptionValue()
+                        }
+                        snapOffset={snapOffset}
+                        isPreviewMode={isEditorReadOnly}
+                      />
+                    ) : item.kind === "match-select" ? (
+                      <MemoCanvasMatchSelect
+                        key={item.id}
+                        item={item}
+                        onResizeStart={handleResizeStart}
+                        onPreviewValueChange={handlePreviewMatchSelectChange}
+                        onSelect={handleCanvasItemSelect}
+                        previewValue={
+                          previewMatchSelectValues[item.id] ??
+                          clampMatchSelectValue(
+                            item.matchSelectValue ?? MATCH_SELECT_MIN_VALUE
+                          )
                         }
                         snapOffset={snapOffset}
                         isPreviewMode={isEditorReadOnly}
@@ -7370,6 +7717,38 @@ export default function EditorPage() {
                   />
                 </div>
                 <div className="grid gap-2">
+                  <Label className="text-sm text-white/80">Input type</Label>
+                  <ToggleGroup
+                    type="single"
+                    value={normalizeInputValueMode(selectedItem.inputValueMode)}
+                    onValueChange={(value) => {
+                      if (value === "text" || value === "numbers" || value === "both") {
+                        handleSelectedInputValueModeChange(value);
+                      }
+                    }}
+                    className="grid grid-cols-3 gap-2"
+                  >
+                    <ToggleGroupItem
+                      value="text"
+                      className="h-10 rounded-md border border-white/10 bg-slate-900/80 text-xs text-white data-[state=on]:bg-blue-600"
+                    >
+                      Text
+                    </ToggleGroupItem>
+                    <ToggleGroupItem
+                      value="numbers"
+                      className="h-10 rounded-md border border-white/10 bg-slate-900/80 text-xs text-white data-[state=on]:bg-blue-600"
+                    >
+                      Numbers
+                    </ToggleGroupItem>
+                    <ToggleGroupItem
+                      value="both"
+                      className="h-10 rounded-md border border-white/10 bg-slate-900/80 text-xs text-white data-[state=on]:bg-blue-600"
+                    >
+                      Both
+                    </ToggleGroupItem>
+                  </ToggleGroup>
+                </div>
+                <div className="grid gap-2">
                   <Label htmlFor="input-tag-side" className="text-sm text-white/80">
                     Tag
                   </Label>
@@ -7386,7 +7765,63 @@ export default function EditorPage() {
             ) : selectedItem?.kind === "team-select" ? (
               <div className="grid gap-4">
                 <div className="rounded-md border border-white/10 bg-slate-900/80 px-3 py-2 text-xs text-white/70">
-                  Team Select has no configurable properties.
+                  Team Select is a plain dropdown asset and exports as <span className="font-semibold text-white">team-select</span>.
+                </div>
+              </div>
+            ) : selectedItem?.kind === "match-select" ? (
+              <div className="grid gap-4">
+                <div className="grid gap-2">
+                  <Label htmlFor="match-select-label" className="text-sm text-white/80">
+                    Label
+                  </Label>
+                  <Input
+                    id="match-select-label"
+                    value={selectedItem.label}
+                    onChange={(event) => handleSelectedLabelChange(event.target.value)}
+                    placeholder="Match Select"
+                    className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="match-select-tag" className="text-sm text-white/80">
+                    Tag
+                  </Label>
+                  <Input
+                    ref={tagInputRef}
+                    id="match-select-tag"
+                    value={selectedItem.tag ?? ""}
+                    onChange={(event) => handleSelectedTagChange(event.target.value)}
+                    placeholder="Enter tag"
+                    className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="match-select-start" className="text-sm text-white/80">
+                    Starting value
+                  </Label>
+                  <Input
+                    id="match-select-start"
+                    type="number"
+                    min={MATCH_SELECT_MIN_VALUE}
+                    max={MATCH_SELECT_MAX_VALUE}
+                    value={selectedItem.matchSelectValue ?? MATCH_SELECT_MIN_VALUE}
+                    onChange={(event) => {
+                      const value = clampMatchSelectValue(
+                        Number(event.target.value) || MATCH_SELECT_MIN_VALUE
+                      );
+                      setItems((prev) =>
+                        prev.map((item) =>
+                          item.id === selectedItem.id && item.kind === "match-select"
+                            ? {
+                                ...item,
+                                matchSelectValue: value,
+                              }
+                            : item
+                        )
+                      );
+                    }}
+                    className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
+                  />
                 </div>
               </div>
             ) : selectedItem && isActionButtonKind(selectedItem.kind) ? (
@@ -7501,6 +7936,7 @@ export default function EditorPage() {
                 onClick={() => {
                   setAspectWidthDraft(aspectWidth);
                   setAspectHeightDraft(aspectHeight);
+                  setEventKeyDraft(eventKey);
                   setIsAspectDialogOpen(true);
                 }}
               >
@@ -7689,11 +8125,17 @@ export default function EditorPage() {
               ) : activeKind === "team-select" ? (
                 <Button
                   variant="outline"
-                  className="h-full w-full justify-between rounded-md border-white/25 !bg-slate-900/80 !text-white hover:!bg-slate-900/80"
+                  className="h-full w-full justify-between rounded-md border-white/25 !bg-slate-900 !text-white hover:!bg-slate-900"
                 >
-                  Team Select
+                  Drop Down
                   <ChevronDown className="h-4 w-4 opacity-70" />
                 </Button>
+              ) : activeKind === "match-select" ? (
+                <div className="grid h-full w-full grid-cols-[1fr_1.2fr_1fr] gap-1 rounded-md border border-white/25 bg-slate-900/90 p-1">
+                  <div className="flex items-center justify-center rounded-sm border border-white/20 text-white">-</div>
+                  <div className="flex items-center justify-center rounded-sm border border-white/20 text-white">1</div>
+                  <div className="flex items-center justify-center rounded-sm border border-white/20 text-white">+</div>
+                </div>
               ) : activeKind === "log" ? (
                 <div className="h-full w-full rounded-md border border-white/15 bg-slate-900/90 p-2">
                   <div className="mb-1 text-xs text-white/80">Log</div>
@@ -7885,6 +8327,16 @@ export default function EditorPage() {
                   value={aspectHeightDraft}
                   onChange={(event) => setAspectHeightDraft(event.target.value)}
                   placeholder="9"
+                  className="border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
+                />
+              </div>
+              <div className="grid gap-2 sm:col-span-2">
+                <Label htmlFor="event-key" className="text-white/85">Event Key</Label>
+                <Input
+                  id="event-key"
+                  value={eventKeyDraft}
+                  onChange={(event) => setEventKeyDraft(event.target.value)}
+                  placeholder="2026DiddyEvent"
                   className="border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
                 />
               </div>
