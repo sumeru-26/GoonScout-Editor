@@ -63,6 +63,7 @@ import { authClient } from "@/lib/auth-client";
 import { useRouter, useSearchParams } from "next/navigation";
 
 const BUTTON_SIZE = { width: 104, height: 44 } as const;
+const MOVEMENT_SIZE = { width: 64, height: 44 } as const;
 const ICON_BUTTON_SIZE = { width: 40, height: 40 } as const;
 const MIRROR_LINE_SIZE = { width: 160, height: 80 } as const;
 const COVER_SIZE = { width: 220, height: 120 } as const;
@@ -124,6 +125,7 @@ const ICON_NAMES = Object.keys(ICON_COMPONENTS);
 
 type AssetKind =
   | "text"
+  | "movement"
   | "icon"
   | "mirror"
   | "swap"
@@ -140,6 +142,7 @@ type AssetKind =
   | "log";
 
 type ActionButtonKind = "undo" | "redo" | "submit" | "reset";
+type ButtonPressMode = "tap" | "hold";
 
 type TeamSide = "red" | "blue";
 type InputValueMode = "text" | "numbers" | "both";
@@ -154,8 +157,10 @@ type CanvasItem = {
   kind: AssetKind;
   tag?: string;
   iconName?: string;
+  movementDirection?: "left" | "right";
   outlineColor?: string;
   fillColor?: string;
+  buttonPressMode?: ButtonPressMode;
   startX?: number;
   startY?: number;
   endX?: number;
@@ -174,6 +179,8 @@ type CanvasItem = {
   swapRedSide?: "left" | "right";
   swapActiveSide?: "left" | "right";
   stageParentId?: string;
+  stageHideAfterSelection?: boolean;
+  stageBlurBackgroundOnClick?: boolean;
   coverVisible?: boolean;
 };
 
@@ -183,6 +190,8 @@ const isActionButtonKind = (kind: AssetKind): kind is ActionButtonKind =>
 const getAssetSize = (kind: AssetKind) =>
   kind === "icon"
     ? ICON_BUTTON_SIZE
+    : kind === "movement"
+      ? MOVEMENT_SIZE
     : kind === "mirror"
       ? MIRROR_LINE_SIZE
       : kind === "cover"
@@ -203,14 +212,16 @@ const getAssetSize = (kind: AssetKind) =>
 
 const getResizeMinSize = (kind: AssetKind) =>
   kind === "toggle"
-    ? { width: 28, height: 18 }
-    : { width: 64, height: 36 };
+    ? { width: 12, height: 4 }
+    : { width: 16, height: 6 };
 
   const shouldCenterPaletteAnchor = (kind: AssetKind) => kind !== "mirror";
 
 const getDefaultLabelForKind = (kind: AssetKind) =>
   kind === "icon"
     ? "Bot"
+    : kind === "movement"
+      ? "Movement"
     : kind === "mirror"
       ? "Mirror line"
       : kind === "cover"
@@ -249,8 +260,30 @@ const getDefaultTeamSelectOptionValue = () => getTeamSelectOptionValue(0);
 const clampMatchSelectValue = (value: number) =>
   Math.max(MATCH_SELECT_MIN_VALUE, Math.min(MATCH_SELECT_MAX_VALUE, value));
 
+const getWidgetScale = (
+  item: Pick<CanvasItem, "width" | "height">,
+  base: { width: number; height: number },
+  min = 0.55,
+  max = 2.4
+) => {
+  const widthScale = base.width > 0 ? item.width / base.width : 1;
+  const heightScale = base.height > 0 ? item.height / base.height : 1;
+  return Math.max(min, Math.min(max, Math.min(widthScale, heightScale)));
+};
+
 const normalizeInputValueMode = (value: unknown): InputValueMode =>
   value === "text" || value === "numbers" || value === "both" ? value : "both";
+
+const normalizeButtonPressMode = (value: unknown): ButtonPressMode =>
+  value === "hold" ? "hold" : "tap";
+
+const normalizeMovementDirection = (value: unknown): "left" | "right" =>
+  value === "right" || value === ">" ? "right" : "left";
+
+const getMovementDirectionSymbol = (direction: "left" | "right") =>
+  direction === "right" ? ">" : "<";
+
+const normalizeStageParentOption = (value: unknown) => value === true;
 
 const sanitizeInputValueByMode = (value: string, mode: InputValueMode): string => {
   if (mode === "numbers") {
@@ -395,6 +428,7 @@ const serializeCanvasItem = (
 const normalizeLoadedItemKind = (kind: unknown): AssetKind => {
   if (kind === "button" || kind === "text") return "text";
   if (
+    kind === "movement" ||
     kind === "icon" ||
     kind === "mirror" ||
     kind === "swap" ||
@@ -475,6 +509,26 @@ const fromPersistedItem = (
   return {
     ...(value as Omit<CanvasItem, "kind">),
       kind: resolvedKind,
+      buttonPressMode:
+        resolvedKind === "text" || resolvedKind === "icon"
+          ? normalizeButtonPressMode(value.buttonPressMode)
+          : undefined,
+      movementDirection:
+        resolvedKind === "movement"
+          ? normalizeMovementDirection(value.movementDirection ?? value.label)
+          : undefined,
+      stageHideAfterSelection:
+        resolvedKind === "text" ||
+        resolvedKind === "icon" ||
+        resolvedKind === "movement"
+          ? normalizeStageParentOption(value.stageHideAfterSelection)
+          : undefined,
+      stageBlurBackgroundOnClick:
+        resolvedKind === "text" ||
+        resolvedKind === "icon" ||
+        resolvedKind === "movement"
+          ? normalizeStageParentOption(value.stageBlurBackgroundOnClick)
+          : undefined,
       matchSelectValue:
         resolvedKind === "match-select"
           ? clampMatchSelectValue(
@@ -724,6 +778,18 @@ const parseImportedEditorState = (
             : resolvedKind === "text"
               ? 1
               : undefined,
+        buttonPressMode:
+          resolvedKind === "text"
+            ? normalizeButtonPressMode(data.pressMode)
+            : undefined,
+        stageHideAfterSelection:
+          resolvedKind === "text"
+            ? normalizeStageParentOption(data.hideAfterSelection)
+            : undefined,
+        stageBlurBackgroundOnClick:
+          resolvedKind === "text"
+            ? normalizeStageParentOption(data.blurBackgroundOnClick)
+            : undefined,
         tag: resolvedKind === "text" ? tag : "",
         teamSide: toTeamSide(data.teamSide),
       };
@@ -757,8 +823,39 @@ const parseImportedEditorState = (
           typeof data.increment === "number" && Number.isFinite(data.increment)
             ? data.increment
             : 1,
+        buttonPressMode: normalizeButtonPressMode(data.pressMode),
+        stageHideAfterSelection: normalizeStageParentOption(data.hideAfterSelection),
+        stageBlurBackgroundOnClick: normalizeStageParentOption(data.blurBackgroundOnClick),
         tag,
         teamSide: toTeamSide(data.teamSide),
+      };
+    }
+
+    if (isRecord(entry["movement-button"])) {
+      const data = entry["movement-button"];
+      const width = scaleWidth(data.width, MOVEMENT_SIZE.width);
+      const height = scaleHeight(data.height, MOVEMENT_SIZE.height);
+      const centerItemX = scaleX(data.x);
+      const centerItemY = scaleY(data.y);
+      const tag = readTag(data.tag);
+      if (tag) {
+        if (!tagToIds.has(tag)) tagToIds.set(tag, []);
+        tagToIds.get(tag)!.push(id);
+      }
+      registerStageLink(data.stageParentTag, id);
+      return {
+        id,
+        kind: "movement",
+        x: centerItemX - width / 2,
+        y: centerItemY - height / 2,
+        width,
+        height,
+        label: "Movement",
+        movementDirection: normalizeMovementDirection(data.direction),
+        tag,
+        teamSide: toTeamSide(data.teamSide),
+        stageHideAfterSelection: normalizeStageParentOption(data.hideAfterSelection),
+        stageBlurBackgroundOnClick: normalizeStageParentOption(data.blurBackgroundOnClick),
       };
     }
 
@@ -1266,6 +1363,42 @@ function PaletteSwapButton({ onPalettePointerDown }: PaletteButtonProps) {
   );
 }
 
+function PaletteMovementButton({ onPalettePointerDown }: PaletteButtonProps) {
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+    id: "palette-movement",
+    data: { type: "palette", assetKind: "movement" } satisfies DragData,
+  });
+
+  const style: React.CSSProperties = {
+    opacity: isDragging ? 0 : 1,
+  };
+
+  return (
+    <Button
+      ref={setNodeRef}
+      style={style}
+      variant="outline"
+      className="mx-auto h-[58px] w-[calc(100%-8px)] justify-start gap-3 rounded-xl border-white/10 bg-slate-900/70 px-3 text-left text-white transition-all duration-150 hover:border-white/20 hover:bg-slate-800/80"
+      onPointerDownCapture={(event) => onPalettePointerDown("movement", event)}
+      {...attributes}
+      {...listeners}
+      type="button"
+      aria-label="Movement"
+    >
+      <span className="flex h-8 w-8 items-center justify-center rounded-md bg-emerald-500/20 text-emerald-300">
+        <span className="flex flex-col items-center justify-center leading-none">
+          <ArrowLeft className="h-3.5 w-3.5" />
+          <ArrowRight className="-mt-0.5 h-3.5 w-3.5" />
+        </span>
+      </span>
+      <span className="flex flex-col items-start leading-tight">
+        <span className="text-sm font-semibold">Movement</span>
+        <span className="text-xs text-white/55">Toggles direction on click</span>
+      </span>
+    </Button>
+  );
+}
+
 function PaletteCoverButton({ onPalettePointerDown }: PaletteButtonProps) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: "palette-cover",
@@ -1501,6 +1634,7 @@ function CanvasButton({
   onResizeStart,
   onEditLabel,
   onSwapSides,
+  onToggleMovementDirection,
   onPreviewButtonAction,
   onSelect,
   onPreviewPressStart,
@@ -1511,6 +1645,7 @@ function CanvasButton({
   isPreviewPressed,
   isCustomSideLayoutsEnabled,
   visibleTeamSide,
+  previewHoldDurationMs,
   snapOffset,
   isPreviewMode,
 }: {
@@ -1518,9 +1653,10 @@ function CanvasButton({
   onResizeStart: (event: React.PointerEvent, item: CanvasItem) => void;
   onEditLabel: (item: CanvasItem) => void;
   onSwapSides: () => void;
+  onToggleMovementDirection: (itemId: string) => void;
   onPreviewButtonAction: (item: CanvasItem) => void;
   onSelect: (itemId: string, options?: { append?: boolean }) => void;
-  onPreviewPressStart: (itemId: string) => void;
+  onPreviewPressStart: (item: CanvasItem) => void;
   onPreviewPressEnd: (itemId: string) => void;
   onPreviewStageToggle: (itemId: string) => void;
   onStageContextMenu: (itemId: string) => void;
@@ -1528,6 +1664,7 @@ function CanvasButton({
   isPreviewPressed: boolean;
   isCustomSideLayoutsEnabled: boolean;
   visibleTeamSide: TeamSide;
+  previewHoldDurationMs?: number;
   snapOffset?: { x: number; y: number };
   isPreviewMode?: boolean;
 }) {
@@ -1549,6 +1686,12 @@ function CanvasButton({
     willChange: "transform",
   };
 
+  const swapControlScale =
+    item.kind === "swap" ? getWidgetScale(item, BUTTON_SIZE, 0.2, 2.1) : 1;
+  const swapFontSize = Math.max(6, Math.round(14 * swapControlScale));
+  const resolvedButtonSize =
+    item.kind === "icon" ? "icon" : item.kind === "swap" ? "xs" : "default";
+
   const swapRedSide = item.swapRedSide ?? "left";
   const swapActiveSide = item.swapActiveSide ?? "left";
   const isSwapRedActive = swapActiveSide === swapRedSide;
@@ -1568,18 +1711,34 @@ function CanvasButton({
       : item.kind === "reset"
         ? "!bg-[#9e4042] !text-white hover:!bg-[#9e4042]/90"
         : "!bg-slate-900 !text-white hover:!bg-slate-900";
+  const isHoldTimerVisible =
+    isPreviewMode &&
+    (item.kind === "text" || item.kind === "icon") &&
+    normalizeButtonPressMode(item.buttonPressMode) === "hold" &&
+    typeof previewHoldDurationMs === "number";
+  const holdTimerLabel = (() => {
+    const duration = Math.max(0, previewHoldDurationMs ?? 0);
+    return (duration / 1000).toFixed(2);
+  })();
 
   return (
     <Button
       ref={setNodeRef}
-      style={style}
+      style={{
+        ...style,
+        fontSize: item.kind === "swap" ? swapFontSize : undefined,
+      }}
       variant="outline"
-      size={item.kind === "icon" ? "icon" : "default"}
+      size={resolvedButtonSize}
       className={`group absolute rounded-lg ${swapOutlineClass} ${buttonToneClass} ${
         isPreviewMode ? "transition-all duration-150" : "!transition-none"
       } ${
         isPreviewMode && isPreviewPressed
           ? "scale-[0.97] ring-2 ring-sky-300/70 !bg-slate-800"
+          : ""
+      } ${
+        item.kind === "swap"
+          ? "px-2 leading-tight sm:px-2.5"
           : ""
       }`}
       onPointerDownCapture={(event) => {
@@ -1587,7 +1746,7 @@ function CanvasButton({
           onSelect(item.id, { append: event.button === 2 });
           return;
         }
-        onPreviewPressStart(item.id);
+        onPreviewPressStart(item);
       }}
       onPointerUp={() => {
         if (!isPreviewMode) return;
@@ -1607,7 +1766,15 @@ function CanvasButton({
           onPreviewButtonAction(item);
           return;
         }
+        if (item.kind === "movement") {
+          onToggleMovementDirection(item.id);
+          onPreviewStageToggle(item.id);
+          return;
+        }
         if (item.kind === "icon" || item.kind === "text") {
+          if (normalizeButtonPressMode(item.buttonPressMode) === "hold") {
+            return;
+          }
           onPreviewStageToggle(item.id);
           return;
         }
@@ -1637,9 +1804,19 @@ function CanvasButton({
       data-canvas-item="true"
       data-stage-root={hasStages ? "true" : undefined}
       type="button"
-      aria-label={item.kind === "icon" ? item.label : undefined}
+      aria-label={
+        item.kind === "icon"
+          ? item.label
+          : item.kind === "movement"
+            ? `Movement ${getMovementDirectionSymbol(
+                normalizeMovementDirection(item.movementDirection ?? item.label)
+              )}`
+            : undefined
+      }
     >
-      {item.kind === "icon" ? (
+      {isHoldTimerVisible ? (
+        <span className="truncate tabular-nums">{holdTimerLabel}</span>
+      ) : item.kind === "icon" ? (
         (() => {
           const IconComponent =
             ICON_COMPONENTS[item.iconName ?? "Bot"] ?? Bot;
@@ -1653,6 +1830,12 @@ function CanvasButton({
             />
           );
         })()
+      ) : item.kind === "movement" ? (
+        normalizeMovementDirection(item.movementDirection ?? item.label) === "right" ? (
+          <ArrowRight className="h-5 w-5" />
+        ) : (
+          <ArrowLeft className="h-5 w-5" />
+        )
       ) : item.kind === "undo" ? (
         <span className="inline-flex items-center gap-2">
           <Undo2 className="h-4 w-4" />
@@ -1664,7 +1847,7 @@ function CanvasButton({
           {item.label}
         </span>
       ) : (
-        item.label
+        <span className={item.kind === "swap" ? "truncate" : undefined}>{item.label}</span>
       )}
       {hasStages ? (
         <span className="pointer-events-none absolute -right-1 -top-1 inline-flex h-4 w-4 items-center justify-center rounded-full bg-slate-800 text-sky-300">
@@ -1789,12 +1972,14 @@ function CanvasCover({
   item,
   onResizeStart,
   onSelect,
+  onPreviewExitStage,
   snapOffset,
   isPreviewMode,
 }: {
   item: CanvasItem;
   onResizeStart: (event: React.PointerEvent, item: CanvasItem) => void;
   onSelect: (itemId: string, options?: { append?: boolean }) => void;
+  onPreviewExitStage: () => void;
   snapOffset?: { x: number; y: number };
   isPreviewMode?: boolean;
 }) {
@@ -1826,7 +2011,11 @@ function CanvasCover({
           : "border-dashed border-white/35 bg-white/5 !transition-none"
       }`}
       onPointerDownCapture={(event) => {
-        if (isPreviewMode || event.button === 2) return;
+        if (isPreviewMode) {
+          onPreviewExitStage();
+          return;
+        }
+        if (event.button === 2) return;
         onSelect(item.id);
       }}
       onContextMenu={(event) => {
@@ -1970,6 +2159,9 @@ function CanvasTeamSelect({
   });
 
   const [open, setOpen] = React.useState(false);
+  const controlScale = getWidgetScale(item, TEAM_SELECT_SIZE, 0.2, 2.2);
+  const triggerFontSize = Math.max(7, Math.round(14 * controlScale));
+  const triggerIconSize = Math.max(8, Math.round(16 * controlScale));
   const selectedValue = previewValue || getDefaultTeamSelectOptionValue();
   const options = React.useMemo(
     () =>
@@ -2020,11 +2212,16 @@ function CanvasTeamSelect({
           <Button
             type="button"
             variant="outline"
-            className="h-full w-full justify-between rounded-md border-white/20 !bg-slate-900 text-white hover:!bg-slate-800 disabled:opacity-100"
+            size="xs"
+            className="!h-full min-h-0 w-full justify-between rounded-md border-white/20 px-1 !bg-slate-900 text-white hover:!bg-slate-800 disabled:opacity-100"
+            style={{ fontSize: triggerFontSize }}
             disabled={!isPreviewMode}
           >
             <span className="truncate">Drop Down</span>
-            <ChevronDown className="h-4 w-4 opacity-70" />
+            <ChevronDown
+              className="shrink-0 opacity-70"
+              style={{ width: triggerIconSize, height: triggerIconSize }}
+            />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent
@@ -2087,6 +2284,13 @@ function CanvasMatchSelect({
   });
 
   const currentValue = clampMatchSelectValue(previewValue || MATCH_SELECT_MIN_VALUE);
+  const controlScale = getWidgetScale(item, MATCH_SELECT_SIZE, 0.16, 2.1);
+  const labelFontSize = Math.max(6, Math.round(12 * controlScale));
+  const labelOffset = Math.max(6, Math.round(20 * controlScale));
+  const buttonFontSize = Math.max(6, Math.round(14 * controlScale));
+  const valueFontSize = Math.max(6, Math.round(14 * controlScale));
+  const containerPadding = Math.max(0, Math.round(4 * controlScale));
+  const containerGap = Math.max(0, Math.round(4 * controlScale));
 
   const style: React.CSSProperties = {
     transform: toDragTransform(true, transform, snapOffset),
@@ -2117,26 +2321,39 @@ function CanvasMatchSelect({
       {...listeners}
       data-canvas-item="true"
     >
-      <Label className="pointer-events-none absolute -top-5 left-1/2 -translate-x-1/2 text-xs text-white/80">
+      <Label
+        className="pointer-events-none absolute left-1/2 -translate-x-1/2 whitespace-nowrap text-white/80"
+        style={{ top: -labelOffset, fontSize: labelFontSize }}
+      >
         {item.label || "Match Select"}
       </Label>
-      <div className="grid h-full w-full grid-cols-[1fr_1.2fr_1fr] gap-1 rounded-md border border-white/20 bg-slate-900/90 p-1">
+      <div
+        className="grid h-full w-full grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)_minmax(0,1fr)] rounded-md border border-white/20 bg-slate-900/90"
+        style={{ gap: containerGap, padding: containerPadding }}
+      >
         <Button
           type="button"
           variant="outline"
-          className="h-full border-white/20 bg-slate-900 text-white hover:bg-slate-800 disabled:opacity-60"
+          size="xs"
+          className="!h-full min-h-0 min-w-0 border-white/20 bg-slate-900 px-0 text-white hover:bg-slate-800 disabled:opacity-60"
+          style={{ fontSize: buttonFontSize }}
           onClick={() => onPreviewValueChange(item, currentValue - 1)}
           disabled={!isPreviewMode}
         >
           -
         </Button>
-        <div className="flex items-center justify-center rounded-sm border border-white/15 bg-slate-950 text-sm font-semibold text-white">
+        <div
+          className="flex min-w-0 items-center justify-center rounded-sm border border-white/15 bg-slate-950 font-semibold text-white"
+          style={{ fontSize: valueFontSize }}
+        >
           {currentValue}
         </div>
         <Button
           type="button"
           variant="outline"
-          className="h-full border-white/20 bg-slate-900 text-white hover:bg-slate-800 disabled:opacity-60"
+          size="xs"
+          className="!h-full min-h-0 min-w-0 border-white/20 bg-slate-900 px-0 text-white hover:bg-slate-800 disabled:opacity-60"
+          style={{ fontSize: buttonFontSize }}
           onClick={() => onPreviewValueChange(item, currentValue + 1)}
           disabled={!isPreviewMode}
         >
@@ -2227,6 +2444,7 @@ function CanvasToggle({
   onToggle,
   snapOffset,
   isPreviewMode,
+  isSwapMirrored,
 }: {
   item: CanvasItem;
   onResizeStart: (event: React.PointerEvent, item: CanvasItem) => void;
@@ -2234,6 +2452,7 @@ function CanvasToggle({
   onToggle: (itemId: string) => void;
   snapOffset?: { x: number; y: number };
   isPreviewMode?: boolean;
+  isSwapMirrored?: boolean;
 }) {
   const { attributes, listeners, setNodeRef, transform } = useDraggable({
     id: item.id,
@@ -2271,6 +2490,31 @@ function CanvasToggle({
   const switchPixelWidth = 32 * switchScale;
   const switchPixelHeight = 18 * switchScale;
   const resolvedTextSize = Math.max(6, textSize * switchScale);
+  const toggleGap = Math.max(2, Math.round(8 * switchScale));
+
+  const switchControl = (
+    <div
+      className="flex flex-none items-center justify-center"
+      style={{
+        width: switchPixelWidth,
+        height: switchPixelHeight,
+        transform: isSwapMirrored
+          ? `scaleX(-1) scale(${switchScale})`
+          : `scale(${switchScale})`,
+        transformOrigin: "center center",
+      }}
+    >
+      <Switch
+        id={`toggle-${item.id}`}
+        checked={isOn}
+        disabled={!isPreviewMode}
+        onCheckedChange={() => {
+          if (!isPreviewMode) return;
+          onToggle(item.id);
+        }}
+      />
+    </div>
+  );
 
   return (
     <div
@@ -2291,30 +2535,23 @@ function CanvasToggle({
       {...listeners}
       data-canvas-item="true"
     >
-      <div className="flex h-full w-full items-center gap-2 overflow-visible">
-        <div
-          className="flex flex-none items-center justify-start"
-          style={{
-            width: switchPixelWidth,
-            height: switchPixelHeight,
-            transform: `scale(${switchScale})`,
-            transformOrigin: "left center",
-          }}
-        >
-          <Switch
-            id={`toggle-${item.id}`}
-            checked={isOn}
-            disabled={!isPreviewMode}
-            onCheckedChange={() => {
-              if (!isPreviewMode) return;
-              onToggle(item.id);
-            }}
-          />
-        </div>
+      <div
+        className="flex h-full w-full items-center overflow-visible"
+        style={{
+          gap: toggleGap,
+          transform: isSwapMirrored ? "scaleX(-1)" : undefined,
+          transformOrigin: "center center",
+        }}
+      >
+        {switchControl}
         {showLabel ? (
           <Label
             className={`shrink-0 whitespace-nowrap leading-none text-white/80 ${textClass}`}
-            style={{ fontSize: resolvedTextSize }}
+            style={{
+              fontSize: resolvedTextSize,
+              transform: isSwapMirrored ? "scaleX(-1)" : undefined,
+              transformOrigin: "center center",
+            }}
           >
             {item.label}
           </Label>
@@ -2339,6 +2576,7 @@ function CanvasAutoToggle({
   countdownSeconds,
   snapOffset,
   isPreviewMode,
+  isSwapMirrored,
 }: {
   item: CanvasItem;
   onResizeStart: (event: React.PointerEvent, item: CanvasItem) => void;
@@ -2347,6 +2585,7 @@ function CanvasAutoToggle({
   countdownSeconds?: number;
   snapOffset?: { x: number; y: number };
   isPreviewMode?: boolean;
+  isSwapMirrored?: boolean;
 }) {
   const { attributes, listeners, setNodeRef, transform } = useDraggable({
     id: item.id,
@@ -2365,10 +2604,17 @@ function CanvasAutoToggle({
   };
 
   const mode = item.autoToggleMode ?? "auto";
+  const controlScale = getWidgetScale(item, AUTO_TOGGLE_SIZE, 0.2, 2.1);
+  const textSize = Math.max(6, Math.round(12 * controlScale));
+  const groupGap = Math.max(0, Math.round(4 * controlScale));
+  const groupPadding = Math.max(0, Math.round(4 * controlScale));
   const autoLabel =
     mode === "auto" && typeof countdownSeconds === "number"
       ? `${Math.max(0, countdownSeconds)}s`
       : "Auto";
+  const orderedModes = isSwapMirrored
+    ? (["teleop", "auto"] as const)
+    : (["auto", "teleop"] as const);
 
   return (
     <div
@@ -2397,22 +2643,21 @@ function CanvasAutoToggle({
       <ToggleGroup
         type="single"
         value={mode}
-        className="grid h-full w-full grid-cols-2 gap-1 rounded-md border border-white/20 bg-slate-900/90 p-1"
+        className="grid h-full w-full grid-cols-2 rounded-md border border-white/20 bg-slate-900/90"
+        style={{ gap: groupGap, padding: groupPadding }}
       >
-        <ToggleGroupItem
-          value="auto"
-          aria-label="Toggle auto"
-          className="h-full rounded-sm border border-transparent text-[11px] text-white/85 data-[state=on]:border-2 data-[state=on]:border-white data-[state=on]:bg-white data-[state=on]:font-semibold data-[state=on]:text-black"
-        >
-          {autoLabel}
-        </ToggleGroupItem>
-        <ToggleGroupItem
-          value="teleop"
-          aria-label="Toggle teleop"
-          className="h-full rounded-sm border border-transparent text-[11px] text-white/85 data-[state=on]:border-2 data-[state=on]:border-white data-[state=on]:bg-white data-[state=on]:font-semibold data-[state=on]:text-black"
-        >
-          Teleop
-        </ToggleGroupItem>
+        {orderedModes.map((entryMode) => (
+          <ToggleGroupItem
+            key={entryMode}
+            value={entryMode}
+            aria-label={entryMode === "auto" ? "Toggle auto" : "Toggle teleop"}
+            size="sm"
+            className="!h-full min-h-0 min-w-0 rounded-sm border border-transparent px-1 text-white/85 data-[state=on]:border-2 data-[state=on]:border-white data-[state=on]:bg-white data-[state=on]:font-semibold data-[state=on]:text-black"
+            style={{ fontSize: textSize }}
+          >
+            {entryMode === "auto" ? autoLabel : "Teleop"}
+          </ToggleGroupItem>
+        ))}
       </ToggleGroup>
       {!isPreviewMode ? (
         <span
@@ -2441,6 +2686,7 @@ const MemoCanvasButton = React.memo(
     prev.hasStages === next.hasStages &&
     prev.onStageContextMenu === next.onStageContextMenu &&
     prev.isPreviewPressed === next.isPreviewPressed &&
+    prev.previewHoldDurationMs === next.previewHoldDurationMs &&
     prev.isCustomSideLayoutsEnabled === next.isCustomSideLayoutsEnabled &&
     prev.visibleTeamSide === next.visibleTeamSide &&
     prev.isPreviewMode === next.isPreviewMode &&
@@ -2496,6 +2742,7 @@ const MemoCanvasToggle = React.memo(
   CanvasToggle,
   (prev, next) =>
     prev.item === next.item &&
+    prev.isSwapMirrored === next.isSwapMirrored &&
     prev.isPreviewMode === next.isPreviewMode &&
     areSnapOffsetsEqual(prev.snapOffset, next.snapOffset)
 );
@@ -2503,6 +2750,7 @@ const MemoCanvasAutoToggle = React.memo(
   CanvasAutoToggle,
   (prev, next) =>
     prev.item === next.item &&
+    prev.isSwapMirrored === next.isSwapMirrored &&
     prev.countdownSeconds === next.countdownSeconds &&
     prev.isPreviewMode === next.isPreviewMode &&
     areSnapOffsetsEqual(prev.snapOffset, next.snapOffset)
@@ -2557,7 +2805,14 @@ export default function EditorPage() {
   const [eventKeyDraft, setEventKeyDraft] = React.useState("");
   const [isAlignmentAssistEnabled, setIsAlignmentAssistEnabled] =
     React.useState(true);
+  const [isAssetsPanelHidden, setIsAssetsPanelHidden] = React.useState(false);
+  const assetsPanelScalePendingRef = React.useRef<{
+    baseWidth: number;
+    baseHeight: number;
+    targetHidden: boolean;
+  } | null>(null);
   const [isPreviewMode, setIsPreviewMode] = React.useState(false);
+  const [isPreviewSwapMirrored, setIsPreviewSwapMirrored] = React.useState(false);
   const [previewBaseStageSize, setPreviewBaseStageSize] = React.useState<{
     width: number;
     height: number;
@@ -2573,6 +2828,11 @@ export default function EditorPage() {
   const [previewPressedItemId, setPreviewPressedItemId] = React.useState<string | null>(
     null
   );
+  const [previewHoldDurationsById, setPreviewHoldDurationsById] = React.useState<
+    Record<string, number>
+  >({});
+  const previewHoldStartByIdRef = React.useRef<Record<string, number>>({});
+  const previewHoldIntervalRef = React.useRef<number | null>(null);
   const [previewInputValues, setPreviewInputValues] = React.useState<
     Record<string, string>
   >({});
@@ -2853,15 +3113,22 @@ export default function EditorPage() {
 
   const visibleItems = React.useMemo(() => {
     if (stagingParentId) {
+      const stageRoot = sideScopedItems.find((item) => item.id === stagingParentId);
+      const hideStageRoot = Boolean(stageRoot?.stageHideAfterSelection);
       return sideScopedItems.filter(
-        (item) => item.id === stagingParentId || item.stageParentId === stagingParentId
+        (item) =>
+          item.stageParentId === stagingParentId ||
+          (!hideStageRoot && item.id === stagingParentId)
       );
     }
 
     if (isPreviewMode && previewStageParentId) {
+      const stageRoot = sideScopedItems.find((item) => item.id === previewStageParentId);
+      const hideStageRoot = Boolean(stageRoot?.stageHideAfterSelection);
       return sideScopedItems.filter(
         (item) =>
-          item.id === previewStageParentId || item.stageParentId === previewStageParentId
+          item.stageParentId === previewStageParentId ||
+          (!hideStageRoot && item.id === previewStageParentId)
       );
     }
 
@@ -3227,14 +3494,23 @@ export default function EditorPage() {
     [items]
   );
 
-  const isStageBlurActive = Boolean(stagingParentId);
-
   const selectedIsStageableRoot =
     Boolean(selectedItem) &&
-    (selectedItem?.kind === "text" || selectedItem?.kind === "icon");
+    (selectedItem?.kind === "text" ||
+      selectedItem?.kind === "icon" ||
+      selectedItem?.kind === "movement");
 
   const selectedHasStagedChildren = Boolean(selectedItem?.id) &&
     items.some((item) => item.stageParentId === selectedItem?.id);
+
+  const previewStageRoot = React.useMemo(() => {
+    if (!isPreviewMode || !previewStageParentId) return null;
+    return items.find((item) => item.id === previewStageParentId) ?? null;
+  }, [isPreviewMode, items, previewStageParentId]);
+
+  const isStageBlurActive =
+    Boolean(stagingParentId) ||
+    (isPreviewMode && Boolean(previewStageRoot?.stageBlurBackgroundOnClick));
 
   const selectedIsStagingRoot =
     Boolean(selectedItem?.id) && stagingParentId === selectedItem?.id;
@@ -3493,6 +3769,40 @@ export default function EditorPage() {
     [selectedItemId]
   );
 
+  const handleSelectedButtonPressModeChange = React.useCallback(
+    (value: ButtonPressMode) => {
+      if (!selectedItemId) return;
+      setItems((prev) =>
+        prev.map((item) =>
+          item.id === selectedItemId && (item.kind === "text" || item.kind === "icon")
+            ? {
+                ...item,
+                buttonPressMode: value,
+              }
+            : item
+        )
+      );
+    },
+    [selectedItemId]
+  );
+
+  const handleSelectedMovementDirectionChange = React.useCallback(
+    (value: "left" | "right") => {
+      if (!selectedItemId) return;
+      setItems((prev) =>
+        prev.map((item) =>
+          item.id === selectedItemId && item.kind === "movement"
+            ? {
+                ...item,
+                movementDirection: value,
+              }
+            : item
+        )
+      );
+    },
+    [selectedItemId]
+  );
+
   const handleSelectedToggleStateChange = React.useCallback(
     (value: boolean) => {
       if (!selectedItemId) return;
@@ -3570,6 +3880,42 @@ export default function EditorPage() {
             ? {
                 ...item,
                 coverVisible: value,
+              }
+            : item
+        )
+      );
+    },
+    [selectedItemId]
+  );
+
+  const handleSelectedStageHideAfterSelectionChange = React.useCallback(
+    (value: boolean) => {
+      if (!selectedItemId) return;
+      setItems((prev) =>
+        prev.map((item) =>
+          item.id === selectedItemId &&
+          (item.kind === "text" || item.kind === "icon" || item.kind === "movement")
+            ? {
+                ...item,
+                stageHideAfterSelection: value,
+              }
+            : item
+        )
+      );
+    },
+    [selectedItemId]
+  );
+
+  const handleSelectedStageBlurBackgroundOnClickChange = React.useCallback(
+    (value: boolean) => {
+      if (!selectedItemId) return;
+      setItems((prev) =>
+        prev.map((item) =>
+          item.id === selectedItemId &&
+          (item.kind === "text" || item.kind === "icon" || item.kind === "movement")
+            ? {
+                ...item,
+                stageBlurBackgroundOnClick: value,
               }
             : item
         )
@@ -3718,7 +4064,13 @@ export default function EditorPage() {
 
   const handleStartStaging = React.useCallback(() => {
     if (!selectedItem) return;
-    if (selectedItem.kind !== "text" && selectedItem.kind !== "icon") return;
+    if (
+      selectedItem.kind !== "text" &&
+      selectedItem.kind !== "icon" &&
+      selectedItem.kind !== "movement"
+    ) {
+      return;
+    }
     enterStagingForItemId(selectedItem.id);
   }, [enterStagingForItemId, selectedItem]);
 
@@ -3730,7 +4082,13 @@ export default function EditorPage() {
     (itemId: string) => {
       const target = items.find((item) => item.id === itemId);
       if (!target) return;
-      if (target.kind !== "text" && target.kind !== "icon") return;
+      if (
+        target.kind !== "text" &&
+        target.kind !== "icon" &&
+        target.kind !== "movement"
+      ) {
+        return;
+      }
       if (!items.some((item) => item.stageParentId === itemId)) return;
       if (stagingParentId === itemId) {
         stepOutOfStaging();
@@ -3744,25 +4102,122 @@ export default function EditorPage() {
   const handlePreviewStageToggle = React.useCallback((itemId: string) => {
     const target = items.find((item) => item.id === itemId);
     if (!target) return;
-    if (target.kind !== "text" && target.kind !== "icon") return;
+    if (
+      target.kind !== "text" &&
+      target.kind !== "icon" &&
+      target.kind !== "movement"
+    ) {
+      return;
+    }
 
     const hasChildren = items.some((item) => item.stageParentId === itemId);
 
     setPreviewStageParentId((current) => {
       if (!hasChildren) {
-        return current ? null : current;
+        return current;
       }
-      return current === itemId ? null : itemId;
+      return current === itemId ? current : itemId;
     });
   }, [items]);
 
-  const handlePreviewPressStart = React.useCallback((itemId: string) => {
-    setPreviewPressedItemId(itemId);
+  const handlePreviewStageExit = React.useCallback(() => {
+    setPreviewStageParentId(null);
   }, []);
 
-  const handlePreviewPressEnd = React.useCallback((itemId: string) => {
-    setPreviewPressedItemId((current) => (current === itemId ? null : current));
+  const clearPreviewHoldInterval = React.useCallback(() => {
+    if (previewHoldIntervalRef.current !== null) {
+      window.clearInterval(previewHoldIntervalRef.current);
+      previewHoldIntervalRef.current = null;
+    }
   }, []);
+
+  const stopPreviewHoldForItem = React.useCallback(
+    (itemId: string) => {
+      if (previewHoldStartByIdRef.current[itemId] === undefined) return;
+      const next = { ...previewHoldStartByIdRef.current };
+      delete next[itemId];
+      previewHoldStartByIdRef.current = next;
+
+      setPreviewHoldDurationsById((prev) => {
+        if (!(itemId in prev)) return prev;
+        const updated = { ...prev };
+        delete updated[itemId];
+        return updated;
+      });
+
+      if (Object.keys(next).length === 0) {
+        clearPreviewHoldInterval();
+      }
+    },
+    [clearPreviewHoldInterval]
+  );
+
+  const startPreviewHoldForItem = React.useCallback(
+    (itemId: string) => {
+      const now = performance.now();
+      previewHoldStartByIdRef.current = {
+        ...previewHoldStartByIdRef.current,
+        [itemId]: now,
+      };
+      setPreviewHoldDurationsById((prev) => ({ ...prev, [itemId]: 0 }));
+
+      if (previewHoldIntervalRef.current !== null) return;
+      previewHoldIntervalRef.current = window.setInterval(() => {
+        const activeStartById = previewHoldStartByIdRef.current;
+        const activeIds = Object.keys(activeStartById);
+
+        if (activeIds.length === 0) {
+          clearPreviewHoldInterval();
+          return;
+        }
+
+        const tickNow = performance.now();
+        setPreviewHoldDurationsById((prev) => {
+          const next: Record<string, number> = {};
+          let changed = false;
+
+          activeIds.forEach((activeId) => {
+            const elapsed = Math.max(
+              0,
+              Math.round(tickNow - activeStartById[activeId])
+            );
+            next[activeId] = elapsed;
+            if (prev[activeId] !== elapsed) {
+              changed = true;
+            }
+          });
+
+          if (Object.keys(prev).length !== activeIds.length) {
+            changed = true;
+          }
+
+          return changed ? next : prev;
+        });
+      }, 16);
+    },
+    [clearPreviewHoldInterval]
+  );
+
+  const handlePreviewPressStart = React.useCallback(
+    (item: CanvasItem) => {
+      setPreviewPressedItemId(item.id);
+      const isHoldButton =
+        (item.kind === "text" || item.kind === "icon") &&
+        normalizeButtonPressMode(item.buttonPressMode) === "hold";
+      if (isHoldButton) {
+        startPreviewHoldForItem(item.id);
+      }
+    },
+    [startPreviewHoldForItem]
+  );
+
+  const handlePreviewPressEnd = React.useCallback(
+    (itemId: string) => {
+      setPreviewPressedItemId((current) => (current === itemId ? null : current));
+      stopPreviewHoldForItem(itemId);
+    },
+    [stopPreviewHoldForItem]
+  );
 
   const handlePreviewInputChange = React.useCallback(
     (item: CanvasItem, value: string) => {
@@ -4178,15 +4633,21 @@ export default function EditorPage() {
   );
 
   const handleSwapSides = React.useCallback(() => {
-    if (isCustomSideLayoutsEnabled) {
-      const currentSide = isPreviewMode ? previewTeamSide : editorTeamSide;
-      const nextSide: TeamSide = currentSide === "red" ? "blue" : "red";
-
-      if (isPreviewMode) {
+    if (isPreviewMode) {
+      if (isCustomSideLayoutsEnabled) {
+        const nextSide: TeamSide = previewTeamSide === "red" ? "blue" : "red";
         setPreviewTeamSide(nextSide);
       } else {
-        setEditorTeamSide(nextSide);
+        setIsPreviewSwapMirrored((current) => !current);
       }
+      return;
+    }
+
+    if (isCustomSideLayoutsEnabled) {
+      const currentSide = editorTeamSide;
+      const nextSide: TeamSide = currentSide === "red" ? "blue" : "red";
+
+      setEditorTeamSide(nextSide);
 
       setItems((prev) =>
         prev.map((item) =>
@@ -4260,6 +4721,22 @@ export default function EditorPage() {
       })
     );
   }, [editorTeamSide, isCustomSideLayoutsEnabled, isPreviewMode, items, previewTeamSide]);
+
+  const handleToggleMovementDirection = React.useCallback((itemId: string) => {
+    setItems((prev) =>
+      prev.map((item) =>
+        item.id === itemId && item.kind === "movement"
+          ? {
+              ...item,
+              movementDirection:
+                normalizeMovementDirection(item.movementDirection ?? item.label) === "left"
+                  ? "right"
+                  : "left",
+            }
+          : item
+      )
+    );
+  }, []);
 
   const handleEditLabel = React.useCallback(
     (item: CanvasItem) => {
@@ -4337,7 +4814,7 @@ export default function EditorPage() {
     );
 
     const taggedItems = items.filter((item) =>
-      ["text", "icon", "input", "toggle"].includes(item.kind)
+      ["text", "icon", "movement", "input", "toggle"].includes(item.kind)
     );
     const tags = taggedItems.map((item) => normalizeTag(item.tag ?? ""));
 
@@ -4380,10 +4857,13 @@ export default function EditorPage() {
             button: {
               tag: item.tag ?? "",
               teamSide: item.teamSide,
+              pressMode: normalizeButtonPressMode(item.buttonPressMode),
               increment: item.increment ?? 1,
               x: scaleX(centerItemX),
               y: scaleY(centerItemY),
               text: item.label,
+              hideAfterSelection: item.stageHideAfterSelection === true,
+              blurBackgroundOnClick: item.stageBlurBackgroundOnClick === true,
               stageParentTag,
               hasStageChildren,
               width: scaleWidth(item.width),
@@ -4410,12 +4890,33 @@ export default function EditorPage() {
             "icon-button": {
               tag: item.tag ?? "",
               teamSide: item.teamSide,
+              pressMode: normalizeButtonPressMode(item.buttonPressMode),
               increment: item.increment ?? 1,
               x: scaleX(centerItemX),
               y: scaleY(centerItemY),
               icon: item.iconName ?? "",
               outline: item.outlineColor ?? "#ffffff",
               fill: item.fillColor ?? "transparent",
+              hideAfterSelection: item.stageHideAfterSelection === true,
+              blurBackgroundOnClick: item.stageBlurBackgroundOnClick === true,
+              stageParentTag,
+              hasStageChildren,
+              width: scaleWidth(item.width),
+              height: scaleHeight(item.height),
+            },
+          };
+        case "movement":
+          return {
+            "movement-button": {
+              tag: item.tag ?? "",
+              teamSide: item.teamSide,
+              x: scaleX(centerItemX),
+              y: scaleY(centerItemY),
+              direction: normalizeMovementDirection(
+                item.movementDirection ?? item.label
+              ),
+              hideAfterSelection: item.stageHideAfterSelection === true,
+              blurBackgroundOnClick: item.stageBlurBackgroundOnClick === true,
               stageParentTag,
               hasStageChildren,
               width: scaleWidth(item.width),
@@ -5849,7 +6350,7 @@ export default function EditorPage() {
         const resizeItem = visibleItemsRef.current.find((item) => item.id === resize.id);
         const minSize = resizeItem
           ? getResizeMinSize(resizeItem.kind)
-          : { width: 64, height: 36 };
+          : { width: 16, height: 6 };
         const maxWidth = Math.max(minSize.width, canvasSize.width - resize.originX);
         const maxHeight = Math.max(minSize.height, canvasSize.height - resize.originY);
 
@@ -6490,8 +6991,11 @@ export default function EditorPage() {
             kind,
             tag: "",
             iconName: kind === "icon" ? "Bot" : undefined,
+            movementDirection: kind === "movement" ? "left" : undefined,
             outlineColor: kind === "icon" ? "#ffffff" : undefined,
             fillColor: kind === "icon" ? "transparent" : undefined,
+            buttonPressMode:
+              kind === "text" || kind === "icon" ? "tap" : undefined,
             increment: kind === "text" || kind === "icon" ? 1 : undefined,
             startX: kind === "mirror" ? mirrorStartX : undefined,
             startY: kind === "mirror" ? mirrorStartY : undefined,
@@ -6549,6 +7053,9 @@ export default function EditorPage() {
     setPreviewInputValues({});
     setPreviewTeamSelectValues({});
     setPreviewMatchSelectValues({});
+    previewHoldStartByIdRef.current = {};
+    clearPreviewHoldInterval();
+    setPreviewHoldDurationsById({});
     setPreviewLogText("");
     setItems([]);
     setBackgroundImage(null);
@@ -6568,13 +7075,14 @@ export default function EditorPage() {
     setSelectedItemId(null);
     setSelectedItemIds([]);
     setIsPreviewMode(false);
+    setIsPreviewSwapMirrored(false);
     setLatestUploadId(null);
     historyRef.current = [];
     historyIndexRef.current = -1;
     lastSnapshotKeyRef.current = "";
     setCanUndo(false);
     setCanRedo(false);
-  }, []);
+  }, [clearPreviewHoldInterval]);
 
   React.useEffect(() => {
     setSelectedItemIds((prev) => prev.filter((id) => items.some((item) => item.id === id)));
@@ -6589,9 +7097,20 @@ export default function EditorPage() {
       return;
     }
 
-    if (selectedItemId && selectedItemIds.includes(selectedItemId)) return;
-    setSelectedItemId(selectedItemIds[selectedItemIds.length - 1] ?? null);
-  }, [selectedItemId, selectedItemIds]);
+    const visibleSelectedIds = selectedItemIds.filter((id) =>
+      visibleItems.some((item) => item.id === id)
+    );
+
+    if (visibleSelectedIds.length === 0) {
+      if (selectedItemId !== null) {
+        setSelectedItemId(null);
+      }
+      return;
+    }
+
+    if (selectedItemId && visibleSelectedIds.includes(selectedItemId)) return;
+    setSelectedItemId(visibleSelectedIds[visibleSelectedIds.length - 1] ?? null);
+  }, [selectedItemId, selectedItemIds, visibleItems]);
 
   React.useEffect(() => {
     if (isPreviewMode) return;
@@ -6637,9 +7156,77 @@ export default function EditorPage() {
 
   React.useEffect(() => {
     if (isPreviewMode) return;
-    if (!previewPressedItemId) return;
-    setPreviewPressedItemId(null);
-  }, [isPreviewMode, previewPressedItemId]);
+    if (previewPressedItemId) {
+      setPreviewPressedItemId(null);
+    }
+    if (Object.keys(previewHoldStartByIdRef.current).length > 0) {
+      previewHoldStartByIdRef.current = {};
+      setPreviewHoldDurationsById({});
+      clearPreviewHoldInterval();
+    }
+  }, [clearPreviewHoldInterval, isPreviewMode, previewPressedItemId]);
+
+  React.useEffect(
+    () => () => {
+      clearPreviewHoldInterval();
+    },
+    [clearPreviewHoldInterval]
+  );
+
+  React.useEffect(() => {
+    if (isPreviewMode) {
+      assetsPanelScalePendingRef.current = null;
+      return;
+    }
+
+    const pending = assetsPanelScalePendingRef.current;
+    if (!pending) return;
+    if (pending.targetHidden !== isAssetsPanelHidden) return;
+
+    // Consume pending state once to avoid repeated scale attempts during layout churn.
+    assetsPanelScalePendingRef.current = null;
+
+    const nextWidth = stageSizeRef.current.width;
+    const nextHeight = stageSizeRef.current.height;
+    if (
+      pending.baseWidth <= 0 ||
+      pending.baseHeight <= 0 ||
+      nextWidth <= 0 ||
+      nextHeight <= 0
+    ) {
+      return;
+    }
+
+    const scaleX = nextWidth / pending.baseWidth;
+    const scaleY = nextHeight / pending.baseHeight;
+    if (Math.abs(scaleX - 1) < 0.002 && Math.abs(scaleY - 1) < 0.002) {
+      return;
+    }
+
+    const clamp = (value: number, min: number, max: number) =>
+      Math.min(Math.max(value, min), max);
+
+    setItems((prev) =>
+      prev.map((item) => {
+        const nextItemWidth = Math.max(1, item.width * scaleX);
+        const nextItemHeight = Math.max(1, item.height * scaleY);
+        const maxX = Math.max(0, nextWidth - nextItemWidth);
+        const maxY = Math.max(0, nextHeight - nextItemHeight);
+
+        return {
+          ...item,
+          x: clamp(item.x * scaleX, 0, maxX),
+          y: clamp(item.y * scaleY, 0, maxY),
+          width: nextItemWidth,
+          height: nextItemHeight,
+          startX: typeof item.startX === "number" ? item.startX * scaleX : undefined,
+          startY: typeof item.startY === "number" ? item.startY * scaleY : undefined,
+          endX: typeof item.endX === "number" ? item.endX * scaleX : undefined,
+          endY: typeof item.endY === "number" ? item.endY * scaleY : undefined,
+        };
+      })
+    );
+  }, [isAssetsPanelHidden, isPreviewMode, stageSize.height, stageSize.width]);
 
   React.useEffect(() => {
     if (!selectedItemId) return;
@@ -6724,8 +7311,65 @@ export default function EditorPage() {
   }, [currentTutorialStep, getTutorialTargetElement, isTutorialOpen]);
 
   const renderedLayeredVisibleItems = React.useMemo(() => {
+    let previewItems = layeredVisibleItems;
+
+    if (isPreviewMode && isPreviewSwapMirrored && !isCustomSideLayoutsEnabled) {
+      const mirrorLine = layeredVisibleItems.find((item) => item.kind === "mirror");
+      if (mirrorLine) {
+        const startX = mirrorLine.startX ?? mirrorLine.x;
+        const startY = mirrorLine.startY ?? mirrorLine.y;
+        const endX = mirrorLine.endX ?? mirrorLine.x + mirrorLine.width;
+        const endY = mirrorLine.endY ?? mirrorLine.y + mirrorLine.height;
+        const dx = endX - startX;
+        const dy = endY - startY;
+        const denom = dx * dx + dy * dy;
+        const boundsWidth = previewBaseStageSize?.width ?? stageSize.width;
+        const boundsHeight = previewBaseStageSize?.height ?? stageSize.height;
+
+        if (denom !== 0 && boundsWidth > 0 && boundsHeight > 0) {
+          const a = dy;
+          const b = -dx;
+          const c = dx * startY - dy * startX;
+
+          const reflectPoint = (px: number, py: number) => {
+            const d = (a * px + b * py + c) / (a * a + b * b);
+            return {
+              x: px - 2 * a * d,
+              y: py - 2 * b * d,
+            };
+          };
+
+          previewItems = layeredVisibleItems.map((item) => {
+            if (item.kind === "mirror") return item;
+
+            const centerX = item.x + item.width / 2;
+            const centerY = item.y + item.height / 2;
+            const reflected = reflectPoint(centerX, centerY);
+
+            return {
+              ...item,
+              x: Math.min(
+                Math.max(0, reflected.x - item.width / 2),
+                boundsWidth - item.width
+              ),
+              y: Math.min(
+                Math.max(0, reflected.y - item.height / 2),
+                boundsHeight - item.height
+              ),
+              swapActiveSide:
+                item.kind === "swap"
+                  ? (item.swapActiveSide ?? "left") === "left"
+                    ? "right"
+                    : "left"
+                  : item.swapActiveSide,
+            };
+          });
+        }
+      }
+    }
+
     if (!isPreviewMode || !previewBaseStageSize) {
-      return layeredVisibleItems;
+      return previewItems;
     }
 
     const scaleX =
@@ -6738,10 +7382,10 @@ export default function EditorPage() {
         : 1;
 
     if (scaleX === 1 && scaleY === 1) {
-      return layeredVisibleItems;
+      return previewItems;
     }
 
-    return layeredVisibleItems.map((item) => {
+    return previewItems.map((item) => {
       if (item.kind === "mirror") {
         return {
           ...item,
@@ -6764,7 +7408,34 @@ export default function EditorPage() {
         height: item.height * scaleY,
       };
     });
-  }, [isPreviewMode, layeredVisibleItems, previewBaseStageSize, stageSize.height, stageSize.width]);
+  }, [
+    isCustomSideLayoutsEnabled,
+    isPreviewMode,
+    isPreviewSwapMirrored,
+    layeredVisibleItems,
+    previewBaseStageSize,
+    stageSize.height,
+    stageSize.width,
+  ]);
+
+  const setAssetsPanelVisibility = React.useCallback(
+    (nextHidden: boolean) => {
+      if (isAssetsPanelHidden === nextHidden) return;
+      assetsPanelScalePendingRef.current = {
+        baseWidth: stageSizeRef.current.width,
+        baseHeight: stageSizeRef.current.height,
+        targetHidden: nextHidden,
+      };
+      setIsAssetsPanelHidden(nextHidden);
+    },
+    [isAssetsPanelHidden]
+  );
+
+  const isSwapMirrored = React.useMemo(() => {
+    const swapItem = renderedLayeredVisibleItems.find((item) => item.kind === "swap");
+    if (!swapItem) return false;
+    return (swapItem.swapActiveSide ?? "left") !== (swapItem.swapRedSide ?? "left");
+  }, [renderedLayeredVisibleItems]);
 
   return (
     <DndContext
@@ -6818,6 +7489,7 @@ export default function EditorPage() {
                   setIsPreviewMode((current) => {
                     const next = !current;
                     if (next) {
+                      setIsPreviewSwapMirrored(false);
                       setPreviewBaseStageSize({
                         width: stageSizeRef.current.width,
                         height: stageSizeRef.current.height,
@@ -6829,15 +7501,22 @@ export default function EditorPage() {
                       setStagingParentId(null);
                       setPreviewStageParentId(null);
                       setPreviewPressedItemId(null);
+                      previewHoldStartByIdRef.current = {};
+                      clearPreviewHoldInterval();
+                      setPreviewHoldDurationsById({});
                       setPreviewTeamSide(editorTeamSide);
                       setPreviewInputValues({});
                       setPreviewTeamSelectValues({});
                       setPreviewMatchSelectValues({});
                       setPreviewLogText("");
                     } else {
+                      setIsPreviewSwapMirrored(false);
                       setPreviewBaseStageSize(null);
                       previewBaseStageSizeRef.current = null;
                       setPreviewStageParentId(null);
+                      previewHoldStartByIdRef.current = {};
+                      clearPreviewHoldInterval();
+                      setPreviewHoldDurationsById({});
                       setPreviewInputValues({});
                       setPreviewTeamSelectValues({});
                       setPreviewMatchSelectValues({});
@@ -6943,7 +7622,11 @@ export default function EditorPage() {
           className={`mx-auto w-full px-5 ${
             isPreviewMode
               ? "grid h-[calc(100vh-86px)] max-w-none grid-cols-1 px-0 py-0"
-              : "grid max-w-[1760px] grid-cols-1 gap-4 py-5 xl:grid-cols-[260px_minmax(0,1fr)_260px]"
+              : `grid max-w-[1760px] grid-cols-1 gap-4 py-5 ${
+                  isAssetsPanelHidden
+                    ? "xl:grid-cols-[minmax(0,1fr)_260px]"
+                    : "xl:grid-cols-[260px_minmax(0,1fr)_260px]"
+                }`
           }`}
         >
           <aside
@@ -6952,11 +7635,23 @@ export default function EditorPage() {
               assetsPanelRef.current = node;
             }}
             className={`${
-              isPreviewMode ? "hidden" : "flex h-[min(72vh,700px)]"
+              isPreviewMode || isAssetsPanelHidden
+                ? "hidden"
+                : "flex h-[min(72vh,700px)]"
             } min-h-0 flex-col overflow-hidden rounded-2xl border border-white/[0.03] bg-slate-900/70 p-4 text-white shadow-2xl backdrop-blur`}
           >
-            <div className="mb-4 px-1">
+            <div className="mb-4 flex items-center justify-between gap-2 px-1">
               <h2 className="text-3xl font-semibold tracking-tight">Assets</h2>
+              <Button
+                type="button"
+                variant="outline"
+                aria-label="Hide assets panel"
+                className="h-8 gap-1 rounded-md border-white/15 bg-slate-900/80 px-2 text-xs font-semibold text-white hover:bg-slate-800/90"
+                onClick={() => setAssetsPanelVisibility(true)}
+              >
+                <ArrowLeft className="h-3.5 w-3.5" />
+                Hide
+              </Button>
             </div>
 
             <div className="mb-3 px-1">
@@ -7059,11 +7754,26 @@ export default function EditorPage() {
                 {matchesAssetSearch(["swap", "side", "layout"]) ? (
                   <PaletteSwapButton onPalettePointerDown={handlePalettePointerDown} />
                 ) : null}
+                {matchesAssetSearch(["movement", "arrow", "left", "right", "direction"]) ? (
+                  <PaletteMovementButton onPalettePointerDown={handlePalettePointerDown} />
+                ) : null}
               </div>
             </ScrollArea>
           </aside>
 
-          <section className={`min-w-0 ${isPreviewMode ? "h-full" : ""}`}>
+          <section className={`relative min-w-0 ${isPreviewMode ? "h-full" : ""}`}>
+            {!isPreviewMode && isAssetsPanelHidden ? (
+              <Button
+                type="button"
+                variant="outline"
+                aria-label="Show assets panel"
+                className="absolute left-0 top-2 z-30 inline-flex h-9 gap-2 rounded-lg border-white/15 bg-slate-900/85 px-3 text-xs font-semibold text-white shadow-lg backdrop-blur hover:bg-slate-800/90"
+                onClick={() => setAssetsPanelVisibility(false)}
+              >
+                <ArrowRight className="h-3.5 w-3.5" />
+                Show assets
+              </Button>
+            ) : null}
             <div
               ref={canvasPanelRef}
               className={`relative flex min-h-0 items-center justify-center overflow-hidden ${
@@ -7089,6 +7799,31 @@ export default function EditorPage() {
                     } ${
                       isOver && !isPreviewMode ? "ring-1 ring-blue-300/25" : ""
                     }`}
+                    onPointerDownCapture={(event) => {
+                      const target = event.target as HTMLElement | null;
+                      if (!target) return;
+                      if (!isPreviewMode && stagingParentId) {
+                        const clickedInteractiveControl = Boolean(
+                          target.closest(
+                            'button, input, select, textarea, [role="button"], [role="switch"]'
+                          )
+                        );
+                        if (!clickedInteractiveControl) {
+                          setStagingParentId(null);
+                        }
+                        return;
+                      }
+                      if (!isPreviewMode || !previewStageParentId) return;
+                      const clickedCover = Boolean(
+                        target.closest('[data-canvas-kind="cover"]')
+                      );
+                      const clickedCanvasItem = Boolean(
+                        target.closest('[data-canvas-item="true"]')
+                      );
+                      if (clickedCover || !clickedCanvasItem) {
+                        setPreviewStageParentId(null);
+                      }
+                    }}
                     onContextMenu={(event) => {
                       event.preventDefault();
                     }}
@@ -7166,6 +7901,7 @@ export default function EditorPage() {
                         item={item}
                         onResizeStart={handleResizeStart}
                         onSelect={handleCanvasItemSelect}
+                        onPreviewExitStage={handlePreviewStageExit}
                         snapOffset={snapOffset}
                         isPreviewMode={isEditorReadOnly}
                       />
@@ -7229,6 +7965,7 @@ export default function EditorPage() {
                         onSelect={handleCanvasItemSelect}
                         onToggle={handleToggleItem}
                         snapOffset={snapOffset}
+                        isSwapMirrored={isSwapMirrored}
                         isPreviewMode={isEditorReadOnly}
                       />
                     ) : item.kind === "auto-toggle" ? (
@@ -7240,6 +7977,7 @@ export default function EditorPage() {
                         onToggle={handleAutoToggleItem}
                         countdownSeconds={autoToggleCountdowns[item.id]}
                         snapOffset={snapOffset}
+                        isSwapMirrored={isSwapMirrored}
                         isPreviewMode={isEditorReadOnly}
                       />
                     ) : (
@@ -7249,6 +7987,7 @@ export default function EditorPage() {
                         onResizeStart={handleResizeStart}
                         onEditLabel={handleEditLabel}
                         onSwapSides={handleSwapSides}
+                        onToggleMovementDirection={handleToggleMovementDirection}
                         onPreviewButtonAction={handlePreviewButtonAction}
                         onSelect={handleCanvasItemSelect}
                         onPreviewPressStart={handlePreviewPressStart}
@@ -7257,6 +7996,7 @@ export default function EditorPage() {
                         onStageContextMenu={handleStageContextMenu}
                         hasStages={stageRootIds.has(item.id)}
                         isPreviewPressed={previewPressedItemId === item.id}
+                        previewHoldDurationMs={previewHoldDurationsById[item.id]}
                         isCustomSideLayoutsEnabled={isCustomSideLayoutsEnabled}
                         visibleTeamSide={currentVisibleTeamSide}
                         snapOffset={snapOffset}
@@ -7325,6 +8065,33 @@ export default function EditorPage() {
 
             {selectedItem?.kind === "icon" ? (
               <div className="grid gap-4">
+                <div className="grid gap-2">
+                  <Label className="text-sm text-white/80">Button mode</Label>
+                  <ToggleGroup
+                    type="single"
+                    value={normalizeButtonPressMode(selectedItem.buttonPressMode)}
+                    onValueChange={(value) => {
+                      if (value === "tap" || value === "hold") {
+                        handleSelectedButtonPressModeChange(value);
+                      }
+                    }}
+                    className="grid grid-cols-2 gap-2"
+                  >
+                    <ToggleGroupItem
+                      value="tap"
+                      className="h-10 rounded-md border border-white/10 bg-slate-900/80 text-xs text-white data-[state=on]:bg-blue-600"
+                    >
+                      Tap
+                    </ToggleGroupItem>
+                    <ToggleGroupItem
+                      value="hold"
+                      className="h-10 rounded-md border border-white/10 bg-slate-900/80 text-xs text-white data-[state=on]:bg-blue-600"
+                    >
+                      Hold
+                    </ToggleGroupItem>
+                  </ToggleGroup>
+                </div>
+
                 <div className="grid gap-2">
                   <Label htmlFor="icon-tag-side" className="text-sm text-white/80">
                     Tag
@@ -7476,6 +8243,38 @@ export default function EditorPage() {
                   >
                     {selectedIsStagingRoot ? "End staging" : "Add stage"}
                   </Button>
+                  {selectedItem && selectedHasStagedChildren ? (
+                    <div className="grid gap-2 rounded-md border border-white/10 bg-slate-900/70 px-3 py-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="grid gap-0.5">
+                          <Label className="text-xs text-white/80">Hide after selection</Label>
+                          <p className="text-[11px] text-white/60">
+                            Hide this parent while its stage is active in preview.
+                          </p>
+                        </div>
+                        <Switch
+                          checked={selectedItem?.stageHideAfterSelection ?? false}
+                          onCheckedChange={handleSelectedStageHideAfterSelectionChange}
+                          aria-label="Hide after selection"
+                        />
+                      </div>
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="grid gap-0.5">
+                          <Label className="text-xs text-white/80">
+                            Blur background on click
+                          </Label>
+                          <p className="text-[11px] text-white/60">
+                            Blur the field while this stage is open in preview.
+                          </p>
+                        </div>
+                        <Switch
+                          checked={selectedItem?.stageBlurBackgroundOnClick ?? false}
+                          onCheckedChange={handleSelectedStageBlurBackgroundOnClickChange}
+                          aria-label="Blur background on click"
+                        />
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               </div>
             ) : selectedItem?.kind === "swap" ? (
@@ -7862,19 +8661,81 @@ export default function EditorPage() {
               </div>
             ) : (
               <div className="grid gap-4">
-                <div className="grid gap-2">
-                  <Label htmlFor="button-name" className="text-sm text-white/80">
-                    Button name
-                  </Label>
-                  <Input
-                    id="button-name"
-                    value={selectedItem?.kind === "text" ? selectedItem.label : ""}
-                    onChange={(event) => handleSelectedLabelChange(event.target.value)}
-                    placeholder="Enter button text"
-                    disabled={selectedItem?.kind !== "text"}
-                    className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35 disabled:opacity-50"
-                  />
-                </div>
+                {selectedItem?.kind === "text" ? (
+                  <>
+                    <div className="grid gap-2">
+                      <Label className="text-sm text-white/80">Button mode</Label>
+                      <ToggleGroup
+                        type="single"
+                        value={normalizeButtonPressMode(selectedItem.buttonPressMode)}
+                        onValueChange={(value) => {
+                          if (value === "tap" || value === "hold") {
+                            handleSelectedButtonPressModeChange(value);
+                          }
+                        }}
+                        className="grid grid-cols-2 gap-2"
+                      >
+                        <ToggleGroupItem
+                          value="tap"
+                          className="h-10 rounded-md border border-white/10 bg-slate-900/80 text-xs text-white data-[state=on]:bg-blue-600"
+                        >
+                          Tap
+                        </ToggleGroupItem>
+                        <ToggleGroupItem
+                          value="hold"
+                          className="h-10 rounded-md border border-white/10 bg-slate-900/80 text-xs text-white data-[state=on]:bg-blue-600"
+                        >
+                          Hold
+                        </ToggleGroupItem>
+                      </ToggleGroup>
+                    </div>
+
+                    <div className="grid gap-2">
+                      <Label htmlFor="button-name" className="text-sm text-white/80">
+                        Button name
+                      </Label>
+                      <Input
+                        id="button-name"
+                        value={selectedItem.label}
+                        onChange={(event) => handleSelectedLabelChange(event.target.value)}
+                        placeholder="Enter button text"
+                        className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
+                      />
+                    </div>
+                  </>
+                ) : selectedItem?.kind === "movement" ? (
+                  <>
+                    <div className="grid gap-2 rounded-md border border-white/10 bg-slate-900/80 px-3 py-2 text-xs text-white/70">
+                      Direction flips between arrow directions when clicked in preview.
+                    </div>
+                    <div className="grid gap-2">
+                      <Label className="text-sm text-white/80">Starting state</Label>
+                      <ToggleGroup
+                        type="single"
+                        value={normalizeMovementDirection(selectedItem.movementDirection)}
+                        onValueChange={(value) => {
+                          if (value === "left" || value === "right") {
+                            handleSelectedMovementDirectionChange(value);
+                          }
+                        }}
+                        className="grid grid-cols-2 gap-2"
+                      >
+                        <ToggleGroupItem
+                          value="left"
+                          className="h-10 rounded-md border border-white/10 bg-slate-900/80 text-xs text-white data-[state=on]:bg-blue-600"
+                        >
+                          <ArrowLeft className="h-4 w-4" />
+                        </ToggleGroupItem>
+                        <ToggleGroupItem
+                          value="right"
+                          className="h-10 rounded-md border border-white/10 bg-slate-900/80 text-xs text-white data-[state=on]:bg-blue-600"
+                        >
+                          <ArrowRight className="h-4 w-4" />
+                        </ToggleGroupItem>
+                      </ToggleGroup>
+                    </div>
+                  </>
+                ) : null}
                 <div className="grid gap-2">
                   <Label htmlFor="button-tag" className="text-sm text-white/80">
                     Tag
@@ -7882,14 +8743,21 @@ export default function EditorPage() {
                   <Input
                     ref={tagInputRef}
                     id="button-tag"
-                    value={selectedItem?.kind === "text" ? (selectedItem.tag ?? "") : ""}
+                    value={
+                      selectedItem?.kind === "text" || selectedItem?.kind === "movement"
+                        ? (selectedItem.tag ?? "")
+                        : ""
+                    }
                     onChange={(event) => handleSelectedTagChange(event.target.value)}
                     placeholder="Enter tag"
-                    disabled={selectedItem?.kind !== "text"}
+                    disabled={
+                      selectedItem?.kind !== "text" &&
+                      selectedItem?.kind !== "movement"
+                    }
                     className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35 disabled:opacity-50"
                   />
                 </div>
-                {!selectedHasStagedChildren ? (
+                {selectedItem?.kind === "text" && !selectedHasStagedChildren ? (
                   <div className="grid gap-2">
                     <Label htmlFor="button-increment" className="text-sm text-white/80">
                       Increment
@@ -7923,6 +8791,38 @@ export default function EditorPage() {
                   >
                     {selectedIsStagingRoot ? "End staging" : "Add stage"}
                   </Button>
+                  {selectedItem && selectedHasStagedChildren ? (
+                    <div className="grid gap-2 rounded-md border border-white/10 bg-slate-900/70 px-3 py-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="grid gap-0.5">
+                          <Label className="text-xs text-white/80">Hide after selection</Label>
+                          <p className="text-[11px] text-white/60">
+                            Hide this parent while its stage is active in preview.
+                          </p>
+                        </div>
+                        <Switch
+                          checked={selectedItem?.stageHideAfterSelection ?? false}
+                          onCheckedChange={handleSelectedStageHideAfterSelectionChange}
+                          aria-label="Hide after selection"
+                        />
+                      </div>
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="grid gap-0.5">
+                          <Label className="text-xs text-white/80">
+                            Blur background on click
+                          </Label>
+                          <p className="text-[11px] text-white/60">
+                            Blur the field while this stage is open in preview.
+                          </p>
+                        </div>
+                        <Switch
+                          checked={selectedItem?.stageBlurBackgroundOnClick ?? false}
+                          onCheckedChange={handleSelectedStageBlurBackgroundOnClickChange}
+                          aria-label="Blur background on click"
+                        />
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               </div>
             )}
@@ -8161,6 +9061,15 @@ export default function EditorPage() {
                     </div>
                   </div>
                 </div>
+              ) : activeKind === "movement" ? (
+                <Button
+                  variant="outline"
+                  size="default"
+                  className="h-full w-full rounded-lg border-white/25 !bg-slate-900/80 !text-white hover:!bg-slate-900/80"
+                  aria-label="Movement"
+                >
+                  <ArrowLeft className="h-5 w-5" />
+                </Button>
               ) : (
                 <Button
                   variant="outline"
@@ -8300,13 +9209,14 @@ export default function EditorPage() {
           open={isAspectDialogOpen}
           onOpenChange={(open) => setIsAspectDialogOpen(open)}
         >
-          <DialogContent className="border-white/10 bg-slate-950 text-white data-[state=closed]:slide-out-to-right-1/2 data-[state=open]:slide-in-from-right-1/2">
+          <DialogContent className="max-h-[92vh] w-[min(96vw,680px)] overflow-hidden border-white/10 bg-slate-950 text-white data-[state=closed]:slide-out-to-right-1/2 data-[state=open]:slide-in-from-right-1/2">
             <DialogHeader>
               <DialogTitle>Field aspect ratio</DialogTitle>
               <DialogDescription className="text-white/60">
                 Set the width and height ratio for the field.
               </DialogDescription>
             </DialogHeader>
+            <ScrollArea className="max-h-[calc(92vh-190px)] pr-2">
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="grid gap-2">
                 <Label htmlFor="aspect-width" className="text-white/85">Width</Label>
@@ -8461,6 +9371,7 @@ export default function EditorPage() {
                 />
               </button>
             </div>
+            </ScrollArea>
             <DialogFooter>
               <Button
                 variant="outline"
