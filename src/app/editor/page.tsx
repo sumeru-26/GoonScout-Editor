@@ -34,6 +34,7 @@ import {
   ChevronRight,
   Download,
   Eye,
+  EyeOff,
   FileText,
   QrCode,
   Redo2,
@@ -45,6 +46,7 @@ import {
   Type,
   Undo2,
   Upload,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -67,6 +69,7 @@ const MOVEMENT_SIZE = { width: 64, height: 44 } as const;
 const ICON_BUTTON_SIZE = { width: 40, height: 40 } as const;
 const MIRROR_LINE_SIZE = { width: 160, height: 80 } as const;
 const COVER_SIZE = { width: 220, height: 120 } as const;
+const START_POSITION_SIZE = { width: 220, height: 120 } as const;
 const INPUT_SIZE = { width: 220, height: 56 } as const;
 const TEAM_SELECT_SIZE = { width: 220, height: 44 } as const;
 const MATCH_SELECT_SIZE = { width: 220, height: 44 } as const;
@@ -130,6 +133,7 @@ type AssetKind =
   | "mirror"
   | "swap"
   | "cover"
+  | "start-position"
   | "input"
   | "team-select"
   | "match-select"
@@ -146,6 +150,7 @@ type ButtonPressMode = "tap" | "hold";
 
 type TeamSide = "red" | "blue";
 type InputValueMode = "text" | "numbers" | "both";
+type ToggleStyle = "switch" | "box";
 
 type CanvasItem = {
   id: string;
@@ -170,10 +175,12 @@ type CanvasItem = {
   teamSelectValue?: string;
   matchSelectValue?: number;
   toggleOn?: boolean;
+  toggleStyle?: ToggleStyle;
   toggleTextAlign?: "left" | "center" | "right";
   toggleTextSize?: number;
   autoToggleMode?: "auto" | "teleop";
   autoToggleDurationSeconds?: number;
+  autoToggleTeleopDurationSeconds?: number;
   teamSide?: TeamSide;
   increment?: number;
   swapRedSide?: "left" | "right";
@@ -181,7 +188,9 @@ type CanvasItem = {
   stageParentId?: string;
   stageHideAfterSelection?: boolean;
   stageBlurBackgroundOnClick?: boolean;
+  stageHideOtherElementsInStage?: boolean;
   coverVisible?: boolean;
+  startPositionVisible?: boolean;
 };
 
 const isActionButtonKind = (kind: AssetKind): kind is ActionButtonKind =>
@@ -196,6 +205,8 @@ const getAssetSize = (kind: AssetKind) =>
       ? MIRROR_LINE_SIZE
       : kind === "cover"
         ? COVER_SIZE
+        : kind === "start-position"
+          ? START_POSITION_SIZE
         : kind === "input"
           ? INPUT_SIZE
           : kind === "team-select"
@@ -226,6 +237,8 @@ const getDefaultLabelForKind = (kind: AssetKind) =>
       ? "Mirror line"
       : kind === "cover"
         ? "Cover"
+        : kind === "start-position"
+          ? "Start Position"
         : kind === "input"
           ? "Input label"
           : kind === "team-select"
@@ -251,7 +264,7 @@ const getDefaultLabelForKind = (kind: AssetKind) =>
                         : "Button";
 
                   const isMassDragExcludedKind = (kind: AssetKind) =>
-                    kind === "cover" || kind === "mirror";
+                    kind === "cover" || kind === "start-position" || kind === "mirror";
 
 const getTeamSelectOptionValue = (index: number) => `team-option-${index + 1}`;
 
@@ -273,6 +286,9 @@ const getWidgetScale = (
 
 const normalizeInputValueMode = (value: unknown): InputValueMode =>
   value === "text" || value === "numbers" || value === "both" ? value : "both";
+
+const normalizeToggleStyle = (value: unknown): ToggleStyle =>
+  value === "box" ? "box" : "switch";
 
 const normalizeButtonPressMode = (value: unknown): ButtonPressMode =>
   value === "hold" ? "hold" : "tap";
@@ -433,6 +449,7 @@ const normalizeLoadedItemKind = (kind: unknown): AssetKind => {
     kind === "mirror" ||
     kind === "swap" ||
     kind === "cover" ||
+    kind === "start-position" ||
     kind === "input" ||
     kind === "team-select" ||
     kind === "match-select" ||
@@ -529,6 +546,12 @@ const fromPersistedItem = (
         resolvedKind === "movement"
           ? normalizeStageParentOption(value.stageBlurBackgroundOnClick)
           : undefined,
+      stageHideOtherElementsInStage:
+        resolvedKind === "text" ||
+        resolvedKind === "icon" ||
+        resolvedKind === "movement"
+          ? normalizeStageParentOption(value.stageHideOtherElementsInStage)
+          : undefined,
       matchSelectValue:
         resolvedKind === "match-select"
           ? clampMatchSelectValue(
@@ -538,6 +561,16 @@ const fromPersistedItem = (
                 : MATCH_SELECT_MIN_VALUE
             )
           : undefined,
+      autoToggleTeleopDurationSeconds:
+        resolvedKind === "auto-toggle" &&
+        typeof value.autoToggleTeleopDurationSeconds === "number" &&
+        Number.isFinite(value.autoToggleTeleopDurationSeconds)
+          ? Math.max(0, value.autoToggleTeleopDurationSeconds)
+          : resolvedKind === "auto-toggle"
+            ? 135
+            : undefined,
+      toggleStyle:
+        resolvedKind === "toggle" ? normalizeToggleStyle(value.toggleStyle) : undefined,
     x: isNormalized ? centerX - resolvedWidth / 2 : centerX,
     y: isNormalized ? centerY - resolvedHeight / 2 : centerY,
     width: resolvedWidth,
@@ -790,6 +823,12 @@ const parseImportedEditorState = (
           resolvedKind === "text"
             ? normalizeStageParentOption(data.blurBackgroundOnClick)
             : undefined,
+        stageHideOtherElementsInStage:
+          resolvedKind === "text"
+            ? normalizeStageParentOption(
+                data.hideOtherElementsInStage ?? data.hideAllOtherElementsInStage
+              )
+            : undefined,
         tag: resolvedKind === "text" ? tag : "",
         teamSide: toTeamSide(data.teamSide),
       };
@@ -826,6 +865,9 @@ const parseImportedEditorState = (
         buttonPressMode: normalizeButtonPressMode(data.pressMode),
         stageHideAfterSelection: normalizeStageParentOption(data.hideAfterSelection),
         stageBlurBackgroundOnClick: normalizeStageParentOption(data.blurBackgroundOnClick),
+        stageHideOtherElementsInStage: normalizeStageParentOption(
+          data.hideOtherElementsInStage ?? data.hideAllOtherElementsInStage
+        ),
         tag,
         teamSide: toTeamSide(data.teamSide),
       };
@@ -969,6 +1011,7 @@ const parseImportedEditorState = (
         height,
         label: typeof data.label === "string" ? data.label : "Toggle",
         toggleOn: Boolean(data.value),
+        toggleStyle: normalizeToggleStyle(data.style),
         toggleTextAlign: align,
         toggleTextSize: readNumber(data.textSize, 10),
         tag,
@@ -996,6 +1039,14 @@ const parseImportedEditorState = (
           typeof data.timerSeconds === "number" && Number.isFinite(data.timerSeconds)
             ? Math.max(0, data.timerSeconds)
             : 15,
+        autoToggleTeleopDurationSeconds:
+          typeof data.teleopTimerSeconds === "number" &&
+          Number.isFinite(data.teleopTimerSeconds)
+            ? Math.max(0, data.teleopTimerSeconds)
+            : typeof data.teleopSeconds === "number" &&
+                Number.isFinite(data.teleopSeconds)
+              ? Math.max(0, data.teleopSeconds)
+              : 135,
         teamSide: toTeamSide(data.teamSide),
       };
     }
@@ -1040,6 +1091,30 @@ const parseImportedEditorState = (
         tag: "",
         teamSide: toTeamSide(data.teamSide),
         coverVisible: data.visible !== false,
+      };
+    }
+
+    if (isRecord(entry["start-position"])) {
+      const data = entry["start-position"];
+      const x1 = scaleX(data.x1);
+      const y1 = scaleY(data.y1);
+      const x2 = scaleX(data.x2);
+      const y2 = scaleY(data.y2);
+      registerStageLink(data.stageParentTag, id);
+      return {
+        id,
+        kind: "start-position",
+        x: Math.min(x1, x2),
+        y: Math.min(y1, y2),
+        width: Math.max(1, Math.abs(x2 - x1)),
+        height: Math.max(1, Math.abs(y2 - y1)),
+        label:
+          typeof data.label === "string" && data.label.trim().length > 0
+            ? data.label
+            : "Start Position",
+        tag: "",
+        teamSide: toTeamSide(data.teamSide),
+        startPositionVisible: data.visible !== false,
       };
     }
 
@@ -1428,6 +1503,87 @@ function PaletteCoverButton({ onPalettePointerDown }: PaletteButtonProps) {
         <span className="text-sm font-semibold">Cover</span>
         <span className="text-xs text-white/55">Occludes a field region</span>
       </span>
+    </Button>
+  );
+}
+
+function PaletteStartPositionButton({
+  onPalettePointerDown,
+  hasAsset,
+  isVisible,
+  onToggleVisibility,
+}: PaletteButtonProps & {
+  hasAsset: boolean;
+  isVisible: boolean;
+  onToggleVisibility: () => void;
+}) {
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+    id: "palette-start-position",
+    data: { type: "palette", assetKind: "start-position" } satisfies DragData,
+    disabled: hasAsset,
+  });
+
+  const style: React.CSSProperties = {
+    opacity: isDragging ? 0 : 1,
+  };
+
+  return (
+    <Button
+      ref={setNodeRef}
+      style={style}
+      variant="outline"
+      className={`mx-auto h-[58px] w-[calc(100%-8px)] justify-start gap-3 rounded-xl border-white/10 bg-slate-900/70 px-3 text-left text-white transition-all duration-150 hover:border-white/20 hover:bg-slate-800/80 ${
+        hasAsset ? "opacity-85" : ""
+      }`}
+      onPointerDownCapture={(event) => {
+        const target = event.target as HTMLElement | null;
+        if (target?.closest('[data-start-position-visibility-toggle="true"]')) {
+          return;
+        }
+        if (hasAsset) return;
+        onPalettePointerDown("start-position", event);
+      }}
+      {...attributes}
+      {...listeners}
+      type="button"
+      aria-label="Start position"
+    >
+      <span className="relative flex h-8 w-8 items-center justify-center rounded-md bg-teal-500/20 text-teal-200">
+        <span className="h-2.5 w-2.5 rounded-full bg-current" />
+        <span className="absolute h-5 w-5 rounded-full border border-current/70" />
+      </span>
+      <span className="flex flex-col items-start leading-tight">
+        <span className="text-sm font-semibold">Start Position</span>
+        <span className="text-xs text-white/55">
+          {hasAsset ? "Only one allowed" : "Scout taps robot start point"}
+        </span>
+      </span>
+      {hasAsset ? (
+        <span
+          data-start-position-visibility-toggle="true"
+          role="switch"
+          aria-checked={isVisible}
+          aria-label={isVisible ? "Hide start position" : "Show start position"}
+          tabIndex={0}
+          className="ml-auto inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/15 bg-white/5 text-white/80 transition-colors hover:bg-white/10"
+          onPointerDown={(event) => {
+            event.stopPropagation();
+            event.preventDefault();
+            onToggleVisibility();
+          }}
+          onClick={(event) => {
+            event.stopPropagation();
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              onToggleVisibility();
+            }
+          }}
+        >
+          {isVisible ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
+        </span>
+      ) : null}
     </Button>
   );
 }
@@ -2045,6 +2201,141 @@ function CanvasCover({
   );
 }
 
+function CanvasStartPosition({
+  item,
+  onResizeStart,
+  onSelect,
+  onPreviewTap,
+  previewPosition,
+  isPreviewHidden,
+  visibleTeamSide,
+  snapOffset,
+  isPreviewMode,
+}: {
+  item: CanvasItem;
+  onResizeStart: (event: React.PointerEvent, item: CanvasItem) => void;
+  onSelect: (itemId: string, options?: { append?: boolean }) => void;
+  onPreviewTap: (itemId: string, xRatio: number, yRatio: number) => void;
+  previewPosition?: { xRatio: number; yRatio: number };
+  isPreviewHidden?: boolean;
+  visibleTeamSide: TeamSide;
+  snapOffset?: { x: number; y: number };
+  isPreviewMode?: boolean;
+}) {
+  const { attributes, listeners, setNodeRef, transform } = useDraggable({
+    id: item.id,
+    disabled: Boolean(isPreviewMode),
+    data: { type: "canvas", itemId: item.id } satisfies DragData,
+  });
+
+  const style: React.CSSProperties = {
+    transform: toDragTransform(true, transform, snapOffset),
+    left: item.x,
+    top: item.y,
+    width: item.width,
+    height: item.height,
+    transition: isPreviewMode ? undefined : "none",
+    willChange: "transform",
+  };
+
+  const isStartPositionVisible = item.startPositionVisible !== false;
+
+  if (!isPreviewMode && !isStartPositionVisible) {
+    return null;
+  }
+
+  if (isPreviewMode && isPreviewHidden) {
+    return null;
+  }
+
+  const markerTeamSide = item.teamSide ?? visibleTeamSide;
+  const isRedSide = markerTeamSide === "red";
+  const zoneClassName = isPreviewMode
+    ? isRedSide
+      ? "cursor-crosshair border-red-300/45 bg-red-500/10"
+      : "cursor-crosshair border-blue-300/45 bg-blue-500/10"
+    : isRedSide
+      ? "border-dashed border-red-300/40 bg-red-400/5"
+      : "border-dashed border-blue-300/40 bg-blue-400/5";
+  const helperTextClassName = isRedSide ? "text-red-100/75" : "text-blue-100/75";
+  const tapHintClassName = isRedSide ? "text-red-100/90" : "text-blue-100/90";
+  const pulseClassName = isRedSide
+    ? "border-red-200/65"
+    : "border-blue-200/65";
+  const outerRingClassName = isRedSide
+    ? "border-red-100/55"
+    : "border-blue-100/55";
+  const centerDotClassName = isRedSide ? "bg-red-300" : "bg-blue-300";
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className={`group absolute rounded-md border ${zoneClassName}`}
+      onPointerDownCapture={(event) => {
+        if (isPreviewMode) {
+          const rect = event.currentTarget.getBoundingClientRect();
+          const xRatio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+          const yRatio = Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height));
+          onPreviewTap(item.id, xRatio, yRatio);
+          event.stopPropagation();
+          return;
+        }
+        if (event.button === 2) return;
+        onSelect(item.id);
+      }}
+      onContextMenu={(event) => {
+        if (isPreviewMode) return;
+        event.preventDefault();
+      }}
+      {...attributes}
+      {...listeners}
+      data-canvas-item="true"
+      data-canvas-kind="start-position"
+    >
+      {!isPreviewMode ? (
+        <>
+          <div
+            className={`pointer-events-none flex h-full w-full items-center justify-center text-xs uppercase tracking-wide ${helperTextClassName}`}
+          >
+            Tap zone for robot start
+          </div>
+          <span
+            role="presentation"
+            onPointerDown={(event) => onResizeStart(event, item)}
+            className="absolute bottom-1 right-1 hidden h-3 w-3 cursor-se-resize rounded-sm border border-white/60 bg-white/80 group-hover:block"
+          />
+        </>
+      ) : previewPosition ? (
+        <div
+          className="pointer-events-none absolute"
+          style={{
+            left: `${previewPosition.xRatio * 100}%`,
+            top: `${previewPosition.yRatio * 100}%`,
+            transform: "translate(-50%, -50%)",
+          }}
+        >
+          <span
+            className={`absolute left-1/2 top-1/2 h-7 w-7 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 animate-ping ${pulseClassName}`}
+          />
+          <span
+            className={`absolute left-1/2 top-1/2 h-8 w-8 -translate-x-1/2 -translate-y-1/2 rounded-full border ${outerRingClassName}`}
+          />
+          <span
+            className={`absolute left-1/2 top-1/2 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/60 ${centerDotClassName}`}
+          />
+        </div>
+      ) : (
+        <div
+          className={`pointer-events-none flex h-full w-full items-center justify-center text-xs font-semibold uppercase tracking-wide ${tapHintClassName}`}
+        >
+          Tap to mark start
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CanvasInput({
   item,
   onResizeStart,
@@ -2471,6 +2762,7 @@ function CanvasToggle({
   };
 
   const isOn = Boolean(item.toggleOn);
+  const toggleStyle = normalizeToggleStyle(item.toggleStyle);
   const textAlign = item.toggleTextAlign ?? "center";
   const textSize = item.toggleTextSize ?? 10;
   const textClass =
@@ -2489,6 +2781,8 @@ function CanvasToggle({
   );
   const switchPixelWidth = 32 * switchScale;
   const switchPixelHeight = 18 * switchScale;
+  const boxPixelSize = Math.max(12, Math.round(18 * switchScale));
+  const boxIconSize = Math.max(9, Math.round(12 * switchScale));
   const resolvedTextSize = Math.max(6, textSize * switchScale);
   const toggleGap = Math.max(2, Math.round(8 * switchScale));
 
@@ -2514,6 +2808,33 @@ function CanvasToggle({
         }}
       />
     </div>
+  );
+
+  const boxControl = (
+    <button
+      type="button"
+      className={`flex flex-none items-center justify-center rounded-md border transition-colors ${
+        isOn
+          ? "border-emerald-300/60 bg-emerald-500/20 text-emerald-200"
+          : "border-white/20 bg-slate-800/80 text-white/70"
+      }`}
+      style={{
+        width: boxPixelSize,
+        height: boxPixelSize,
+      }}
+      onClick={() => {
+        if (!isPreviewMode) return;
+        onToggle(item.id);
+      }}
+      disabled={!isPreviewMode}
+      aria-label={isOn ? "Toggle true" : "Toggle false"}
+    >
+      {isOn ? (
+        <Check style={{ width: boxIconSize, height: boxIconSize }} />
+      ) : (
+        <X style={{ width: boxIconSize, height: boxIconSize }} />
+      )}
+    </button>
   );
 
   return (
@@ -2543,10 +2864,10 @@ function CanvasToggle({
           transformOrigin: "center center",
         }}
       >
-        {switchControl}
+        {toggleStyle === "box" ? boxControl : switchControl}
         {showLabel ? (
           <Label
-            className={`shrink-0 whitespace-nowrap leading-none text-white/80 ${textClass}`}
+            className={`min-w-0 truncate whitespace-nowrap leading-none text-white/80 ${textClass}`}
             style={{
               fontSize: resolvedTextSize,
               transform: isSwapMirrored ? "scaleX(-1)" : undefined,
@@ -2706,6 +3027,17 @@ const MemoCanvasCover = React.memo(
     prev.isPreviewMode === next.isPreviewMode &&
     areSnapOffsetsEqual(prev.snapOffset, next.snapOffset)
 );
+const MemoCanvasStartPosition = React.memo(
+  CanvasStartPosition,
+  (prev, next) =>
+    prev.item === next.item &&
+    prev.previewPosition?.xRatio === next.previewPosition?.xRatio &&
+    prev.previewPosition?.yRatio === next.previewPosition?.yRatio &&
+    prev.isPreviewHidden === next.isPreviewHidden &&
+    prev.visibleTeamSide === next.visibleTeamSide &&
+    prev.isPreviewMode === next.isPreviewMode &&
+    areSnapOffsetsEqual(prev.snapOffset, next.snapOffset)
+);
 const MemoCanvasInput = React.memo(
   CanvasInput,
   (prev, next) =>
@@ -2841,6 +3173,12 @@ export default function EditorPage() {
   >({});
   const [previewMatchSelectValues, setPreviewMatchSelectValues] = React.useState<
     Record<string, number>
+  >({});
+  const [previewStartPositions, setPreviewStartPositions] = React.useState<
+    Record<string, { xRatio: number; yRatio: number }>
+  >({});
+  const [hiddenPreviewStartPositionIds, setHiddenPreviewStartPositionIds] = React.useState<
+    Record<string, true>
   >({});
   const [autoToggleCountdowns, setAutoToggleCountdowns] = React.useState<
     Record<string, number>
@@ -3062,6 +3400,13 @@ export default function EditorPage() {
     });
   }, [currentVisibleTeamSide, isCustomSideLayoutsEnabled, items]);
 
+  const startPositionItem = React.useMemo(
+    () => items.find((item) => item.kind === "start-position") ?? null,
+    [items]
+  );
+  const hasStartPositionAsset = Boolean(startPositionItem);
+  const isStartPositionAssetVisible = startPositionItem?.startPositionVisible !== false;
+
   const assetSearchQuery = assetSearch.trim().toLowerCase();
   const matchesAssetSearch = React.useCallback(
     (keywords: string[]) =>
@@ -3111,25 +3456,71 @@ export default function EditorPage() {
     });
   }, [clearAutoToggleTimer, items]);
 
+  React.useEffect(() => {
+    setItems((prev) => {
+      const firstMovement = prev.find((item) => item.kind === "movement");
+      if (!firstMovement) return prev;
+      const syncedDirection = normalizeMovementDirection(
+        firstMovement.movementDirection ?? firstMovement.label
+      );
+      const hasMismatch = prev.some(
+        (item) =>
+          item.kind === "movement" &&
+          normalizeMovementDirection(item.movementDirection ?? item.label) !==
+            syncedDirection
+      );
+      if (!hasMismatch) return prev;
+
+      return prev.map((item) =>
+        item.kind === "movement"
+          ? {
+              ...item,
+              movementDirection: syncedDirection,
+            }
+          : item
+      );
+    });
+  }, [items]);
+
   const visibleItems = React.useMemo(() => {
     if (stagingParentId) {
       const stageRoot = sideScopedItems.find((item) => item.id === stagingParentId);
       const hideStageRoot = Boolean(stageRoot?.stageHideAfterSelection);
-      return sideScopedItems.filter(
-        (item) =>
-          item.stageParentId === stagingParentId ||
-          (!hideStageRoot && item.id === stagingParentId)
-      );
+      const hideOtherElements = Boolean(stageRoot?.stageHideOtherElementsInStage);
+
+      if (hideOtherElements) {
+        return sideScopedItems.filter(
+          (item) =>
+            item.stageParentId === stagingParentId ||
+            (!hideStageRoot && item.id === stagingParentId)
+        );
+      }
+
+      return sideScopedItems.filter((item) => {
+        if (item.stageParentId === stagingParentId) return true;
+        if (item.id === stagingParentId) return !hideStageRoot;
+        return !item.stageParentId;
+      });
     }
 
     if (isPreviewMode && previewStageParentId) {
       const stageRoot = sideScopedItems.find((item) => item.id === previewStageParentId);
       const hideStageRoot = Boolean(stageRoot?.stageHideAfterSelection);
-      return sideScopedItems.filter(
-        (item) =>
-          item.stageParentId === previewStageParentId ||
-          (!hideStageRoot && item.id === previewStageParentId)
-      );
+      const hideOtherElements = Boolean(stageRoot?.stageHideOtherElementsInStage);
+
+      if (hideOtherElements) {
+        return sideScopedItems.filter(
+          (item) =>
+            item.stageParentId === previewStageParentId ||
+            (!hideStageRoot && item.id === previewStageParentId)
+        );
+      }
+
+      return sideScopedItems.filter((item) => {
+        if (item.stageParentId === previewStageParentId) return true;
+        if (item.id === previewStageParentId) return !hideStageRoot;
+        return !item.stageParentId;
+      });
     }
 
     const baseItems = sideScopedItems.filter((item) => !item.stageParentId);
@@ -3151,10 +3542,16 @@ export default function EditorPage() {
 
   const layeredVisibleItems = React.useMemo(() => {
     const bottomItems = visibleItems.filter(
-      (item) => item.kind === "cover" || item.kind === "mirror"
+      (item) =>
+        item.kind === "cover" ||
+        item.kind === "start-position" ||
+        item.kind === "mirror"
     );
     const topItems = visibleItems.filter(
-      (item) => item.kind !== "cover" && item.kind !== "mirror"
+      (item) =>
+        item.kind !== "cover" &&
+        item.kind !== "start-position" &&
+        item.kind !== "mirror"
     );
     return [...bottomItems, ...topItems];
   }, [visibleItems]);
@@ -3788,10 +4185,9 @@ export default function EditorPage() {
 
   const handleSelectedMovementDirectionChange = React.useCallback(
     (value: "left" | "right") => {
-      if (!selectedItemId) return;
       setItems((prev) =>
         prev.map((item) =>
-          item.id === selectedItemId && item.kind === "movement"
+          item.kind === "movement"
             ? {
                 ...item,
                 movementDirection: value,
@@ -3800,7 +4196,7 @@ export default function EditorPage() {
         )
       );
     },
-    [selectedItemId]
+    []
   );
 
   const handleSelectedToggleStateChange = React.useCallback(
@@ -3820,15 +4216,15 @@ export default function EditorPage() {
     [selectedItemId]
   );
 
-  const handleSelectedToggleTextAlignChange = React.useCallback(
-    (value: "left" | "center" | "right") => {
+  const handleSelectedToggleStyleChange = React.useCallback(
+    (value: ToggleStyle) => {
       if (!selectedItemId) return;
       setItems((prev) =>
         prev.map((item) =>
           item.id === selectedItemId && item.kind === "toggle"
             ? {
                 ...item,
-                toggleTextAlign: value,
+                toggleStyle: value,
               }
             : item
         )
@@ -3924,6 +4320,24 @@ export default function EditorPage() {
     [selectedItemId]
   );
 
+  const handleSelectedStageHideOtherElementsInStageChange = React.useCallback(
+    (value: boolean) => {
+      if (!selectedItemId) return;
+      setItems((prev) =>
+        prev.map((item) =>
+          item.id === selectedItemId &&
+          (item.kind === "text" || item.kind === "icon" || item.kind === "movement")
+            ? {
+                ...item,
+                stageHideOtherElementsInStage: value,
+              }
+            : item
+        )
+      );
+    },
+    [selectedItemId]
+  );
+
   const handleToggleItem = React.useCallback((itemId: string) => {
     setItems((prev) =>
       prev.map((item) =>
@@ -3956,6 +4370,16 @@ export default function EditorPage() {
         );
         return;
       }
+
+      setHiddenPreviewStartPositionIds((prev) => {
+        const next = { ...prev };
+        items
+          .filter((item) => item.kind === "start-position")
+          .forEach((item) => {
+            next[item.id] = true;
+          });
+        return next;
+      });
 
       const durationSeconds =
         typeof target.autoToggleDurationSeconds === "number" &&
@@ -4028,6 +4452,35 @@ export default function EditorPage() {
     [clearAutoToggleTimer, items]
   );
 
+  const handlePreviewStartPositionTap = React.useCallback(
+    (itemId: string, xRatio: number, yRatio: number) => {
+      setPreviewStartPositions((prev) => ({
+        ...prev,
+        [itemId]: {
+          xRatio: Math.max(0, Math.min(1, xRatio)),
+          yRatio: Math.max(0, Math.min(1, yRatio)),
+        },
+      }));
+    },
+    []
+  );
+
+  const handleStartPositionVisibilityToggle = React.useCallback(() => {
+    setItems((prev) => {
+      const target = prev.find((item) => item.kind === "start-position");
+      if (!target) return prev;
+      const nextVisible = target.startPositionVisible === false;
+      return prev.map((item) =>
+        item.id === target.id && item.kind === "start-position"
+          ? {
+              ...item,
+              startPositionVisible: nextVisible,
+            }
+          : item
+      );
+    });
+  }, []);
+
   const handleSelectedAutoToggleTimerChange = React.useCallback(
     (value: number) => {
       if (!selectedItemId) return;
@@ -4045,6 +4498,24 @@ export default function EditorPage() {
       clearAutoToggleTimer(selectedItemId);
     },
     [clearAutoToggleTimer, selectedItemId]
+  );
+
+  const handleSelectedAutoToggleTeleopTimerChange = React.useCallback(
+    (value: number) => {
+      if (!selectedItemId) return;
+      const nextValue = Number.isFinite(value) ? Math.max(0, value) : 0;
+      setItems((prev) =>
+        prev.map((item) =>
+          item.id === selectedItemId && item.kind === "auto-toggle"
+            ? {
+                ...item,
+                autoToggleTeleopDurationSeconds: nextValue,
+              }
+            : item
+        )
+      );
+    },
+    [selectedItemId]
   );
 
   const enterStagingForItemId = React.useCallback((itemId: string) => {
@@ -4308,6 +4779,8 @@ export default function EditorPage() {
         setPreviewInputValues({});
         setPreviewTeamSelectValues({});
         setPreviewMatchSelectValues({});
+        setPreviewStartPositions({});
+        setHiddenPreviewStartPositionIds({});
         setPreviewLogText("");
         return;
       }
@@ -4318,7 +4791,8 @@ export default function EditorPage() {
             (entry) =>
               entry.kind === "input" ||
               entry.kind === "team-select" ||
-              entry.kind === "match-select"
+              entry.kind === "match-select" ||
+              entry.kind === "start-position"
           )
           .reduce<Record<string, string>>((accumulator, entry) => {
             const inputKey =
@@ -4326,12 +4800,16 @@ export default function EditorPage() {
                 ? entry.id
                 : entry.kind === "match-select"
                   ? entry.id
+                : entry.kind === "start-position"
+                  ? entry.id
                 : normalizeTag(entry.tag ?? "") || entry.id;
             const outputKey =
               entry.kind === "team-select"
                 ? "Drop Down"
                 : entry.kind === "match-select"
                   ? "Match Select"
+                : entry.kind === "start-position"
+                  ? entry.label || "Start Position"
                 : normalizeTag(entry.tag ?? "") || entry.label || entry.id;
             accumulator[outputKey] =
               entry.kind === "team-select"
@@ -4343,6 +4821,12 @@ export default function EditorPage() {
                           entry.matchSelectValue ?? MATCH_SELECT_MIN_VALUE
                         )
                     )
+                : entry.kind === "start-position"
+                  ? previewStartPositions[inputKey]
+                    ? `${Math.round(previewStartPositions[inputKey].xRatio * 100)}%, ${Math.round(
+                        previewStartPositions[inputKey].yRatio * 100
+                      )}%`
+                    : "Not marked"
                 : previewInputValues[inputKey] ?? "";
             return accumulator;
           }, {});
@@ -4350,7 +4834,13 @@ export default function EditorPage() {
         setPreviewLogText(JSON.stringify(submitted, null, 2));
       }
     },
-    [items, previewInputValues, previewMatchSelectValues, previewTeamSelectValues]
+    [
+      items,
+      previewInputValues,
+      previewMatchSelectValues,
+      previewStartPositions,
+      previewTeamSelectValues,
+    ]
   );
 
   const sensors = useSensors(
@@ -4723,19 +5213,25 @@ export default function EditorPage() {
   }, [editorTeamSide, isCustomSideLayoutsEnabled, isPreviewMode, items, previewTeamSide]);
 
   const handleToggleMovementDirection = React.useCallback((itemId: string) => {
-    setItems((prev) =>
-      prev.map((item) =>
-        item.id === itemId && item.kind === "movement"
+    setItems((prev) => {
+      const target = prev.find(
+        (item) => item.id === itemId && item.kind === "movement"
+      );
+      if (!target) return prev;
+      const nextDirection: "left" | "right" =
+        normalizeMovementDirection(target.movementDirection ?? target.label) === "left"
+          ? "right"
+          : "left";
+
+      return prev.map((item) =>
+        item.kind === "movement"
           ? {
               ...item,
-              movementDirection:
-                normalizeMovementDirection(item.movementDirection ?? item.label) === "left"
-                  ? "right"
-                  : "left",
+              movementDirection: nextDirection,
             }
           : item
-      )
-    );
+      );
+    });
   }, []);
 
   const handleEditLabel = React.useCallback(
@@ -4864,6 +5360,7 @@ export default function EditorPage() {
               text: item.label,
               hideAfterSelection: item.stageHideAfterSelection === true,
               blurBackgroundOnClick: item.stageBlurBackgroundOnClick === true,
+              hideOtherElementsInStage: item.stageHideOtherElementsInStage === true,
               stageParentTag,
               hasStageChildren,
               width: scaleWidth(item.width),
@@ -4899,6 +5396,7 @@ export default function EditorPage() {
               fill: item.fillColor ?? "transparent",
               hideAfterSelection: item.stageHideAfterSelection === true,
               blurBackgroundOnClick: item.stageBlurBackgroundOnClick === true,
+              hideOtherElementsInStage: item.stageHideOtherElementsInStage === true,
               stageParentTag,
               hasStageChildren,
               width: scaleWidth(item.width),
@@ -4917,6 +5415,7 @@ export default function EditorPage() {
               ),
               hideAfterSelection: item.stageHideAfterSelection === true,
               blurBackgroundOnClick: item.stageBlurBackgroundOnClick === true,
+              hideOtherElementsInStage: item.stageHideOtherElementsInStage === true,
               stageParentTag,
               hasStageChildren,
               width: scaleWidth(item.width),
@@ -4976,6 +5475,7 @@ export default function EditorPage() {
               y: scaleY(centerItemY),
               label: item.label,
               value: Boolean(item.toggleOn),
+              style: normalizeToggleStyle(item.toggleStyle),
               textAlign: item.toggleTextAlign ?? "center",
               textSize: item.toggleTextSize ?? 10,
               stageParentTag,
@@ -4992,6 +5492,7 @@ export default function EditorPage() {
               label: item.label,
               mode: item.autoToggleMode ?? "auto",
               timerSeconds: item.autoToggleDurationSeconds ?? 15,
+              teleopTimerSeconds: item.autoToggleTeleopDurationSeconds ?? 135,
               stageParentTag,
               width: scaleWidth(item.width),
               height: scaleHeight(item.height),
@@ -5033,6 +5534,24 @@ export default function EditorPage() {
             cover: {
               teamSide: item.teamSide,
               visible: item.coverVisible !== false,
+              x1: scaleX(x1),
+              y1: scaleY(y1),
+              x2: scaleX(x2),
+              y2: scaleY(y2),
+            },
+          };
+        }
+        case "start-position": {
+          const x1 = item.x;
+          const y1 = item.y;
+          const x2 = item.x + item.width;
+          const y2 = item.y + item.height;
+          return {
+            "start-position": {
+              teamSide: item.teamSide,
+              label: item.label || "Start Position",
+              visible: item.startPositionVisible !== false,
+              stageParentTag,
               x1: scaleX(x1),
               y1: scaleY(y1),
               x2: scaleX(x2),
@@ -6911,6 +7430,14 @@ export default function EditorPage() {
           return;
         }
 
+        if (
+          data.assetKind === "start-position" &&
+          items.some((item) => item.kind === "start-position")
+        ) {
+          resetDragState();
+          return;
+        }
+
         let x = finalLeft - canvasRect.left + palettePointerOffset.x;
         let y = finalTop - canvasRect.top + palettePointerOffset.y;
 
@@ -6979,9 +7506,14 @@ export default function EditorPage() {
         const mirrorWidth = Math.max(1, Math.abs(mirrorEndX - mirrorStartX));
         const mirrorHeight = Math.max(1, Math.abs(mirrorEndY - mirrorStartY));
 
-        setItems((prev) => [
-          ...prev,
-          {
+        setItems((prev) => {
+          const synchronizedMovementDirection = normalizeMovementDirection(
+            prev.find((item) => item.kind === "movement")?.movementDirection ?? "left"
+          );
+
+          return [
+            ...prev,
+            {
             id: newId,
             x: isNewMirror ? mirrorLeft : x,
             y: isNewMirror ? mirrorTop : y,
@@ -6991,7 +7523,8 @@ export default function EditorPage() {
             kind,
             tag: "",
             iconName: kind === "icon" ? "Bot" : undefined,
-            movementDirection: kind === "movement" ? "left" : undefined,
+            movementDirection:
+              kind === "movement" ? synchronizedMovementDirection : undefined,
             outlineColor: kind === "icon" ? "#ffffff" : undefined,
             fillColor: kind === "icon" ? "transparent" : undefined,
             buttonPressMode:
@@ -7008,10 +7541,12 @@ export default function EditorPage() {
             matchSelectValue:
               kind === "match-select" ? MATCH_SELECT_MIN_VALUE : undefined,
             toggleOn: kind === "toggle" ? false : undefined,
+            toggleStyle: kind === "toggle" ? "switch" : undefined,
             toggleTextAlign: kind === "toggle" ? "center" : undefined,
             toggleTextSize: kind === "toggle" ? 10 : undefined,
             autoToggleMode: kind === "auto-toggle" ? "auto" : undefined,
             autoToggleDurationSeconds: kind === "auto-toggle" ? 15 : undefined,
+            autoToggleTeleopDurationSeconds: kind === "auto-toggle" ? 135 : undefined,
             teamSide:
               isCustomSideLayoutsEnabled && kind !== "mirror"
                 ? editorTeamSide
@@ -7020,8 +7555,10 @@ export default function EditorPage() {
             swapActiveSide: kind === "swap" ? "left" : undefined,
             stageParentId: stagingParentId ?? undefined,
             coverVisible: kind === "cover" ? true : undefined,
-          },
-        ]);
+            startPositionVisible: kind === "start-position" ? true : undefined,
+            },
+          ];
+        });
         setSelectedItemId(newId);
         setSelectedItemIds([newId]);
         resetDragState();
@@ -7053,6 +7590,8 @@ export default function EditorPage() {
     setPreviewInputValues({});
     setPreviewTeamSelectValues({});
     setPreviewMatchSelectValues({});
+    setPreviewStartPositions({});
+    setHiddenPreviewStartPositionIds({});
     previewHoldStartByIdRef.current = {};
     clearPreviewHoldInterval();
     setPreviewHoldDurationsById({});
@@ -7437,6 +7976,13 @@ export default function EditorPage() {
     return (swapItem.swapActiveSide ?? "left") !== (swapItem.swapRedSide ?? "left");
   }, [renderedLayeredVisibleItems]);
 
+  const startPositionColorSide: TeamSide =
+    isCustomSideLayoutsEnabled
+      ? currentVisibleTeamSide
+      : isSwapMirrored
+        ? "blue"
+        : "red";
+
   return (
     <DndContext
       sensors={sensors}
@@ -7508,6 +8054,8 @@ export default function EditorPage() {
                       setPreviewInputValues({});
                       setPreviewTeamSelectValues({});
                       setPreviewMatchSelectValues({});
+                      setPreviewStartPositions({});
+                      setHiddenPreviewStartPositionIds({});
                       setPreviewLogText("");
                     } else {
                       setIsPreviewSwapMirrored(false);
@@ -7520,6 +8068,8 @@ export default function EditorPage() {
                       setPreviewInputValues({});
                       setPreviewTeamSelectValues({});
                       setPreviewMatchSelectValues({});
+                      setPreviewStartPositions({});
+                      setHiddenPreviewStartPositionIds({});
                       setPreviewLogText("");
                     }
                     return next;
@@ -7751,6 +8301,14 @@ export default function EditorPage() {
                 {matchesAssetSearch(["cover", "overlay"]) ? (
                   <PaletteCoverButton onPalettePointerDown={handlePalettePointerDown} />
                 ) : null}
+                {matchesAssetSearch(["start", "position", "spawn", "tap"]) ? (
+                  <PaletteStartPositionButton
+                    onPalettePointerDown={handlePalettePointerDown}
+                    hasAsset={hasStartPositionAsset}
+                    isVisible={isStartPositionAssetVisible}
+                    onToggleVisibility={handleStartPositionVisibilityToggle}
+                  />
+                ) : null}
                 {matchesAssetSearch(["swap", "side", "layout"]) ? (
                   <PaletteSwapButton onPalettePointerDown={handlePalettePointerDown} />
                 ) : null}
@@ -7902,6 +8460,19 @@ export default function EditorPage() {
                         onResizeStart={handleResizeStart}
                         onSelect={handleCanvasItemSelect}
                         onPreviewExitStage={handlePreviewStageExit}
+                        snapOffset={snapOffset}
+                        isPreviewMode={isEditorReadOnly}
+                      />
+                    ) : item.kind === "start-position" ? (
+                      <MemoCanvasStartPosition
+                        key={item.id}
+                        item={item}
+                        onResizeStart={handleResizeStart}
+                        onSelect={handleCanvasItemSelect}
+                        onPreviewTap={handlePreviewStartPositionTap}
+                        previewPosition={previewStartPositions[item.id]}
+                        isPreviewHidden={Boolean(hiddenPreviewStartPositionIds[item.id])}
+                        visibleTeamSide={startPositionColorSide}
                         snapOffset={snapOffset}
                         isPreviewMode={isEditorReadOnly}
                       />
@@ -8243,7 +8814,7 @@ export default function EditorPage() {
                   >
                     {selectedIsStagingRoot ? "End staging" : "Add stage"}
                   </Button>
-                  {selectedItem && selectedHasStagedChildren ? (
+                  {selectedItem && (selectedHasStagedChildren || selectedIsStagingRoot) ? (
                     <div className="grid gap-2 rounded-md border border-white/10 bg-slate-900/70 px-3 py-3">
                       <div className="flex items-center justify-between gap-3">
                         <div className="grid gap-0.5">
@@ -8271,6 +8842,21 @@ export default function EditorPage() {
                           checked={selectedItem?.stageBlurBackgroundOnClick ?? false}
                           onCheckedChange={handleSelectedStageBlurBackgroundOnClickChange}
                           aria-label="Blur background on click"
+                        />
+                      </div>
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="grid gap-0.5">
+                          <Label className="text-xs text-white/80">
+                            Hide other elements in stage
+                          </Label>
+                          <p className="text-[11px] text-white/60">
+                            Only show this parent and staged children while the stage is open.
+                          </p>
+                        </div>
+                        <Switch
+                          checked={selectedItem?.stageHideOtherElementsInStage ?? false}
+                          onCheckedChange={handleSelectedStageHideOtherElementsInStageChange}
+                          aria-label="Hide other elements in stage"
                         />
                       </div>
                     </div>
@@ -8378,6 +8964,25 @@ export default function EditorPage() {
                   When visible, cover uses preview styling and appears in completed/preview mode.
                 </div>
               </div>
+            ) : selectedItem?.kind === "start-position" ? (
+              <div className="grid gap-4">
+                <div className="grid gap-2">
+                  <Label htmlFor="start-position-name" className="text-sm text-white/80">
+                    Label
+                  </Label>
+                  <Input
+                    id="start-position-name"
+                    value={selectedItem.label}
+                    onChange={(event) => handleSelectedLabelChange(event.target.value)}
+                    placeholder="Start Position"
+                    className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
+                  />
+                </div>
+                <div className="rounded-md border border-white/10 bg-slate-900/80 px-3 py-2 text-xs text-white/70">
+                  In preview, scouts tap inside this area to mark where the robot starts.
+                  The marker auto-hides once auto mode is started.
+                </div>
+              </div>
             ) : selectedItem?.kind === "toggle" ? (
               <div className="grid gap-4">
                 <div className="grid gap-2">
@@ -8411,40 +9016,47 @@ export default function EditorPage() {
                     type="button"
                     role="switch"
                     aria-checked={Boolean(selectedItem.toggleOn)}
-                    className={`relative inline-flex h-10 w-20 items-center rounded-full border px-1 transition-colors ${
+                    className={`inline-flex h-11 w-11 items-center justify-center rounded-md border transition-colors ${
                       selectedItem.toggleOn
-                        ? "border-sky-300/50 bg-sky-400/35"
+                        ? "border-emerald-300/60 bg-emerald-500/20 text-emerald-200"
                         : "border-white/20 bg-slate-800/80"
                     }`}
                     onClick={() => handleSelectedToggleStateChange(!selectedItem.toggleOn)}
                   >
-                    <span
-                      className={`inline-block h-7 w-7 rounded-full bg-white transition-transform ${
-                        selectedItem.toggleOn ? "translate-x-10" : "translate-x-0"
-                      }`}
-                    />
+                    {selectedItem.toggleOn ? (
+                      <Check className="h-5 w-5" />
+                    ) : (
+                      <X className="h-5 w-5" />
+                    )}
                   </button>
                 </div>
                 <div className="grid gap-2">
-                  <Label className="text-sm text-white/80">Text alignment</Label>
-                  <div className="grid grid-cols-3 gap-2">
-                    {(["left", "center", "right"] as const).map((align) => (
-                      <Button
-                        key={align}
-                        variant="outline"
-                        type="button"
-                        className={`h-9 border-white/10 bg-slate-900 text-xs text-white hover:bg-slate-800 ${
-                          (selectedItem.toggleTextAlign ?? "center") === align
-                            ? "ring-1 ring-blue-400/70"
-                            : ""
-                        }`}
-                        onClick={() => handleSelectedToggleTextAlignChange(align)}
-                      >
-                        {align === "center"
-                          ? "Middle"
-                          : align[0].toUpperCase() + align.slice(1)}
-                      </Button>
-                    ))}
+                  <Label className="text-sm text-white/80">Toggle style</Label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button
+                      variant="outline"
+                      type="button"
+                      className={`h-9 border-white/10 bg-slate-900 text-xs text-white hover:bg-slate-800 ${
+                        normalizeToggleStyle(selectedItem.toggleStyle) === "switch"
+                          ? "ring-1 ring-blue-400/70"
+                          : ""
+                      }`}
+                      onClick={() => handleSelectedToggleStyleChange("switch")}
+                    >
+                      Switch
+                    </Button>
+                    <Button
+                      variant="outline"
+                      type="button"
+                      className={`h-9 border-white/10 bg-slate-900 text-xs text-white hover:bg-slate-800 ${
+                        normalizeToggleStyle(selectedItem.toggleStyle) === "box"
+                          ? "ring-1 ring-blue-400/70"
+                          : ""
+                      }`}
+                      onClick={() => handleSelectedToggleStyleChange("box")}
+                    >
+                      Box
+                    </Button>
                   </div>
                 </div>
                 <div className="grid gap-2">
@@ -8480,6 +9092,24 @@ export default function EditorPage() {
                     value={selectedItem.autoToggleDurationSeconds ?? 15}
                     onChange={(event) =>
                       handleSelectedAutoToggleTimerChange(
+                        Number(event.target.value) || 0,
+                      )
+                    }
+                    className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="auto-toggle-teleop-timer" className="text-sm text-white/80">
+                    Teleop time (seconds)
+                  </Label>
+                  <Input
+                    id="auto-toggle-teleop-timer"
+                    type="number"
+                    min={0}
+                    step={1}
+                    value={selectedItem.autoToggleTeleopDurationSeconds ?? 135}
+                    onChange={(event) =>
+                      handleSelectedAutoToggleTeleopTimerChange(
                         Number(event.target.value) || 0,
                       )
                     }
@@ -8791,7 +9421,7 @@ export default function EditorPage() {
                   >
                     {selectedIsStagingRoot ? "End staging" : "Add stage"}
                   </Button>
-                  {selectedItem && selectedHasStagedChildren ? (
+                  {selectedItem && (selectedHasStagedChildren || selectedIsStagingRoot) ? (
                     <div className="grid gap-2 rounded-md border border-white/10 bg-slate-900/70 px-3 py-3">
                       <div className="flex items-center justify-between gap-3">
                         <div className="grid gap-0.5">
@@ -8819,6 +9449,21 @@ export default function EditorPage() {
                           checked={selectedItem?.stageBlurBackgroundOnClick ?? false}
                           onCheckedChange={handleSelectedStageBlurBackgroundOnClickChange}
                           aria-label="Blur background on click"
+                        />
+                      </div>
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="grid gap-0.5">
+                          <Label className="text-xs text-white/80">
+                            Hide other elements in stage
+                          </Label>
+                          <p className="text-[11px] text-white/60">
+                            Only show this parent and staged children while the stage is open.
+                          </p>
+                        </div>
+                        <Switch
+                          checked={selectedItem?.stageHideOtherElementsInStage ?? false}
+                          onCheckedChange={handleSelectedStageHideOtherElementsInStageChange}
+                          aria-label="Hide other elements in stage"
                         />
                       </div>
                     </div>
@@ -9017,6 +9662,27 @@ export default function EditorPage() {
                 <div
                   className="h-full w-full rounded-md border border-dashed border-white/50 bg-white/5"
                 />
+              ) : activeKind === "start-position" ? (
+                <div
+                  className={`relative h-full w-full rounded-md border border-dashed ${
+                    startPositionColorSide === "red"
+                      ? "border-red-300/50 bg-red-400/10"
+                      : "border-blue-300/50 bg-blue-400/10"
+                  }`}
+                >
+                  <span
+                    className={`absolute left-1/2 top-1/2 h-6 w-6 -translate-x-1/2 -translate-y-1/2 rounded-full border ${
+                      startPositionColorSide === "red"
+                        ? "border-red-100/70"
+                        : "border-blue-100/70"
+                    }`}
+                  />
+                  <span
+                    className={`absolute left-1/2 top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full ${
+                      startPositionColorSide === "red" ? "bg-red-300" : "bg-blue-300"
+                    }`}
+                  />
+                </div>
               ) : activeKind === "input" ? (
                 <div className="flex h-full w-full flex-col gap-2">
                   <div className="text-xs text-white/80">Input label</div>
