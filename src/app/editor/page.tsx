@@ -76,8 +76,38 @@ const MATCH_SELECT_SIZE = { width: 220, height: 44 } as const;
 const TOGGLE_SIZE = { width: 52, height: 28 } as const;
 const AUTO_TOGGLE_SIZE = { width: 180, height: 40 } as const;
 const LOG_SIZE = { width: 280, height: 120 } as const;
-const TEAM_SELECT_OPTION_COUNT = 6;
-const TEAM_SELECT_OPTION_LABEL = "9999";
+const TEAM_SELECT_OPTIONS = [
+  {
+    value: "b1",
+    label: "B1",
+    chipClassName: "border-blue-400/50 bg-blue-500/20 text-blue-100",
+  },
+  {
+    value: "b2",
+    label: "B2",
+    chipClassName: "border-blue-400/50 bg-blue-500/20 text-blue-100",
+  },
+  {
+    value: "b3",
+    label: "B3",
+    chipClassName: "border-blue-400/50 bg-blue-500/20 text-blue-100",
+  },
+  {
+    value: "r1",
+    label: "R1",
+    chipClassName: "border-red-400/50 bg-red-500/20 text-red-100",
+  },
+  {
+    value: "r2",
+    label: "R2",
+    chipClassName: "border-red-400/50 bg-red-500/20 text-red-100",
+  },
+  {
+    value: "r3",
+    label: "R3",
+    chipClassName: "border-red-400/50 bg-red-500/20 text-red-100",
+  },
+] as const;
 const MATCH_SELECT_MIN_VALUE = 1;
 const MATCH_SELECT_MAX_VALUE = 999;
 const FIELD_HEIGHT = 560;
@@ -173,6 +203,8 @@ type CanvasItem = {
   placeholder?: string;
   inputValueMode?: InputValueMode;
   teamSelectValue?: string;
+  teamSelectLinkToStage?: boolean;
+  teamSelectAlwaysShowStagedElements?: boolean;
   matchSelectValue?: number;
   toggleOn?: boolean;
   toggleStyle?: ToggleStyle;
@@ -266,9 +298,20 @@ const getDefaultLabelForKind = (kind: AssetKind) =>
                   const isMassDragExcludedKind = (kind: AssetKind) =>
                     kind === "cover" || kind === "start-position" || kind === "mirror";
 
-const getTeamSelectOptionValue = (index: number) => `team-option-${index + 1}`;
+const getTeamSelectOption = (value: string) =>
+  TEAM_SELECT_OPTIONS.find((option) => option.value === value);
 
-const getDefaultTeamSelectOptionValue = () => getTeamSelectOptionValue(0);
+const getDefaultTeamSelectOptionValue = () => TEAM_SELECT_OPTIONS[0].value;
+
+const isStageableRootItem = (item: CanvasItem | null | undefined) => {
+  if (!item) return false;
+  return (
+    item.kind === "text" ||
+    item.kind === "icon" ||
+    item.kind === "movement" ||
+    (item.kind === "team-select" && item.teamSelectLinkToStage === true)
+  );
+};
 
 const clampMatchSelectValue = (value: number) =>
   Math.max(MATCH_SELECT_MIN_VALUE, Math.min(MATCH_SELECT_MAX_VALUE, value));
@@ -526,6 +569,14 @@ const fromPersistedItem = (
   return {
     ...(value as Omit<CanvasItem, "kind">),
       kind: resolvedKind,
+      teamSelectLinkToStage:
+        resolvedKind === "team-select"
+          ? normalizeStageParentOption(value.teamSelectLinkToStage)
+          : undefined,
+      teamSelectAlwaysShowStagedElements:
+        resolvedKind === "team-select"
+          ? normalizeStageParentOption(value.teamSelectAlwaysShowStagedElements)
+          : undefined,
       buttonPressMode:
         resolvedKind === "text" || resolvedKind === "icon"
           ? normalizeButtonPressMode(value.buttonPressMode)
@@ -951,6 +1002,10 @@ const parseImportedEditorState = (
         width,
         height,
         label: typeof data.label === "string" ? data.label : "Drop Down",
+        teamSelectLinkToStage: normalizeStageParentOption(data.linkEachTeamToStage),
+        teamSelectAlwaysShowStagedElements: normalizeStageParentOption(
+          data.showStageWithoutSelection
+        ),
         tag,
         teamSide: toTeamSide(data.teamSide),
       };
@@ -2215,7 +2270,7 @@ function CanvasStartPosition({
   item: CanvasItem;
   onResizeStart: (event: React.PointerEvent, item: CanvasItem) => void;
   onSelect: (itemId: string, options?: { append?: boolean }) => void;
-  onPreviewTap: (itemId: string, xRatio: number, yRatio: number) => void;
+  onPreviewTap: (item: CanvasItem, xRatio: number, yRatio: number) => void;
   previewPosition?: { xRatio: number; yRatio: number };
   isPreviewHidden?: boolean;
   visibleTeamSide: TeamSide;
@@ -2277,7 +2332,7 @@ function CanvasStartPosition({
           const rect = event.currentTarget.getBoundingClientRect();
           const xRatio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
           const yRatio = Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height));
-          onPreviewTap(item.id, xRatio, yRatio);
+          onPreviewTap(item, xRatio, yRatio);
           event.stopPropagation();
           return;
         }
@@ -2431,6 +2486,8 @@ function CanvasTeamSelect({
   onResizeStart,
   onPreviewValueChange,
   onSelect,
+  onStageContextMenu,
+  hasStages,
   previewValue,
   snapOffset,
   isPreviewMode,
@@ -2439,6 +2496,8 @@ function CanvasTeamSelect({
   onResizeStart: (event: React.PointerEvent, item: CanvasItem) => void;
   onPreviewValueChange: (item: CanvasItem, value: string) => void;
   onSelect: (itemId: string, options?: { append?: boolean }) => void;
+  onStageContextMenu: (itemId: string) => void;
+  hasStages: boolean;
   previewValue: string;
   snapOffset?: { x: number; y: number };
   isPreviewMode?: boolean;
@@ -2454,14 +2513,7 @@ function CanvasTeamSelect({
   const triggerFontSize = Math.max(7, Math.round(14 * controlScale));
   const triggerIconSize = Math.max(8, Math.round(16 * controlScale));
   const selectedValue = previewValue || getDefaultTeamSelectOptionValue();
-  const options = React.useMemo(
-    () =>
-      Array.from({ length: TEAM_SELECT_OPTION_COUNT }, (_, index) => ({
-        value: getTeamSelectOptionValue(index),
-        label: TEAM_SELECT_OPTION_LABEL,
-      })),
-    []
-  );
+  const selectedOption = getTeamSelectOption(selectedValue);
 
   const style: React.CSSProperties = {
     transform: toDragTransform(true, transform, snapOffset),
@@ -2487,10 +2539,14 @@ function CanvasTeamSelect({
         if (isPreviewMode) return;
         event.preventDefault();
         onSelect(item.id, { append: true });
+        if (hasStages) {
+          onStageContextMenu(item.id);
+        }
       }}
       {...attributes}
       {...listeners}
       data-canvas-item="true"
+      data-stage-root={hasStages ? "true" : undefined}
     >
       <DropdownMenu
         open={isPreviewMode ? open : false}
@@ -2504,11 +2560,15 @@ function CanvasTeamSelect({
             type="button"
             variant="outline"
             size="xs"
-            className="!h-full min-h-0 w-full justify-between rounded-md border-white/20 px-1 !bg-slate-900 text-white hover:!bg-slate-800 disabled:opacity-100"
+            className={`!h-full min-h-0 w-full justify-between rounded-md border px-1 text-white disabled:opacity-100 ${
+              selectedOption?.value.startsWith("b")
+                ? "border-blue-400/35 !bg-blue-950/55 hover:!bg-blue-900/60"
+                : "border-red-400/35 !bg-red-950/55 hover:!bg-red-900/60"
+            }`}
             style={{ fontSize: triggerFontSize }}
             disabled={!isPreviewMode}
           >
-            <span className="truncate">Drop Down</span>
+            <span className="truncate font-semibold">{selectedOption?.label ?? "B1"}</span>
             <ChevronDown
               className="shrink-0 opacity-70"
               style={{ width: triggerIconSize, height: triggerIconSize }}
@@ -2527,11 +2587,11 @@ function CanvasTeamSelect({
             }}
             className="grid gap-2"
           >
-            {options.map((option) => (
+            {TEAM_SELECT_OPTIONS.map((option) => (
               <Label
                 key={option.value}
                 htmlFor={`${item.id}-${option.value}`}
-                className="flex cursor-pointer items-center gap-2 rounded-sm px-1 py-1 text-sm text-white/90 hover:bg-white/10"
+                className={`flex cursor-pointer items-center gap-2 rounded-sm border px-2 py-1 text-sm hover:bg-white/10 ${option.chipClassName}`}
               >
                 <RadioGroupItem id={`${item.id}-${option.value}`} value={option.value} />
                 {option.label}
@@ -2540,6 +2600,11 @@ function CanvasTeamSelect({
           </RadioGroup>
         </DropdownMenuContent>
       </DropdownMenu>
+      {hasStages ? (
+        <span className="pointer-events-none absolute -right-1 -top-1 inline-flex h-4 w-4 items-center justify-center rounded-full bg-slate-800 text-sky-300">
+          <ChevronDown className="h-3 w-3" />
+        </span>
+      ) : null}
       {!isPreviewMode ? (
         <span
           role="presentation"
@@ -3523,7 +3588,22 @@ export default function EditorPage() {
       });
     }
 
-    const baseItems = sideScopedItems.filter((item) => !item.stageParentId);
+    const alwaysVisibleTeamStageRootIds = new Set(
+      sideScopedItems
+        .filter(
+          (item) =>
+            item.kind === "team-select" &&
+            item.teamSelectLinkToStage === true &&
+            item.teamSelectAlwaysShowStagedElements === true &&
+            sideScopedItems.some((entry) => entry.stageParentId === item.id)
+        )
+        .map((item) => item.id)
+    );
+
+    const baseItems = sideScopedItems.filter(
+      (item) =>
+        !item.stageParentId || alwaysVisibleTeamStageRootIds.has(item.stageParentId)
+    );
 
     if (isEditorReadOnly) {
       return baseItems.filter(
@@ -3871,6 +3951,34 @@ export default function EditorPage() {
     [items, selectedItemId]
   );
 
+  const getLinkedTeamStageRootId = React.useCallback(
+    (item: CanvasItem): string | null => {
+      let currentParentId = item.stageParentId;
+      while (currentParentId) {
+        const parent = items.find((entry) => entry.id === currentParentId);
+        if (!parent) return null;
+        if (parent.kind === "team-select" && parent.teamSelectLinkToStage) {
+          return parent.id;
+        }
+        currentParentId = parent.stageParentId;
+      }
+      return null;
+    },
+    [items]
+  );
+
+  const getScopedPreviewKey = React.useCallback(
+    (item: CanvasItem, baseKey: string) => {
+      const linkedTeamStageRootId = getLinkedTeamStageRootId(item);
+      if (!linkedTeamStageRootId) return baseKey;
+      const selectedTeamValue =
+        previewTeamSelectValues[linkedTeamStageRootId] ??
+        getDefaultTeamSelectOptionValue();
+      return `${baseKey}::${linkedTeamStageRootId}::${selectedTeamValue}`;
+    },
+    [getLinkedTeamStageRootId, previewTeamSelectValues]
+  );
+
   const stageRootIds = React.useMemo(() => {
     return new Set(
       items
@@ -3891,11 +3999,7 @@ export default function EditorPage() {
     [items]
   );
 
-  const selectedIsStageableRoot =
-    Boolean(selectedItem) &&
-    (selectedItem?.kind === "text" ||
-      selectedItem?.kind === "icon" ||
-      selectedItem?.kind === "movement");
+  const selectedIsStageableRoot = selectedItem ? isStageableRootItem(selectedItem) : false;
 
   const selectedHasStagedChildren = Boolean(selectedItem?.id) &&
     items.some((item) => item.stageParentId === selectedItem?.id);
@@ -4284,13 +4388,46 @@ export default function EditorPage() {
     [selectedItemId]
   );
 
+  const handleSelectedTeamSelectLinkToStageChange = React.useCallback(
+    (value: boolean) => {
+      if (!selectedItemId) return;
+      setItems((prev) =>
+        prev.map((item) =>
+          item.id === selectedItemId && item.kind === "team-select"
+            ? {
+                ...item,
+                teamSelectLinkToStage: value,
+              }
+            : item
+        )
+      );
+    },
+    [selectedItemId]
+  );
+
+  const handleSelectedTeamSelectAlwaysShowStageChange = React.useCallback(
+    (value: boolean) => {
+      if (!selectedItemId) return;
+      setItems((prev) =>
+        prev.map((item) =>
+          item.id === selectedItemId && item.kind === "team-select"
+            ? {
+                ...item,
+                teamSelectAlwaysShowStagedElements: value,
+              }
+            : item
+        )
+      );
+    },
+    [selectedItemId]
+  );
+
   const handleSelectedStageHideAfterSelectionChange = React.useCallback(
     (value: boolean) => {
       if (!selectedItemId) return;
       setItems((prev) =>
         prev.map((item) =>
-          item.id === selectedItemId &&
-          (item.kind === "text" || item.kind === "icon" || item.kind === "movement")
+          item.id === selectedItemId && isStageableRootItem(item)
             ? {
                 ...item,
                 stageHideAfterSelection: value,
@@ -4307,8 +4444,7 @@ export default function EditorPage() {
       if (!selectedItemId) return;
       setItems((prev) =>
         prev.map((item) =>
-          item.id === selectedItemId &&
-          (item.kind === "text" || item.kind === "icon" || item.kind === "movement")
+          item.id === selectedItemId && isStageableRootItem(item)
             ? {
                 ...item,
                 stageBlurBackgroundOnClick: value,
@@ -4325,8 +4461,7 @@ export default function EditorPage() {
       if (!selectedItemId) return;
       setItems((prev) =>
         prev.map((item) =>
-          item.id === selectedItemId &&
-          (item.kind === "text" || item.kind === "icon" || item.kind === "movement")
+          item.id === selectedItemId && isStageableRootItem(item)
             ? {
                 ...item,
                 stageHideOtherElementsInStage: value,
@@ -4453,16 +4588,17 @@ export default function EditorPage() {
   );
 
   const handlePreviewStartPositionTap = React.useCallback(
-    (itemId: string, xRatio: number, yRatio: number) => {
+    (item: CanvasItem, xRatio: number, yRatio: number) => {
+      const scopedKey = getScopedPreviewKey(item, item.id);
       setPreviewStartPositions((prev) => ({
         ...prev,
-        [itemId]: {
+        [scopedKey]: {
           xRatio: Math.max(0, Math.min(1, xRatio)),
           yRatio: Math.max(0, Math.min(1, yRatio)),
         },
       }));
     },
-    []
+    [getScopedPreviewKey]
   );
 
   const handleStartPositionVisibilityToggle = React.useCallback(() => {
@@ -4535,11 +4671,7 @@ export default function EditorPage() {
 
   const handleStartStaging = React.useCallback(() => {
     if (!selectedItem) return;
-    if (
-      selectedItem.kind !== "text" &&
-      selectedItem.kind !== "icon" &&
-      selectedItem.kind !== "movement"
-    ) {
+    if (!isStageableRootItem(selectedItem)) {
       return;
     }
     enterStagingForItemId(selectedItem.id);
@@ -4553,11 +4685,7 @@ export default function EditorPage() {
     (itemId: string) => {
       const target = items.find((item) => item.id === itemId);
       if (!target) return;
-      if (
-        target.kind !== "text" &&
-        target.kind !== "icon" &&
-        target.kind !== "movement"
-      ) {
+      if (!isStageableRootItem(target)) {
         return;
       }
       if (!items.some((item) => item.stageParentId === itemId)) return;
@@ -4573,11 +4701,7 @@ export default function EditorPage() {
   const handlePreviewStageToggle = React.useCallback((itemId: string) => {
     const target = items.find((item) => item.id === itemId);
     if (!target) return;
-    if (
-      target.kind !== "text" &&
-      target.kind !== "icon" &&
-      target.kind !== "movement"
-    ) {
+    if (!isStageableRootItem(target)) {
       return;
     }
 
@@ -4694,13 +4818,13 @@ export default function EditorPage() {
     (item: CanvasItem, value: string) => {
       const mode = normalizeInputValueMode(item.inputValueMode);
       const sanitizedValue = sanitizeInputValueByMode(value, mode);
-      const key = normalizeTag(item.tag ?? "") || item.id;
+      const key = getScopedPreviewKey(item, normalizeTag(item.tag ?? "") || item.id);
       setPreviewInputValues((prev) => ({
         ...prev,
         [key]: sanitizedValue,
       }));
     },
-    []
+    [getScopedPreviewKey]
   );
 
   const handlePreviewTeamSelectChange = React.useCallback(
@@ -4710,19 +4834,26 @@ export default function EditorPage() {
         ...prev,
         [key]: value,
       }));
+      if (
+        item.kind === "team-select" &&
+        item.teamSelectLinkToStage === true &&
+        items.some((entry) => entry.stageParentId === item.id)
+      ) {
+        setPreviewStageParentId(item.id);
+      }
     },
-    []
+    [items]
   );
 
   const handlePreviewMatchSelectChange = React.useCallback(
     (item: CanvasItem, value: number) => {
-      const key = item.id;
+      const key = getScopedPreviewKey(item, item.id);
       setPreviewMatchSelectValues((prev) => ({
         ...prev,
         [key]: clampMatchSelectValue(value),
       }));
     },
-    []
+    [getScopedPreviewKey]
   );
 
   const applyEditorSnapshot = React.useCallback(
@@ -4803,6 +4934,7 @@ export default function EditorPage() {
                 : entry.kind === "start-position"
                   ? entry.id
                 : normalizeTag(entry.tag ?? "") || entry.id;
+            const scopedInputKey = getScopedPreviewKey(entry, inputKey);
             const outputKey =
               entry.kind === "team-select"
                 ? "Drop Down"
@@ -4816,18 +4948,18 @@ export default function EditorPage() {
                 ? previewTeamSelectValues[inputKey] ?? getDefaultTeamSelectOptionValue()
                 : entry.kind === "match-select"
                   ? String(
-                      previewMatchSelectValues[inputKey] ??
+                      previewMatchSelectValues[scopedInputKey] ??
                         clampMatchSelectValue(
                           entry.matchSelectValue ?? MATCH_SELECT_MIN_VALUE
                         )
                     )
                 : entry.kind === "start-position"
-                  ? previewStartPositions[inputKey]
-                    ? `${Math.round(previewStartPositions[inputKey].xRatio * 100)}%, ${Math.round(
-                        previewStartPositions[inputKey].yRatio * 100
+                  ? previewStartPositions[scopedInputKey]
+                    ? `${Math.round(previewStartPositions[scopedInputKey].xRatio * 100)}%, ${Math.round(
+                        previewStartPositions[scopedInputKey].yRatio * 100
                       )}%`
                     : "Not marked"
-                : previewInputValues[inputKey] ?? "";
+                : previewInputValues[scopedInputKey] ?? "";
             return accumulator;
           }, {});
 
@@ -4837,6 +4969,7 @@ export default function EditorPage() {
     [
       items,
       previewInputValues,
+      getScopedPreviewKey,
       previewMatchSelectValues,
       previewStartPositions,
       previewTeamSelectValues,
@@ -5303,11 +5436,35 @@ export default function EditorPage() {
     const tagById = new Map(
       items.map((item) => [item.id, normalizeTag(item.tag ?? "")] as const)
     );
+    const itemById = new Map(items.map((item) => [item.id, item] as const));
     const stagedParentIds = new Set(
       items
         .map((item) => item.stageParentId)
         .filter((value): value is string => Boolean(value))
     );
+
+    const resolveTeamSelectStageRootId = (item: CanvasItem): string | null => {
+      let currentParentId = item.stageParentId;
+      while (currentParentId) {
+        const parent = itemById.get(currentParentId);
+        if (!parent) return null;
+        if (parent.kind === "team-select" && parent.teamSelectLinkToStage === true) {
+          return parent.id;
+        }
+        currentParentId = parent.stageParentId;
+      }
+      return null;
+    };
+
+    const getExportTagVariants = (item: CanvasItem, rawTag: string | undefined) => {
+      const baseTag = normalizeTag(rawTag ?? "");
+      if (!baseTag) return [baseTag];
+
+      const linkedTeamSelectStageRootId = resolveTeamSelectStageRootId(item);
+      if (!linkedTeamSelectStageRootId) return [baseTag];
+
+      return TEAM_SELECT_OPTIONS.map((option) => `${baseTag}-${option.value}`);
+    };
 
     const taggedItems = items.filter((item) =>
       ["text", "icon", "movement", "input", "toggle"].includes(item.kind)
@@ -5339,19 +5496,20 @@ export default function EditorPage() {
     const scaleHeight = (value: number) =>
       normalize(clampToRange((value / serializationCanvasHeight) * 100));
 
-    const payload = items.map((item) => {
+    const payload = items.flatMap((item) => {
       const centerItemX = item.x + item.width / 2;
       const centerItemY = item.y + item.height / 2;
       const stageParentTag = item.stageParentId
         ? tagById.get(item.stageParentId) ?? ""
         : "";
       const hasStageChildren = stagedParentIds.has(item.id);
+      const tagVariants = getExportTagVariants(item, item.tag);
 
       switch (item.kind) {
         case "text":
-          return {
+          return tagVariants.map((tag) => ({
             button: {
-              tag: item.tag ?? "",
+              tag,
               teamSide: item.teamSide,
               pressMode: normalizeButtonPressMode(item.buttonPressMode),
               increment: item.increment ?? 1,
@@ -5366,12 +5524,12 @@ export default function EditorPage() {
               width: scaleWidth(item.width),
               height: scaleHeight(item.height),
             },
-          };
+          }));
         case "undo":
         case "redo":
         case "submit":
         case "reset":
-          return {
+          return [{
             button: {
               teamSide: item.teamSide,
               action: item.kind,
@@ -5381,11 +5539,11 @@ export default function EditorPage() {
               width: scaleWidth(item.width),
               height: scaleHeight(item.height),
             },
-          };
+          }];
         case "icon":
-          return {
+          return tagVariants.map((tag) => ({
             "icon-button": {
-              tag: item.tag ?? "",
+              tag,
               teamSide: item.teamSide,
               pressMode: normalizeButtonPressMode(item.buttonPressMode),
               increment: item.increment ?? 1,
@@ -5402,11 +5560,11 @@ export default function EditorPage() {
               width: scaleWidth(item.width),
               height: scaleHeight(item.height),
             },
-          };
+          }));
         case "movement":
-          return {
+          return tagVariants.map((tag) => ({
             "movement-button": {
-              tag: item.tag ?? "",
+              tag,
               teamSide: item.teamSide,
               x: scaleX(centerItemX),
               y: scaleY(centerItemY),
@@ -5421,11 +5579,11 @@ export default function EditorPage() {
               width: scaleWidth(item.width),
               height: scaleHeight(item.height),
             },
-          };
+          }));
         case "input":
-          return {
+          return tagVariants.map((tag) => ({
             "text-input": {
-              tag: item.tag ?? "",
+              tag,
               teamSide: item.teamSide,
               x: scaleX(centerItemX),
               y: scaleY(centerItemY),
@@ -5436,24 +5594,27 @@ export default function EditorPage() {
               width: scaleWidth(item.width),
               height: scaleHeight(item.height),
             },
-          };
+          }));
         case "team-select": {
-          return {
+          return [{
             "team-select": {
               teamSide: item.teamSide,
               x: scaleX(centerItemX),
               y: scaleY(centerItemY),
               label: "Drop Down",
+              linkEachTeamToStage: item.teamSelectLinkToStage === true,
+              showStageWithoutSelection:
+                item.teamSelectAlwaysShowStagedElements === true,
               stageParentTag,
               width: scaleWidth(item.width),
               height: scaleHeight(item.height),
             },
-          };
+          }];
         }
         case "match-select":
-          return {
+          return tagVariants.map((tag) => ({
             "match-select": {
-              tag: item.tag ?? "",
+              tag,
               teamSide: item.teamSide,
               x: scaleX(centerItemX),
               y: scaleY(centerItemY),
@@ -5465,11 +5626,11 @@ export default function EditorPage() {
               width: scaleWidth(item.width),
               height: scaleHeight(item.height),
             },
-          };
+          }));
         case "toggle":
-          return {
+          return tagVariants.map((tag) => ({
             "toggle-switch": {
-              tag: item.tag ?? "",
+              tag,
               teamSide: item.teamSide,
               x: scaleX(centerItemX),
               y: scaleY(centerItemY),
@@ -5482,9 +5643,9 @@ export default function EditorPage() {
               width: scaleWidth(item.width),
               height: scaleHeight(item.height),
             },
-          };
+          }));
         case "auto-toggle":
-          return {
+          return [{
             "auto-toggle": {
               teamSide: item.teamSide,
               x: scaleX(centerItemX),
@@ -5497,23 +5658,23 @@ export default function EditorPage() {
               width: scaleWidth(item.width),
               height: scaleHeight(item.height),
             },
-          };
+          }];
         case "mirror": {
           const startX = item.startX ?? item.x;
           const startY = item.startY ?? item.y;
           const endX = item.endX ?? item.x + item.width;
           const endY = item.endY ?? item.y + item.height;
-          return {
+          return [{
             "mirror-line": {
               x1: scaleX(startX),
               y1: scaleY(startY),
               x2: scaleX(endX),
               y2: scaleY(endY),
             },
-          };
+          }];
         }
         case "swap":
-          return {
+          return [{
             "swap-sides": {
               teamSide: item.teamSide,
               x: scaleX(centerItemX),
@@ -5524,13 +5685,13 @@ export default function EditorPage() {
               width: scaleWidth(item.width),
               height: scaleHeight(item.height),
             },
-          };
+          }];
         case "cover": {
           const x1 = item.x;
           const y1 = item.y;
           const x2 = item.x + item.width;
           const y2 = item.y + item.height;
-          return {
+          return [{
             cover: {
               teamSide: item.teamSide,
               visible: item.coverVisible !== false,
@@ -5539,14 +5700,14 @@ export default function EditorPage() {
               x2: scaleX(x2),
               y2: scaleY(y2),
             },
-          };
+          }];
         }
         case "start-position": {
           const x1 = item.x;
           const y1 = item.y;
           const x2 = item.x + item.width;
           const y2 = item.y + item.height;
-          return {
+          return [{
             "start-position": {
               teamSide: item.teamSide,
               label: item.label || "Start Position",
@@ -5557,10 +5718,10 @@ export default function EditorPage() {
               x2: scaleX(x2),
               y2: scaleY(y2),
             },
-          };
+          }];
         }
         case "log":
-          return {
+          return [{
             "log-view": {
               teamSide: item.teamSide,
               x: scaleX(centerItemX),
@@ -5569,15 +5730,13 @@ export default function EditorPage() {
               width: scaleWidth(item.width),
               height: scaleHeight(item.height),
             },
-          };
+          }];
         default:
-          return null;
+          return [];
       }
     });
 
-    const filteredPayload = payload.filter(
-      (entry): entry is NonNullable<typeof entry> => Boolean(entry)
-    );
+    const filteredPayload = payload;
 
     const backgroundPointer = latestUploadId
       ? {
@@ -7538,6 +7697,9 @@ export default function EditorPage() {
             inputValueMode: kind === "input" ? "both" : undefined,
             teamSelectValue:
               kind === "team-select" ? getDefaultTeamSelectOptionValue() : undefined,
+            teamSelectLinkToStage: kind === "team-select" ? false : undefined,
+            teamSelectAlwaysShowStagedElements:
+              kind === "team-select" ? false : undefined,
             matchSelectValue:
               kind === "match-select" ? MATCH_SELECT_MIN_VALUE : undefined,
             toggleOn: kind === "toggle" ? false : undefined,
@@ -8470,7 +8632,9 @@ export default function EditorPage() {
                         onResizeStart={handleResizeStart}
                         onSelect={handleCanvasItemSelect}
                         onPreviewTap={handlePreviewStartPositionTap}
-                        previewPosition={previewStartPositions[item.id]}
+                        previewPosition={
+                          previewStartPositions[getScopedPreviewKey(item, item.id)]
+                        }
                         isPreviewHidden={Boolean(hiddenPreviewStartPositionIds[item.id])}
                         visibleTeamSide={startPositionColorSide}
                         snapOffset={snapOffset}
@@ -8484,7 +8648,14 @@ export default function EditorPage() {
                         onEditInput={handleEditLabel}
                         onPreviewValueChange={handlePreviewInputChange}
                         onSelect={handleCanvasItemSelect}
-                        previewValue={previewInputValues[normalizeTag(item.tag ?? "") || item.id] ?? ""}
+                        previewValue={
+                          previewInputValues[
+                            getScopedPreviewKey(
+                              item,
+                              normalizeTag(item.tag ?? "") || item.id
+                            )
+                          ] ?? ""
+                        }
                         snapOffset={snapOffset}
                         isPreviewMode={isEditorReadOnly}
                       />
@@ -8495,6 +8666,8 @@ export default function EditorPage() {
                         onResizeStart={handleResizeStart}
                         onPreviewValueChange={handlePreviewTeamSelectChange}
                         onSelect={handleCanvasItemSelect}
+                        onStageContextMenu={handleStageContextMenu}
+                        hasStages={stageRootIds.has(item.id)}
                         previewValue={
                           previewTeamSelectValues[item.id] ??
                           getDefaultTeamSelectOptionValue()
@@ -8510,7 +8683,7 @@ export default function EditorPage() {
                         onPreviewValueChange={handlePreviewMatchSelectChange}
                         onSelect={handleCanvasItemSelect}
                         previewValue={
-                          previewMatchSelectValues[item.id] ??
+                          previewMatchSelectValues[getScopedPreviewKey(item, item.id)] ??
                           clampMatchSelectValue(
                             item.matchSelectValue ?? MATCH_SELECT_MIN_VALUE
                           )
@@ -9194,8 +9367,112 @@ export default function EditorPage() {
             ) : selectedItem?.kind === "team-select" ? (
               <div className="grid gap-4">
                 <div className="rounded-md border border-white/10 bg-slate-900/80 px-3 py-2 text-xs text-white/70">
-                  Team Select is a plain dropdown asset and exports as <span className="font-semibold text-white">team-select</span>.
+                  Team Select exports as <span className="font-semibold text-white">team-select</span> with fixed team tabs.
                 </div>
+                <div className="grid grid-cols-3 gap-2">
+                  {TEAM_SELECT_OPTIONS.map((option) => (
+                    <div
+                      key={option.value}
+                      className={`rounded-md border px-2 py-1 text-center text-xs font-semibold uppercase tracking-wide ${option.chipClassName}`}
+                    >
+                      {option.value}
+                    </div>
+                  ))}
+                </div>
+                <div className="flex items-center justify-between gap-3 rounded-md border border-white/10 bg-slate-900/70 px-3 py-3">
+                  <div className="grid gap-0.5">
+                    <Label className="text-xs text-white/80">
+                      Link each team tab to one stage
+                    </Label>
+                    <p className="text-[11px] text-white/60">
+                      Opens the same staged layout for b1-b3/r1-r3, while keeping separate preview data per selected team.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={selectedItem.teamSelectLinkToStage === true}
+                    onCheckedChange={handleSelectedTeamSelectLinkToStageChange}
+                    aria-label="Link team tabs to stage"
+                  />
+                </div>
+                {selectedItem.teamSelectLinkToStage ? (
+                  <div className="grid gap-2">
+                    <Label className="text-sm text-white/80">Staging</Label>
+                    <div className="flex items-center justify-between gap-3 rounded-md border border-white/10 bg-slate-900/70 px-3 py-3">
+                      <div className="grid gap-0.5">
+                        <Label className="text-xs text-white/80">
+                          Show staged elements without click
+                        </Label>
+                        <p className="text-[11px] text-white/60">
+                          Keep this Team Select stage visible at all times, even when the dropdown has not been clicked.
+                        </p>
+                      </div>
+                      <Switch
+                        checked={selectedItem.teamSelectAlwaysShowStagedElements === true}
+                        onCheckedChange={handleSelectedTeamSelectAlwaysShowStageChange}
+                        aria-label="Show staged elements without click"
+                      />
+                    </div>
+                    {(selectedIsStagingRoot || !selectedHasStagedChildren) ? (
+                      <Button
+                        ref={stagingButtonRef}
+                        variant="outline"
+                        type="button"
+                        className="h-10 rounded-lg border-white/15 bg-slate-900/70 text-white hover:bg-slate-800/80"
+                        onClick={selectedIsStagingRoot ? handleEndStaging : handleStartStaging}
+                        disabled={!selectedIsStagingRoot && !selectedIsStageableRoot}
+                      >
+                        {selectedIsStagingRoot ? "End staging" : "Add stage"}
+                      </Button>
+                    ) : null}
+                    {selectedItem && (selectedHasStagedChildren || selectedIsStagingRoot) ? (
+                      <div className="grid gap-2 rounded-md border border-white/10 bg-slate-900/70 px-3 py-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="grid gap-0.5">
+                            <Label className="text-xs text-white/80">Hide after selection</Label>
+                            <p className="text-[11px] text-white/60">
+                              Hide this dropdown while its stage is active in preview.
+                            </p>
+                          </div>
+                          <Switch
+                            checked={selectedItem?.stageHideAfterSelection ?? false}
+                            onCheckedChange={handleSelectedStageHideAfterSelectionChange}
+                            aria-label="Hide after selection"
+                          />
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="grid gap-0.5">
+                            <Label className="text-xs text-white/80">
+                              Blur background on open
+                            </Label>
+                            <p className="text-[11px] text-white/60">
+                              Blur the field while this team stage is open in preview.
+                            </p>
+                          </div>
+                          <Switch
+                            checked={selectedItem?.stageBlurBackgroundOnClick ?? false}
+                            onCheckedChange={handleSelectedStageBlurBackgroundOnClickChange}
+                            aria-label="Blur background on open"
+                          />
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="grid gap-0.5">
+                            <Label className="text-xs text-white/80">
+                              Hide other elements in stage
+                            </Label>
+                            <p className="text-[11px] text-white/60">
+                              Only show this dropdown and its staged children while open.
+                            </p>
+                          </div>
+                          <Switch
+                            checked={selectedItem?.stageHideOtherElementsInStage ?? false}
+                            onCheckedChange={handleSelectedStageHideOtherElementsInStageChange}
+                            aria-label="Hide other elements in stage"
+                          />
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
             ) : selectedItem?.kind === "match-select" ? (
               <div className="grid gap-4">
