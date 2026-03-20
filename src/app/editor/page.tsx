@@ -202,6 +202,7 @@ type CanvasItem = {
   endY?: number;
   placeholder?: string;
   inputValueMode?: InputValueMode;
+  inputIsTextArea?: boolean;
   teamSelectValue?: string;
   teamSelectLinkToStage?: boolean;
   teamSelectAlwaysShowStagedElements?: boolean;
@@ -576,6 +577,10 @@ const fromPersistedItem = (
       teamSelectAlwaysShowStagedElements:
         resolvedKind === "team-select"
           ? normalizeStageParentOption(value.teamSelectAlwaysShowStagedElements)
+          : undefined,
+      inputIsTextArea:
+        resolvedKind === "input"
+          ? normalizeStageParentOption(value.inputIsTextArea)
           : undefined,
       buttonPressMode:
         resolvedKind === "text" || resolvedKind === "icon"
@@ -977,6 +982,7 @@ const parseImportedEditorState = (
         inputValueMode: normalizeInputValueMode(
           data.inputValueMode ?? data.valueType
         ),
+        inputIsTextArea: normalizeStageParentOption(data.multiline),
         tag,
         teamSide: toTeamSide(data.teamSide),
       };
@@ -2418,6 +2424,7 @@ function CanvasInput({
 
   const inputValueMode = normalizeInputValueMode(item.inputValueMode);
   const normalizedPreviewValue = sanitizeInputValueByMode(previewValue, inputValueMode);
+  const isTextArea = item.inputIsTextArea === true;
 
   const style: React.CSSProperties = {
     transform: toDragTransform(true, transform, snapOffset),
@@ -2456,20 +2463,36 @@ function CanvasInput({
       data-canvas-item="true"
     >
       <Label className="text-xs text-white/80">{item.label}</Label>
-      <Input
-        value={isPreviewMode ? normalizedPreviewValue : ""}
-        placeholder={item.placeholder ?? "Enter text"}
-        inputMode={inputValueMode === "numbers" ? "numeric" : "text"}
-        className="h-full"
-        readOnly={!isPreviewMode}
-        onChange={(event) => {
-          if (!isPreviewMode) return;
-          onPreviewValueChange(
-            item,
-            sanitizeInputValueByMode(event.target.value, inputValueMode)
-          );
-        }}
-      />
+      {isTextArea ? (
+        <textarea
+          value={isPreviewMode ? normalizedPreviewValue : ""}
+          placeholder={item.placeholder ?? "Enter text"}
+          className="h-full min-h-0 w-full resize-none rounded-md border border-input bg-transparent px-3 py-2 text-base text-white shadow-xs placeholder:text-white/45 outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+          readOnly={!isPreviewMode}
+          onChange={(event) => {
+            if (!isPreviewMode) return;
+            onPreviewValueChange(
+              item,
+              sanitizeInputValueByMode(event.target.value, inputValueMode)
+            );
+          }}
+        />
+      ) : (
+        <Input
+          value={isPreviewMode ? normalizedPreviewValue : ""}
+          placeholder={item.placeholder ?? "Enter text"}
+          inputMode={inputValueMode === "numbers" ? "numeric" : "text"}
+          className="h-full"
+          readOnly={!isPreviewMode}
+          onChange={(event) => {
+            if (!isPreviewMode) return;
+            onPreviewValueChange(
+              item,
+              sanitizeInputValueByMode(event.target.value, inputValueMode)
+            );
+          }}
+        />
+      )}
       {!isPreviewMode ? (
         <span
           role="presentation"
@@ -4200,6 +4223,23 @@ export default function EditorPage() {
     [selectedItemId]
   );
 
+  const handleSelectedInputTextAreaModeChange = React.useCallback(
+    (value: boolean) => {
+      if (!selectedItemId) return;
+      setItems((prev) =>
+        prev.map((item) =>
+          item.id === selectedItemId && item.kind === "input"
+            ? {
+                ...item,
+                inputIsTextArea: value,
+              }
+            : item
+        )
+      );
+    },
+    [selectedItemId]
+  );
+
   const handleSelectedIconNameChange = React.useCallback(
     (iconName: string) => {
       if (!selectedItemId) return;
@@ -5496,7 +5536,7 @@ export default function EditorPage() {
     const scaleHeight = (value: number) =>
       normalize(clampToRange((value / serializationCanvasHeight) * 100));
 
-    const payload = items.flatMap((item) => {
+    const payload: Record<string, unknown>[] = items.flatMap((item) => {
       const centerItemX = item.x + item.width / 2;
       const centerItemY = item.y + item.height / 2;
       const stageParentTag = item.stageParentId
@@ -5505,7 +5545,8 @@ export default function EditorPage() {
       const hasStageChildren = stagedParentIds.has(item.id);
       const tagVariants = getExportTagVariants(item, item.tag);
 
-      switch (item.kind) {
+      const entries = (() => {
+        switch (item.kind) {
         case "text":
           return tagVariants.map((tag) => ({
             button: {
@@ -5590,6 +5631,7 @@ export default function EditorPage() {
               label: item.label,
               placeholder: item.placeholder ?? "",
               valueType: normalizeInputValueMode(item.inputValueMode),
+              multiline: item.inputIsTextArea === true,
               stageParentTag,
               width: scaleWidth(item.width),
               height: scaleHeight(item.height),
@@ -5733,10 +5775,13 @@ export default function EditorPage() {
           }];
         default:
           return [];
-      }
+        }
+      })();
+
+      return entries as Record<string, unknown>[];
     });
 
-    const filteredPayload = payload;
+    const filteredPayload: Record<string, unknown>[] = payload;
 
     const backgroundPointer = latestUploadId
       ? {
@@ -7695,6 +7740,7 @@ export default function EditorPage() {
             endY: kind === "mirror" ? mirrorEndY : undefined,
             placeholder: kind === "input" ? "Enter text" : undefined,
             inputValueMode: kind === "input" ? "both" : undefined,
+            inputIsTextArea: kind === "input" ? false : undefined,
             teamSelectValue:
               kind === "team-select" ? getDefaultTeamSelectOptionValue() : undefined,
             teamSelectLinkToStage: kind === "team-select" ? false : undefined,
@@ -9349,6 +9395,19 @@ export default function EditorPage() {
                       Both
                     </ToggleGroupItem>
                   </ToggleGroup>
+                </div>
+                <div className="flex items-center justify-between gap-3 rounded-md border border-white/10 bg-slate-900/70 px-3 py-3">
+                  <div className="grid gap-0.5">
+                    <Label className="text-xs text-white/80">Use text area</Label>
+                    <p className="text-[11px] text-white/60">
+                      Allows multiline text and fills available box height.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={selectedItem.inputIsTextArea === true}
+                    onCheckedChange={handleSelectedInputTextAreaModeChange}
+                    aria-label="Use text area"
+                  />
                 </div>
                 <div className="grid gap-2">
                   <Label htmlFor="input-tag-side" className="text-sm text-white/80">
