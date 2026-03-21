@@ -76,6 +76,7 @@ const MATCH_SELECT_SIZE = { width: 220, height: 44 } as const;
 const TOGGLE_SIZE = { width: 52, height: 28 } as const;
 const AUTO_TOGGLE_SIZE = { width: 180, height: 40 } as const;
 const LOG_SIZE = { width: 280, height: 120 } as const;
+const BUTTON_SLIDER_DRAG_DEADZONE_PX = 6;
 const TEAM_SELECT_OPTIONS = [
   {
     value: "b1",
@@ -158,6 +159,7 @@ const ICON_NAMES = Object.keys(ICON_COMPONENTS);
 
 type AssetKind =
   | "text"
+  | "button-slider"
   | "movement"
   | "icon"
   | "mirror"
@@ -214,6 +216,7 @@ type CanvasItem = {
   autoToggleMode?: "auto" | "teleop";
   autoToggleDurationSeconds?: number;
   autoToggleTeleopDurationSeconds?: number;
+  buttonSliderIncreaseDirection?: "left" | "right";
   teamSide?: TeamSide;
   increment?: number;
   swapRedSide?: "left" | "right";
@@ -264,6 +267,8 @@ const getResizeMinSize = (kind: AssetKind) =>
 const getDefaultLabelForKind = (kind: AssetKind) =>
   kind === "icon"
     ? "Bot"
+    : kind === "button-slider"
+      ? "Button Slider"
     : kind === "movement"
       ? "Movement"
     : kind === "mirror"
@@ -337,6 +342,28 @@ const normalizeToggleStyle = (value: unknown): ToggleStyle =>
 const normalizeButtonPressMode = (value: unknown): ButtonPressMode =>
   value === "hold" ? "hold" : "tap";
 
+const normalizeButtonSliderIncreaseDirection = (
+  value: unknown
+): "left" | "right" => (value === "left" ? "left" : "right");
+
+const invertHorizontalDirection = (value: "left" | "right"): "left" | "right" =>
+  value === "left" ? "right" : "left";
+
+const getButtonSliderTickDelayMs = (distanceFromStartPx: number) => {
+  const distance = Math.max(0, Math.min(280, distanceFromStartPx));
+  return Math.max(50, Math.round(320 - distance * 1.2));
+};
+
+const getButtonSliderMultiplier = (signedDistancePx: number) => {
+  const distance = Math.abs(signedDistancePx);
+  if (distance < BUTTON_SLIDER_DRAG_DEADZONE_PX) {
+    return 0;
+  }
+
+  const multiplier = 1 + distance / 80;
+  return Number(Math.max(1, Math.min(9, multiplier)).toFixed(1));
+};
+
 const normalizeMovementDirection = (value: unknown): "left" | "right" =>
   value === "right" || value === ">" ? "right" : "left";
 
@@ -375,6 +402,15 @@ type DragMoveSnapshot = {
   activeData: DragData | undefined;
   initialRect: { left: number; top: number; width: number; height: number } | null;
   translatedRect: { left: number; top: number } | null;
+};
+
+type ButtonSliderDragInfo = {
+  startX: number;
+  currentX: number;
+  signedDistance: number;
+  increaseDirection: "left" | "right";
+  buttonLeft: number;
+  buttonWidth: number;
 };
 
 type PersistedEditorState = {
@@ -488,6 +524,7 @@ const serializeCanvasItem = (
 const normalizeLoadedItemKind = (kind: unknown): AssetKind => {
   if (kind === "button" || kind === "text") return "text";
   if (
+    kind === "button-slider" ||
     kind === "movement" ||
     kind === "icon" ||
     kind === "mirror" ||
@@ -585,6 +622,12 @@ const fromPersistedItem = (
       buttonPressMode:
         resolvedKind === "text" || resolvedKind === "icon"
           ? normalizeButtonPressMode(value.buttonPressMode)
+          : undefined,
+      buttonSliderIncreaseDirection:
+        resolvedKind === "button-slider"
+          ? normalizeButtonSliderIncreaseDirection(
+              value.buttonSliderIncreaseDirection ?? value.buttonSliderDirection
+            )
           : undefined,
       movementDirection:
         resolvedKind === "movement"
@@ -746,6 +789,10 @@ const parseImportedEditorState = (
             ? typeof item.increment === "number" && Number.isFinite(item.increment)
               ? item.increment
               : 1
+            : undefined,
+        buttonSliderIncreaseDirection:
+          item.kind === "button-slider"
+            ? normalizeButtonSliderIncreaseDirection(item.buttonSliderIncreaseDirection)
             : undefined,
         teamSide:
           item.teamSide === "red" || item.teamSide === "blue"
@@ -925,6 +972,37 @@ const parseImportedEditorState = (
           data.hideOtherElementsInStage ?? data.hideAllOtherElementsInStage
         ),
         tag,
+        teamSide: toTeamSide(data.teamSide),
+      };
+    }
+
+    if (isRecord(entry["button-slider"])) {
+      const data = entry["button-slider"];
+      const width = scaleWidth(data.width, BUTTON_SIZE.width);
+      const height = scaleHeight(data.height, BUTTON_SIZE.height);
+      const centerItemX = scaleX(data.x);
+      const centerItemY = scaleY(data.y);
+      const tag = readTag(data.tag);
+      if (tag) {
+        if (!tagToIds.has(tag)) tagToIds.set(tag, []);
+        tagToIds.get(tag)!.push(id);
+      }
+      return {
+        id,
+        kind: "button-slider",
+        x: centerItemX - width / 2,
+        y: centerItemY - height / 2,
+        width,
+        height,
+        label: typeof data.text === "string" ? data.text : "Button Slider",
+        tag,
+        iconName: typeof data.icon === "string" ? data.icon : undefined,
+        outlineColor:
+          typeof data.outline === "string" ? data.outline : undefined,
+        fillColor: typeof data.fill === "string" ? data.fill : undefined,
+        buttonSliderIncreaseDirection: normalizeButtonSliderIncreaseDirection(
+          data.increaseDirection
+        ),
         teamSide: toTeamSide(data.teamSide),
       };
     }
@@ -1332,6 +1410,39 @@ function PaletteButton({ onPalettePointerDown }: PaletteButtonProps) {
       <span className="flex flex-col items-start leading-tight">
         <span className="text-sm font-semibold">Button</span>
         <span className="text-xs text-white/55">Small clickable action</span>
+      </span>
+    </Button>
+  );
+}
+
+function PaletteButtonSliderButton({ onPalettePointerDown }: PaletteButtonProps) {
+  const { attributes, listeners, setNodeRef, isDragging } =
+    useDraggable({
+      id: "palette-button-slider",
+      data: { type: "palette", assetKind: "button-slider" } satisfies DragData,
+    });
+
+  const style: React.CSSProperties = {
+    opacity: isDragging ? 0 : 1,
+  };
+
+  return (
+    <Button
+      ref={setNodeRef}
+      style={style}
+      variant="outline"
+      className="mx-auto h-[58px] w-[calc(100%-8px)] justify-start gap-3 rounded-xl border-white/10 bg-slate-900/70 px-3 text-left text-white transition-all duration-150 hover:border-white/20 hover:bg-slate-800/80"
+      onPointerDownCapture={(event) => onPalettePointerDown("button-slider", event)}
+      {...attributes}
+      {...listeners}
+      type="button"
+    >
+      <span className="flex h-8 w-8 items-center justify-center rounded-md bg-violet-500/20 text-violet-200">
+        <span className="text-[10px] font-bold">±1</span>
+      </span>
+      <span className="flex flex-col items-start leading-tight">
+        <span className="text-sm font-semibold">Button Slider</span>
+        <span className="text-xs text-white/55">Drag to increment faster</span>
       </span>
     </Button>
   );
@@ -1856,10 +1967,15 @@ function CanvasButton({
   onSelect,
   onPreviewPressStart,
   onPreviewPressEnd,
+  onPreviewButtonSliderDragStart,
+  onPreviewButtonSliderDragMove,
+  onPreviewButtonSliderDragEnd,
   onPreviewStageToggle,
   onStageContextMenu,
   hasStages,
   isPreviewPressed,
+  previewButtonSliderValue,
+  previewButtonSliderDragInfo,
   isCustomSideLayoutsEnabled,
   visibleTeamSide,
   previewHoldDurationMs,
@@ -1875,10 +1991,18 @@ function CanvasButton({
   onSelect: (itemId: string, options?: { append?: boolean }) => void;
   onPreviewPressStart: (item: CanvasItem) => void;
   onPreviewPressEnd: (itemId: string) => void;
+  onPreviewButtonSliderDragStart: (
+    item: CanvasItem,
+    event: React.PointerEvent<HTMLButtonElement>
+  ) => void;
+  onPreviewButtonSliderDragMove: (itemId: string, clientX: number) => void;
+  onPreviewButtonSliderDragEnd: (itemId: string) => void;
   onPreviewStageToggle: (itemId: string) => void;
   onStageContextMenu: (itemId: string) => void;
   hasStages: boolean;
   isPreviewPressed: boolean;
+  previewButtonSliderValue?: number;
+  previewButtonSliderDragInfo?: ButtonSliderDragInfo;
   isCustomSideLayoutsEnabled: boolean;
   visibleTeamSide: TeamSide;
   previewHoldDurationMs?: number;
@@ -1937,6 +2061,20 @@ function CanvasButton({
     const duration = Math.max(0, previewHoldDurationMs ?? 0);
     return (duration / 1000).toFixed(2);
   })();
+  const hasButtonSliderValue =
+    item.kind === "button-slider" && typeof previewButtonSliderValue === "number";
+  const buttonSliderStartX =
+    item.kind === "button-slider" && previewButtonSliderDragInfo
+      ? previewButtonSliderDragInfo.startX - previewButtonSliderDragInfo.buttonLeft
+      : 0;
+  const buttonSliderCurrentX =
+    item.kind === "button-slider" && previewButtonSliderDragInfo
+      ? previewButtonSliderDragInfo.currentX - previewButtonSliderDragInfo.buttonLeft
+      : 0;
+  const buttonSliderMultiplier =
+    item.kind === "button-slider" && previewButtonSliderDragInfo
+      ? getButtonSliderMultiplier(previewButtonSliderDragInfo.signedDistance)
+      : 0;
 
   return (
     <Button
@@ -1957,24 +2095,42 @@ function CanvasButton({
         item.kind === "swap"
           ? "px-2 leading-tight sm:px-2.5"
           : ""
-      }`}
+      } ${item.kind === "button-slider" ? "overflow-visible" : ""}
+      `}
       onPointerDownCapture={(event) => {
         if (!isPreviewMode) {
           onSelect(item.id, { append: event.button === 2 });
           return;
         }
+        if (item.kind === "button-slider") {
+          onPreviewButtonSliderDragStart(item, event);
+          event.currentTarget.setPointerCapture(event.pointerId);
+        }
         onPreviewPressStart(item);
+      }}
+      onPointerMove={(event) => {
+        if (!isPreviewMode || item.kind !== "button-slider") return;
+        onPreviewButtonSliderDragMove(item.id, event.clientX);
       }}
       onPointerUp={() => {
         if (!isPreviewMode) return;
+        if (item.kind === "button-slider") {
+          onPreviewButtonSliderDragEnd(item.id);
+        }
         onPreviewPressEnd(item.id);
       }}
       onPointerCancel={() => {
         if (!isPreviewMode) return;
+        if (item.kind === "button-slider") {
+          onPreviewButtonSliderDragEnd(item.id);
+        }
         onPreviewPressEnd(item.id);
       }}
       onPointerLeave={() => {
         if (!isPreviewMode) return;
+        if (item.kind === "button-slider") {
+          onPreviewButtonSliderDragEnd(item.id);
+        }
         onPreviewPressEnd(item.id);
       }}
       onClick={() => {
@@ -2033,6 +2189,8 @@ function CanvasButton({
     >
       {isHoldTimerVisible ? (
         <span className="truncate tabular-nums">{holdTimerLabel}</span>
+      ) : isPreviewMode && item.kind === "button-slider" && hasButtonSliderValue ? (
+        <span className="truncate tabular-nums">{previewButtonSliderValue ?? 0}</span>
       ) : item.kind === "icon" ? (
         (() => {
           const IconComponent =
@@ -2063,9 +2221,54 @@ function CanvasButton({
           <Redo2 className="h-4 w-4" />
           {item.label}
         </span>
+      ) : item.kind === "button-slider" && item.iconName ? (
+        (() => {
+          const IconComponent = ICON_COMPONENTS[item.iconName ?? "Bot"] ?? Bot;
+          return (
+            <IconComponent
+              className="h-5 w-5"
+              style={{
+                stroke: item.outlineColor ?? "currentColor",
+                fill: item.fillColor ?? "none",
+              }}
+            />
+          );
+        })()
       ) : (
         <span className={item.kind === "swap" ? "truncate" : undefined}>{item.label}</span>
       )}
+      {isPreviewMode && item.kind === "button-slider" && previewButtonSliderDragInfo ? (
+        <>
+          <span
+            className="pointer-events-none absolute h-1.5 rounded-full bg-violet-300/90"
+            style={{
+              left: Math.min(buttonSliderStartX, buttonSliderCurrentX),
+              width: Math.max(1, Math.abs(buttonSliderCurrentX - buttonSliderStartX)),
+              top: item.height / 2 - 3,
+            }}
+          />
+          <span
+            className="pointer-events-none absolute h-3 w-3 rounded-full border border-violet-100/90 bg-violet-300/95"
+            style={{
+              left: buttonSliderCurrentX - 6,
+              top: item.height / 2 - 6,
+            }}
+          />
+          <span
+            className="pointer-events-none absolute rounded bg-slate-950/90 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-violet-200"
+            style={{
+              left:
+                (buttonSliderStartX + buttonSliderCurrentX) / 2,
+              top: item.height / 2 - 26,
+              transform: "translateX(-50%)",
+            }}
+          >
+            {buttonSliderMultiplier <= 0
+              ? "0x"
+              : `${previewButtonSliderDragInfo.signedDistance > 0 ? "+" : "-"}${buttonSliderMultiplier.toFixed(1)}x`}
+          </span>
+        </>
+      ) : null}
       {hasStages ? (
         <span className="pointer-events-none absolute -right-1 -top-1 inline-flex h-4 w-4 items-center justify-center rounded-full bg-slate-800 text-sky-300">
           <ChevronDown className="h-3 w-3" />
@@ -3088,6 +3291,22 @@ const areSnapOffsetsEqual = (
   return prev.x === next.x && prev.y === next.y;
 };
 
+const areButtonSliderDragInfosEqual = (
+  prev: ButtonSliderDragInfo | undefined,
+  next: ButtonSliderDragInfo | undefined
+) => {
+  if (!prev && !next) return true;
+  if (!prev || !next) return false;
+  return (
+    prev.startX === next.startX &&
+    prev.currentX === next.currentX &&
+    prev.signedDistance === next.signedDistance &&
+    prev.increaseDirection === next.increaseDirection &&
+    prev.buttonLeft === next.buttonLeft &&
+    prev.buttonWidth === next.buttonWidth
+  );
+};
+
 const MemoCanvasButton = React.memo(
   CanvasButton,
   (prev, next) =>
@@ -3095,6 +3314,11 @@ const MemoCanvasButton = React.memo(
     prev.hasStages === next.hasStages &&
     prev.onStageContextMenu === next.onStageContextMenu &&
     prev.isPreviewPressed === next.isPreviewPressed &&
+    prev.previewButtonSliderValue === next.previewButtonSliderValue &&
+    areButtonSliderDragInfosEqual(
+      prev.previewButtonSliderDragInfo,
+      next.previewButtonSliderDragInfo
+    ) &&
     prev.previewHoldDurationMs === next.previewHoldDurationMs &&
     prev.isCustomSideLayoutsEnabled === next.isCustomSideLayoutsEnabled &&
     prev.visibleTeamSide === next.visibleTeamSide &&
@@ -3262,6 +3486,12 @@ export default function EditorPage() {
   const [previewMatchSelectValues, setPreviewMatchSelectValues] = React.useState<
     Record<string, number>
   >({});
+  const [previewButtonSliderValues, setPreviewButtonSliderValues] = React.useState<
+    Record<string, number>
+  >({});
+  const [previewButtonSliderDragById, setPreviewButtonSliderDragById] = React.useState<
+    Record<string, ButtonSliderDragInfo>
+  >({});
   const [previewStartPositions, setPreviewStartPositions] = React.useState<
     Record<string, { xRatio: number; yRatio: number }>
   >({});
@@ -3396,6 +3626,11 @@ export default function EditorPage() {
   const lastDragMoveAtRef = React.useRef(0);
   const autoToggleTimeoutsRef = React.useRef<Record<string, number>>({});
   const autoToggleIntervalsRef = React.useRef<Record<string, number>>({});
+  const previewButtonSliderTimeoutsRef = React.useRef<Record<string, number>>({});
+  const previewButtonSliderDragByIdRef = React.useRef<Record<string, ButtonSliderDragInfo>>(
+    {}
+  );
+  const isSwapMirroredRef = React.useRef(false);
 
   React.useEffect(() => {
     alignmentGuidesRef.current = alignmentGuides;
@@ -3522,6 +3757,75 @@ export default function EditorPage() {
     });
   }, []);
 
+  const clearPreviewButtonSliderLoop = React.useCallback((itemId: string) => {
+    const timeoutId = previewButtonSliderTimeoutsRef.current[itemId];
+    if (typeof timeoutId === "number") {
+      window.clearTimeout(timeoutId);
+      delete previewButtonSliderTimeoutsRef.current[itemId];
+    }
+
+    if (previewButtonSliderDragByIdRef.current[itemId]) {
+      const next = { ...previewButtonSliderDragByIdRef.current };
+      delete next[itemId];
+      previewButtonSliderDragByIdRef.current = next;
+    }
+
+    setPreviewButtonSliderDragById((prev) => {
+      if (!(itemId in prev)) return prev;
+      const next = { ...prev };
+      delete next[itemId];
+      return next;
+    });
+  }, []);
+
+  const clearAllPreviewButtonSliderLoops = React.useCallback(() => {
+    Object.values(previewButtonSliderTimeoutsRef.current).forEach((timeoutId) => {
+      window.clearTimeout(timeoutId);
+    });
+    previewButtonSliderTimeoutsRef.current = {};
+    previewButtonSliderDragByIdRef.current = {};
+    setPreviewButtonSliderDragById({});
+  }, []);
+
+  const schedulePreviewButtonSliderTick = React.useCallback((itemId: string) => {
+    const activeDrag = previewButtonSliderDragByIdRef.current[itemId];
+    if (!activeDrag) return;
+
+    const signedDistance = activeDrag.signedDistance;
+    if (Math.abs(signedDistance) < BUTTON_SLIDER_DRAG_DEADZONE_PX) {
+      const timeoutId = previewButtonSliderTimeoutsRef.current[itemId];
+      if (typeof timeoutId === "number") {
+        window.clearTimeout(timeoutId);
+        delete previewButtonSliderTimeoutsRef.current[itemId];
+      }
+      return;
+    }
+
+    const delayMs = getButtonSliderTickDelayMs(Math.abs(signedDistance));
+
+    previewButtonSliderTimeoutsRef.current[itemId] = window.setTimeout(() => {
+      const nextDrag = previewButtonSliderDragByIdRef.current[itemId];
+      if (!nextDrag) return;
+
+      const nextSignedDistance = nextDrag.signedDistance;
+      if (Math.abs(nextSignedDistance) < BUTTON_SLIDER_DRAG_DEADZONE_PX) {
+        delete previewButtonSliderTimeoutsRef.current[itemId];
+        return;
+      }
+
+      const rightShouldIncrease = nextDrag.increaseDirection === "right";
+      const isDraggingRight = nextSignedDistance > 0;
+      const delta = isDraggingRight === rightShouldIncrease ? 1 : -1;
+
+      setPreviewButtonSliderValues((prev) => ({
+        ...prev,
+        [itemId]: Math.max(0, (prev[itemId] ?? 0) + delta),
+      }));
+
+      schedulePreviewButtonSliderTick(itemId);
+    }, delayMs);
+  }, []);
+
   React.useEffect(() => {
     return () => {
       Object.values(autoToggleTimeoutsRef.current).forEach((timeoutId) => {
@@ -3532,8 +3836,9 @@ export default function EditorPage() {
       });
       autoToggleTimeoutsRef.current = {};
       autoToggleIntervalsRef.current = {};
+      clearAllPreviewButtonSliderLoops();
     };
-  }, []);
+  }, [clearAllPreviewButtonSliderLoops]);
 
   React.useEffect(() => {
     const existingIds = new Set(items.map((item) => item.id));
@@ -3542,7 +3847,12 @@ export default function EditorPage() {
         clearAutoToggleTimer(itemId);
       }
     });
-  }, [clearAutoToggleTimer, items]);
+    Object.keys(previewButtonSliderTimeoutsRef.current).forEach((itemId) => {
+      if (!existingIds.has(itemId)) {
+        clearPreviewButtonSliderLoop(itemId);
+      }
+    });
+  }, [clearAutoToggleTimer, clearPreviewButtonSliderLoop, items]);
 
   React.useEffect(() => {
     setItems((prev) => {
@@ -4245,11 +4555,11 @@ export default function EditorPage() {
       if (!selectedItemId) return;
       setItems((prev) =>
         prev.map((item) =>
-          item.id === selectedItemId && item.kind === "icon"
+          item.id === selectedItemId && (item.kind === "icon" || item.kind === "button-slider")
             ? {
                 ...item,
                 iconName,
-                label: iconName,
+                label: item.kind === "icon" ? iconName : item.label,
               }
             : item
         )
@@ -4263,7 +4573,7 @@ export default function EditorPage() {
       if (!selectedItemId) return;
       setItems((prev) =>
         prev.map((item) =>
-          item.id === selectedItemId && item.kind === "icon"
+          item.id === selectedItemId && (item.kind === "icon" || item.kind === "button-slider")
             ? {
                 ...item,
                 outlineColor: value,
@@ -4280,7 +4590,7 @@ export default function EditorPage() {
       if (!selectedItemId) return;
       setItems((prev) =>
         prev.map((item) =>
-          item.id === selectedItemId && item.kind === "icon"
+          item.id === selectedItemId && (item.kind === "icon" || item.kind === "button-slider")
             ? {
                 ...item,
                 fillColor: value,
@@ -4319,6 +4629,24 @@ export default function EditorPage() {
             ? {
                 ...item,
                 buttonPressMode: value,
+              }
+            : item
+        )
+      );
+    },
+    [selectedItemId]
+  );
+
+  const handleSelectedButtonSliderIncreaseDirectionChange = React.useCallback(
+    (value: "left" | "right") => {
+      if (!selectedItemId) return;
+      const nextDirection = normalizeButtonSliderIncreaseDirection(value);
+      setItems((prev) =>
+        prev.map((item) =>
+          item.id === selectedItemId && item.kind === "button-slider"
+            ? {
+                ...item,
+                buttonSliderIncreaseDirection: nextDirection,
               }
             : item
         )
@@ -4833,6 +5161,88 @@ export default function EditorPage() {
     [clearPreviewHoldInterval]
   );
 
+  const handlePreviewButtonSliderDragStart = React.useCallback(
+    (item: CanvasItem, event: React.PointerEvent<HTMLButtonElement>) => {
+      if (item.kind !== "button-slider") return;
+
+      clearPreviewButtonSliderLoop(item.id);
+      setPreviewButtonSliderValues((prev) => ({
+        ...prev,
+        [item.id]: 1,
+      }));
+      const buttonRect = event.currentTarget.getBoundingClientRect();
+      const startX = event.clientX;
+      const configuredIncreaseDirection = normalizeButtonSliderIncreaseDirection(
+        item.buttonSliderIncreaseDirection
+      );
+      const effectiveIncreaseDirection = isSwapMirroredRef.current
+        ? invertHorizontalDirection(configuredIncreaseDirection)
+        : configuredIncreaseDirection;
+      const nextDragInfo: ButtonSliderDragInfo = {
+        startX,
+        currentX: startX,
+        signedDistance: 0,
+        increaseDirection: effectiveIncreaseDirection,
+        buttonLeft: buttonRect.left,
+        buttonWidth: buttonRect.width,
+      };
+
+      previewButtonSliderDragByIdRef.current = {
+        ...previewButtonSliderDragByIdRef.current,
+        [item.id]: nextDragInfo,
+      };
+      setPreviewButtonSliderDragById((prev) => ({
+        ...prev,
+        [item.id]: nextDragInfo,
+      }));
+    },
+    [clearPreviewButtonSliderLoop]
+  );
+
+  const handlePreviewButtonSliderDragMove = React.useCallback(
+    (itemId: string, clientX: number) => {
+      const activeDrag = previewButtonSliderDragByIdRef.current[itemId];
+      if (!activeDrag) return;
+
+      const nextDragInfo: ButtonSliderDragInfo = {
+        ...activeDrag,
+        currentX: clientX,
+        signedDistance: clientX - activeDrag.startX,
+      };
+
+      previewButtonSliderDragByIdRef.current = {
+        ...previewButtonSliderDragByIdRef.current,
+        [itemId]: nextDragInfo,
+      };
+      setPreviewButtonSliderDragById((prev) => ({
+        ...prev,
+        [itemId]: nextDragInfo,
+      }));
+
+      const hasLoop = typeof previewButtonSliderTimeoutsRef.current[itemId] === "number";
+      if (
+        !hasLoop &&
+        Math.abs(nextDragInfo.signedDistance) >= BUTTON_SLIDER_DRAG_DEADZONE_PX
+      ) {
+        schedulePreviewButtonSliderTick(itemId);
+      }
+    },
+    [schedulePreviewButtonSliderTick]
+  );
+
+  const handlePreviewButtonSliderDragEnd = React.useCallback(
+    (itemId: string) => {
+      clearPreviewButtonSliderLoop(itemId);
+      setPreviewButtonSliderValues((prev) => {
+        if (!(itemId in prev)) return prev;
+        const next = { ...prev };
+        delete next[itemId];
+        return next;
+      });
+    },
+    [clearPreviewButtonSliderLoop]
+  );
+
   const handlePreviewPressStart = React.useCallback(
     (item: CanvasItem) => {
       setPreviewPressedItemId(item.id);
@@ -4947,12 +5357,22 @@ export default function EditorPage() {
       }
 
       if (item.kind === "reset") {
+        clearAllPreviewButtonSliderLoops();
         setPreviewInputValues({});
         setPreviewTeamSelectValues({});
         setPreviewMatchSelectValues({});
+        setPreviewButtonSliderValues({});
         setPreviewStartPositions({});
         setHiddenPreviewStartPositionIds({});
         setPreviewLogText("");
+        return;
+      }
+
+      if (item.kind === "button-slider") {
+        setPreviewButtonSliderValues((prev) => ({
+          ...prev,
+          [item.id]: (prev[item.id] ?? 0) + 1,
+        }));
         return;
       }
 
@@ -5007,6 +5427,7 @@ export default function EditorPage() {
       }
     },
     [
+      clearAllPreviewButtonSliderLoops,
       items,
       previewInputValues,
       getScopedPreviewKey,
@@ -5507,7 +5928,9 @@ export default function EditorPage() {
     };
 
     const taggedItems = items.filter((item) =>
-      ["text", "icon", "movement", "input", "toggle"].includes(item.kind)
+      ["text", "icon", "movement", "input", "toggle", "button-slider"].includes(
+        item.kind
+      )
     );
     const tags = taggedItems.map((item) => normalizeTag(item.tag ?? ""));
 
@@ -5681,6 +6104,25 @@ export default function EditorPage() {
               style: normalizeToggleStyle(item.toggleStyle),
               textAlign: item.toggleTextAlign ?? "center",
               textSize: item.toggleTextSize ?? 10,
+              stageParentTag,
+              width: scaleWidth(item.width),
+              height: scaleHeight(item.height),
+            },
+          }));
+        case "button-slider":
+          return tagVariants.map((tag) => ({
+            "button-slider": {
+              tag,
+              teamSide: item.teamSide,
+              x: scaleX(centerItemX),
+              y: scaleY(centerItemY),
+              text: item.label,
+              icon: item.iconName ?? undefined,
+              outline: item.outlineColor ?? undefined,
+              fill: item.fillColor ?? undefined,
+              increaseDirection: normalizeButtonSliderIncreaseDirection(
+                item.buttonSliderIncreaseDirection
+              ),
               stageParentTag,
               width: scaleWidth(item.width),
               height: scaleHeight(item.height),
@@ -7734,6 +8176,8 @@ export default function EditorPage() {
             buttonPressMode:
               kind === "text" || kind === "icon" ? "tap" : undefined,
             increment: kind === "text" || kind === "icon" ? 1 : undefined,
+            buttonSliderIncreaseDirection:
+              kind === "button-slider" ? "right" : undefined,
             startX: kind === "mirror" ? mirrorStartX : undefined,
             startY: kind === "mirror" ? mirrorStartY : undefined,
             endX: kind === "mirror" ? mirrorEndX : undefined,
@@ -7795,9 +8239,11 @@ export default function EditorPage() {
     autoToggleTimeoutsRef.current = {};
     autoToggleIntervalsRef.current = {};
     setAutoToggleCountdowns({});
+    clearAllPreviewButtonSliderLoops();
     setPreviewInputValues({});
     setPreviewTeamSelectValues({});
     setPreviewMatchSelectValues({});
+    setPreviewButtonSliderValues({});
     setPreviewStartPositions({});
     setHiddenPreviewStartPositionIds({});
     previewHoldStartByIdRef.current = {};
@@ -7829,7 +8275,7 @@ export default function EditorPage() {
     lastSnapshotKeyRef.current = "";
     setCanUndo(false);
     setCanRedo(false);
-  }, [clearPreviewHoldInterval]);
+  }, [clearAllPreviewButtonSliderLoops, clearPreviewHoldInterval]);
 
   React.useEffect(() => {
     setSelectedItemIds((prev) => prev.filter((id) => items.some((item) => item.id === id)));
@@ -8184,6 +8630,10 @@ export default function EditorPage() {
     return (swapItem.swapActiveSide ?? "left") !== (swapItem.swapRedSide ?? "left");
   }, [renderedLayeredVisibleItems]);
 
+  React.useEffect(() => {
+    isSwapMirroredRef.current = isSwapMirrored;
+  }, [isSwapMirrored]);
+
   const startPositionColorSide: TeamSide =
     isCustomSideLayoutsEnabled
       ? currentVisibleTeamSide
@@ -8243,6 +8693,7 @@ export default function EditorPage() {
                   setIsPreviewMode((current) => {
                     const next = !current;
                     if (next) {
+                      clearAllPreviewButtonSliderLoops();
                       setIsPreviewSwapMirrored(false);
                       setPreviewBaseStageSize({
                         width: stageSizeRef.current.width,
@@ -8262,10 +8713,12 @@ export default function EditorPage() {
                       setPreviewInputValues({});
                       setPreviewTeamSelectValues({});
                       setPreviewMatchSelectValues({});
+                      setPreviewButtonSliderValues({});
                       setPreviewStartPositions({});
                       setHiddenPreviewStartPositionIds({});
                       setPreviewLogText("");
                     } else {
+                      clearAllPreviewButtonSliderLoops();
                       setIsPreviewSwapMirrored(false);
                       setPreviewBaseStageSize(null);
                       previewBaseStageSizeRef.current = null;
@@ -8276,6 +8729,7 @@ export default function EditorPage() {
                       setPreviewInputValues({});
                       setPreviewTeamSelectValues({});
                       setPreviewMatchSelectValues({});
+                      setPreviewButtonSliderValues({});
                       setPreviewStartPositions({});
                       setHiddenPreviewStartPositionIds({});
                       setPreviewLogText("");
@@ -8438,6 +8892,11 @@ export default function EditorPage() {
               >
                 {matchesAssetSearch(["button", "text"]) ? (
                   <PaletteButton onPalettePointerDown={handlePalettePointerDown} />
+                ) : null}
+                {matchesAssetSearch(["button slider", "slider", "counter", "increment"]) ? (
+                  <PaletteButtonSliderButton
+                    onPalettePointerDown={handlePalettePointerDown}
+                  />
                 ) : null}
                 {matchesAssetSearch(["undo"]) ? (
                   <PaletteActionButton
@@ -8782,10 +9241,15 @@ export default function EditorPage() {
                         onSelect={handleCanvasItemSelect}
                         onPreviewPressStart={handlePreviewPressStart}
                         onPreviewPressEnd={handlePreviewPressEnd}
+                        onPreviewButtonSliderDragStart={handlePreviewButtonSliderDragStart}
+                        onPreviewButtonSliderDragMove={handlePreviewButtonSliderDragMove}
+                        onPreviewButtonSliderDragEnd={handlePreviewButtonSliderDragEnd}
                         onPreviewStageToggle={handlePreviewStageToggle}
                         onStageContextMenu={handleStageContextMenu}
                         hasStages={stageRootIds.has(item.id)}
                         isPreviewPressed={previewPressedItemId === item.id}
+                        previewButtonSliderValue={previewButtonSliderValues[item.id]}
+                        previewButtonSliderDragInfo={previewButtonSliderDragById[item.id]}
                         previewHoldDurationMs={previewHoldDurationsById[item.id]}
                         isCustomSideLayoutsEnabled={isCustomSideLayoutsEnabled}
                         visibleTeamSide={currentVisibleTeamSide}
@@ -9587,6 +10051,223 @@ export default function EditorPage() {
                     }}
                     className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
                   />
+                </div>
+              </div>
+            ) : selectedItem?.kind === "button-slider" ? (
+              <div className="grid gap-4">
+                <div className="grid gap-2">
+                  <Label className="text-sm text-white/80">Display mode</Label>
+                  <ToggleGroup
+                    type="single"
+                    value={selectedItem.iconName ? "icon" : "text"}
+                    onValueChange={(value) => {
+                      if (value === "text") {
+                        setItems((prev) =>
+                          prev.map((item) =>
+                            item.id === selectedItem.id && item.kind === "button-slider"
+                              ? {
+                                  ...item,
+                                  iconName: undefined,
+                                }
+                              : item
+                          )
+                        );
+                      }
+                      if (value === "icon") {
+                        setItems((prev) =>
+                          prev.map((item) =>
+                            item.id === selectedItem.id && item.kind === "button-slider"
+                              ? {
+                                  ...item,
+                                  iconName: item.iconName ?? "Bot",
+                                  outlineColor: item.outlineColor ?? "#ffffff",
+                                  fillColor: item.fillColor ?? "transparent",
+                                }
+                              : item
+                          )
+                        );
+                      }
+                    }}
+                    className="grid grid-cols-2 gap-2"
+                  >
+                    <ToggleGroupItem
+                      value="text"
+                      className="h-10 rounded-md border border-white/10 bg-slate-900/80 text-xs text-white data-[state=on]:bg-blue-600"
+                    >
+                      Name
+                    </ToggleGroupItem>
+                    <ToggleGroupItem
+                      value="icon"
+                      className="h-10 rounded-md border border-white/10 bg-slate-900/80 text-xs text-white data-[state=on]:bg-blue-600"
+                    >
+                      Icon
+                    </ToggleGroupItem>
+                  </ToggleGroup>
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="button-slider-name" className="text-sm text-white/80">
+                    Button name
+                  </Label>
+                  <Input
+                    id="button-slider-name"
+                    value={selectedItem.label}
+                    onChange={(event) => handleSelectedLabelChange(event.target.value)}
+                    placeholder="Button Slider"
+                    disabled={Boolean(selectedItem.iconName)}
+                    className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
+                  />
+                </div>
+                {selectedItem.iconName ? (
+                  <>
+                    <div className="grid gap-2">
+                      <Label className="text-sm text-white/80">Button colors</Label>
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        <div className="grid gap-2">
+                          <Label htmlFor="button-slider-outline" className="text-xs text-white/70">
+                            Outline
+                          </Label>
+                          <div className="grid grid-cols-[52px_minmax(0,1fr)] items-center gap-2">
+                            <Input
+                              id="button-slider-outline"
+                              type="color"
+                              value={
+                                (selectedItem.outlineColor ?? "#ffffff") === "transparent"
+                                  ? "#000000"
+                                  : (selectedItem.outlineColor ?? "#ffffff")
+                              }
+                              onInput={(event) =>
+                                handleSelectedOutlineColorChange(event.currentTarget.value)
+                              }
+                              className="h-10 w-[52px] min-w-[52px] cursor-pointer border-white/10 bg-slate-900 p-1"
+                            />
+                            <Button
+                              variant="outline"
+                              className="h-9 w-full min-w-0 border-white/10 bg-slate-900 px-2 text-[11px] text-white hover:bg-slate-800"
+                              onClick={() => handleSelectedOutlineColorChange("transparent")}
+                            >
+                              Clear
+                            </Button>
+                          </div>
+                        </div>
+
+                        <div className="grid gap-2">
+                          <Label htmlFor="button-slider-fill" className="text-xs text-white/70">
+                            Fill
+                          </Label>
+                          <div className="grid grid-cols-[52px_minmax(0,1fr)] items-center gap-2">
+                            <Input
+                              id="button-slider-fill"
+                              type="color"
+                              value={
+                                (selectedItem.fillColor ?? "transparent") === "transparent"
+                                  ? "#000000"
+                                  : (selectedItem.fillColor ?? "transparent")
+                              }
+                              onInput={(event) =>
+                                handleSelectedFillColorChange(event.currentTarget.value)
+                              }
+                              className="h-10 w-[52px] min-w-[52px] cursor-pointer border-white/10 bg-slate-900 p-1"
+                            />
+                            <Button
+                              variant="outline"
+                              className="h-9 w-full min-w-0 border-white/10 bg-slate-900 px-2 text-[11px] text-white hover:bg-slate-800"
+                              onClick={() => handleSelectedFillColorChange("transparent")}
+                            >
+                              Clear
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="grid gap-2">
+                      <Label htmlFor="button-slider-icon-search" className="text-sm text-white/80">
+                        Icon picker
+                      </Label>
+                      <Input
+                        id="button-slider-icon-search"
+                        value={iconSearch}
+                        onChange={(event) => setIconSearch(event.target.value)}
+                        placeholder="Search icon name"
+                        className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
+                      />
+                      <ScrollArea
+                        className="h-52 rounded-md border border-white/10 bg-slate-900/70 p-2"
+                        scrollbarClassName="bg-transparent"
+                        thumbClassName="bg-slate-500/60"
+                      >
+                        <div className="grid grid-cols-5 gap-2">
+                          {ICON_NAMES.filter((name) =>
+                            name.toLowerCase().includes(iconSearch.trim().toLowerCase())
+                          )
+                            .slice(0, 300)
+                            .map((name) => {
+                              const IconComponent = ICON_COMPONENTS[name] ?? Bot;
+                              const isActive = selectedItem.iconName === name;
+                              return (
+                                <Button
+                                  key={name}
+                                  variant="outline"
+                                  size="icon"
+                                  className={`h-9 w-9 border-white/10 bg-slate-900 text-white hover:bg-slate-800 ${
+                                    isActive ? "ring-1 ring-blue-400/70" : ""
+                                  }`}
+                                  aria-label={name}
+                                  onClick={() => handleSelectedIconNameChange(name)}
+                                >
+                                  <IconComponent className="h-4 w-4" />
+                                </Button>
+                              );
+                            })}
+                        </div>
+                      </ScrollArea>
+                    </div>
+                  </>
+                ) : null}
+                <div className="grid gap-2">
+                  <Label htmlFor="button-slider-tag" className="text-sm text-white/80">
+                    Tag
+                  </Label>
+                  <Input
+                    ref={tagInputRef}
+                    id="button-slider-tag"
+                    value={selectedItem.tag ?? ""}
+                    onChange={(event) => handleSelectedTagChange(event.target.value)}
+                    placeholder="Enter tag"
+                    className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label className="text-sm text-white/80">
+                    Increase direction
+                  </Label>
+                  <ToggleGroup
+                    type="single"
+                    value={normalizeButtonSliderIncreaseDirection(
+                      selectedItem.buttonSliderIncreaseDirection
+                    )}
+                    onValueChange={(value) => {
+                      if (value === "left" || value === "right") {
+                        handleSelectedButtonSliderIncreaseDirectionChange(value);
+                      }
+                    }}
+                    className="grid grid-cols-2 gap-2"
+                  >
+                    <ToggleGroupItem
+                      value="left"
+                      className="h-10 rounded-md border border-white/10 bg-slate-900/80 text-xs text-white data-[state=on]:bg-blue-600"
+                    >
+                      Left
+                    </ToggleGroupItem>
+                    <ToggleGroupItem
+                      value="right"
+                      className="h-10 rounded-md border border-white/10 bg-slate-900/80 text-xs text-white data-[state=on]:bg-blue-600"
+                    >
+                      Right
+                    </ToggleGroupItem>
+                  </ToggleGroup>
+                  <p className="text-xs text-white/60">
+                    This direction automatically flips when swap sides is active.
+                  </p>
                 </div>
               </div>
             ) : selectedItem && isActionButtonKind(selectedItem.kind) ? (
