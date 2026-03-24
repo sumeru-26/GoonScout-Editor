@@ -78,6 +78,8 @@ model FieldConfig {
   userId    String   @map("user_id")
   contentHash String @default(dbgenerated("public.next_field_config_code_8()")) @db.VarChar(8) @map("content_hash")
   backgroundImage String? @db.Text @map("background_image")
+  backgroundLocation String? @db.Text @map("background_location")
+  fieldMapping Json? @map("field_mapping")
   isDraft   Boolean  @default(true) @map("is_draft")
   payload   Json
 

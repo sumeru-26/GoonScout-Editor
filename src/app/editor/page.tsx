@@ -60,6 +60,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { authClient } from "@/lib/auth-client";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -76,6 +77,7 @@ const MATCH_SELECT_SIZE = { width: 220, height: 44 } as const;
 const TOGGLE_SIZE = { width: 52, height: 28 } as const;
 const AUTO_TOGGLE_SIZE = { width: 180, height: 40 } as const;
 const LOG_SIZE = { width: 280, height: 120 } as const;
+const SLIDER_SIZE = { width: 260, height: 72 } as const;
 const BUTTON_SLIDER_DRAG_DEADZONE_PX = 6;
 const TEAM_SELECT_OPTIONS = [
   {
@@ -109,10 +111,20 @@ const TEAM_SELECT_OPTIONS = [
     chipClassName: "border-red-400/50 bg-red-500/20 text-red-100",
   },
 ] as const;
+type FieldBackgroundOption = {
+  key: string;
+  name: string;
+  imageUrl: string;
+};
+
+const NO_BACKGROUND_OPTION: FieldBackgroundOption = {
+  key: "none",
+  name: "None",
+  imageUrl: "",
+};
 const MATCH_SELECT_MIN_VALUE = 1;
 const MATCH_SELECT_MAX_VALUE = 999;
 const FIELD_HEIGHT = 560;
-const ICON_GRID_COLUMNS = 6;
 const ICON_CELL_SIZE = 48;
 const ICON_CELL_OFFSET = 4;
 const MIRROR_SNAP_PX = 8;
@@ -124,17 +136,6 @@ const areNumberArraysEqual = (left: number[], right: number[]) => {
   if (left === right) return true;
   if (left.length !== right.length) return false;
   return left.every((value, index) => value === right[index]);
-};
-
-const gcd = (a: number, b: number): number => {
-  let x = Math.abs(Math.round(a));
-  let y = Math.abs(Math.round(b));
-  while (y !== 0) {
-    const next = x % y;
-    x = y;
-    y = next;
-  }
-  return x || 1;
 };
 
 const ICON_COMPONENTS = Object.entries(LucideIcons).reduce(
@@ -159,6 +160,7 @@ const ICON_NAMES = Object.keys(ICON_COMPONENTS);
 
 type AssetKind =
   | "text"
+  | "slider"
   | "button-slider"
   | "movement"
   | "icon"
@@ -183,6 +185,26 @@ type ButtonPressMode = "tap" | "hold";
 type TeamSide = "red" | "blue";
 type InputValueMode = "text" | "numbers" | "both";
 type ToggleStyle = "switch" | "box";
+type ScoutType = "match" | "qualitative" | "pit";
+type AutoTeleopScope = "auto" | "teleop";
+
+type PostMatchQuestionType =
+  | "text"
+  | "slider"
+  | "all-that-apply"
+  | "single-select";
+
+type PostMatchQuestion = {
+  id: string;
+  text: string;
+  type: PostMatchQuestionType;
+  tag?: string;
+  options: string[];
+  sliderMin?: number;
+  sliderMax?: number;
+  sliderLeftText?: string;
+  sliderRightText?: string;
+};
 
 type CanvasItem = {
   id: string;
@@ -216,7 +238,17 @@ type CanvasItem = {
   autoToggleMode?: "auto" | "teleop";
   autoToggleDurationSeconds?: number;
   autoToggleTeleopDurationSeconds?: number;
+  autoTeleopScope?: AutoTeleopScope;
   buttonSliderIncreaseDirection?: "left" | "right";
+  sliderMax?: number;
+  sliderMid?: number;
+  sliderLeftText?: string;
+  sliderRightText?: string;
+  sliderValue?: number;
+  stageRemoveParentTag?: boolean;
+  successTrackingEnabled?: boolean;
+  successPopoverOffsetX?: number;
+  successPopoverOffsetY?: number;
   teamSide?: TeamSide;
   increment?: number;
   swapRedSide?: "left" | "right";
@@ -233,7 +265,9 @@ const isActionButtonKind = (kind: AssetKind): kind is ActionButtonKind =>
   kind === "undo" || kind === "redo" || kind === "submit" || kind === "reset";
 
 const getAssetSize = (kind: AssetKind) =>
-  kind === "icon"
+  kind === "slider"
+    ? SLIDER_SIZE
+    : kind === "icon"
     ? ICON_BUTTON_SIZE
     : kind === "movement"
       ? MOVEMENT_SIZE
@@ -267,6 +301,8 @@ const getResizeMinSize = (kind: AssetKind) =>
 const getDefaultLabelForKind = (kind: AssetKind) =>
   kind === "icon"
     ? "Bot"
+    : kind === "slider"
+      ? "Slider"
     : kind === "button-slider"
       ? "Button Slider"
     : kind === "movement"
@@ -372,6 +408,35 @@ const getMovementDirectionSymbol = (direction: "left" | "right") =>
 
 const normalizeStageParentOption = (value: unknown) => value === true;
 
+const normalizeScoutType = (value: unknown): ScoutType =>
+  value === "qualitative" || value === "pit" ? value : "match";
+
+const SCOUT_TYPE_ALLOWED_ASSETS: Record<ScoutType, AssetKind[]> = {
+  match: [
+    "text",
+    "slider",
+    "button-slider",
+    "movement",
+    "icon",
+    "mirror",
+    "swap",
+    "cover",
+    "start-position",
+    "input",
+    "team-select",
+    "match-select",
+    "toggle",
+    "auto-toggle",
+    "undo",
+    "redo",
+    "submit",
+    "reset",
+    "log",
+  ],
+  qualitative: ["team-select", "match-select", "submit", "reset", "input", "cover"],
+  pit: ["team-select", "match-select", "submit", "reset", "input", "cover", "toggle"],
+};
+
 const sanitizeInputValueByMode = (value: string, mode: InputValueMode): string => {
   if (mode === "numbers") {
     return value.replace(/[^0-9]/g, "");
@@ -418,6 +483,9 @@ type PersistedEditorState = {
   aspectWidth: string;
   aspectHeight: string;
   backgroundImage: string | null;
+  backgroundLocation?: string | null;
+  scoutType?: ScoutType;
+  postMatchQuestions?: PostMatchQuestion[];
   eventKey?: string;
   coordinateSpace?: string;
   useCustomSideLayouts?: boolean;
@@ -439,6 +507,9 @@ type EditorSnapshot = {
   aspectWidth: string;
   aspectHeight: string;
   backgroundImage: string | null;
+  backgroundLocation: string | null;
+  scoutType: ScoutType;
+  postMatchQuestions: PostMatchQuestion[];
   eventKey: string;
   useCustomSideLayouts: boolean;
   editorTeamSide: TeamSide;
@@ -524,6 +595,7 @@ const serializeCanvasItem = (
 const normalizeLoadedItemKind = (kind: unknown): AssetKind => {
   if (kind === "button" || kind === "text") return "text";
   if (
+    kind === "slider" ||
     kind === "button-slider" ||
     kind === "movement" ||
     kind === "icon" ||
@@ -629,6 +701,58 @@ const fromPersistedItem = (
               value.buttonSliderIncreaseDirection ?? value.buttonSliderDirection
             )
           : undefined,
+      sliderMax:
+        resolvedKind === "slider" &&
+        typeof value.sliderMax === "number" &&
+        Number.isFinite(value.sliderMax)
+          ? Math.max(1, value.sliderMax)
+          : resolvedKind === "slider"
+            ? 100
+            : undefined,
+      sliderMid:
+        resolvedKind === "slider" &&
+        typeof value.sliderMid === "number" &&
+        Number.isFinite(value.sliderMid)
+          ? Math.max(0, value.sliderMid)
+          : resolvedKind === "slider"
+            ? 50
+            : undefined,
+      sliderLeftText:
+        resolvedKind === "slider" && typeof value.sliderLeftText === "string"
+          ? value.sliderLeftText
+          : resolvedKind === "slider"
+            ? "Low"
+            : undefined,
+      sliderRightText:
+        resolvedKind === "slider" && typeof value.sliderRightText === "string"
+          ? value.sliderRightText
+          : resolvedKind === "slider"
+            ? "High"
+            : undefined,
+      stageRemoveParentTag:
+        isStageableRootItem({ ...(value as CanvasItem), kind: resolvedKind })
+          ? normalizeStageParentOption(value.stageRemoveParentTag)
+          : undefined,
+      successTrackingEnabled:
+        resolvedKind === "text" || resolvedKind === "icon"
+          ? normalizeStageParentOption(value.successTrackingEnabled)
+          : undefined,
+      successPopoverOffsetX:
+        (resolvedKind === "text" || resolvedKind === "icon") &&
+        typeof value.successPopoverOffsetX === "number" &&
+        Number.isFinite(value.successPopoverOffsetX)
+          ? value.successPopoverOffsetX
+          : undefined,
+      successPopoverOffsetY:
+        (resolvedKind === "text" || resolvedKind === "icon") &&
+        typeof value.successPopoverOffsetY === "number" &&
+        Number.isFinite(value.successPopoverOffsetY)
+          ? value.successPopoverOffsetY
+          : undefined,
+      autoTeleopScope:
+        value.autoTeleopScope === "auto" || value.autoTeleopScope === "teleop"
+          ? value.autoTeleopScope
+          : undefined,
       movementDirection:
         resolvedKind === "movement"
           ? normalizeMovementDirection(value.movementDirection ?? value.label)
@@ -723,6 +847,47 @@ const parsePersistedEditorState = (
     typeof source.aspectHeight === "string" ? source.aspectHeight : "9";
   const backgroundImage =
     typeof source.backgroundImage === "string" ? source.backgroundImage : null;
+  const backgroundLocation =
+    typeof source.backgroundLocation === "string" ? source.backgroundLocation : null;
+  const scoutType = normalizeScoutType(source.scoutType);
+  const postMatchQuestions = Array.isArray(source.postMatchQuestions)
+    ? source.postMatchQuestions
+        .filter((question): question is Record<string, unknown> => isRecord(question))
+        .map((question, index) => ({
+          id:
+            typeof question.id === "string" && question.id.trim().length > 0
+              ? question.id
+              : `post-q-${index}`,
+          text: typeof question.text === "string" ? question.text : "",
+          type: (
+            question.type === "slider" ||
+            question.type === "all-that-apply" ||
+            question.type === "single-select"
+              ? question.type
+              : "text"
+          ) as PostMatchQuestionType,
+          tag:
+            typeof question.tag === "string" ? normalizeTag(question.tag) : "",
+          options: Array.isArray(question.options)
+            ? question.options
+                .filter((entry): entry is string => typeof entry === "string")
+                .map((entry) => entry.trim())
+                .filter(Boolean)
+            : [],
+          sliderMin:
+            typeof question.sliderMin === "number" && Number.isFinite(question.sliderMin)
+              ? Math.round(question.sliderMin)
+              : 0,
+          sliderMax:
+            typeof question.sliderMax === "number" && Number.isFinite(question.sliderMax)
+              ? Math.round(question.sliderMax)
+              : 10,
+          sliderLeftText:
+            typeof question.sliderLeftText === "string" ? question.sliderLeftText : "Low",
+          sliderRightText:
+            typeof question.sliderRightText === "string" ? question.sliderRightText : "High",
+        }))
+    : [];
   const eventKey = typeof source.eventKey === "string" ? source.eventKey : "";
   const useCustomSideLayouts = Boolean(source.useCustomSideLayouts ?? false);
   const editorTeamSide: TeamSide =
@@ -763,6 +928,9 @@ const parsePersistedEditorState = (
     aspectWidth,
     aspectHeight,
     backgroundImage,
+    backgroundLocation,
+    scoutType,
+    postMatchQuestions,
     eventKey,
     coordinateSpace:
       typeof source.coordinateSpace === "string" ? source.coordinateSpace : undefined,
@@ -793,6 +961,18 @@ const parseImportedEditorState = (
         buttonSliderIncreaseDirection:
           item.kind === "button-slider"
             ? normalizeButtonSliderIncreaseDirection(item.buttonSliderIncreaseDirection)
+            : undefined,
+        sliderMax:
+          item.kind === "slider"
+            ? typeof item.sliderMax === "number" && Number.isFinite(item.sliderMax)
+              ? Math.max(1, item.sliderMax)
+              : 100
+            : undefined,
+        sliderMid:
+          item.kind === "slider"
+            ? typeof item.sliderMid === "number" && Number.isFinite(item.sliderMid)
+              ? Math.max(0, item.sliderMid)
+              : 50
             : undefined,
         teamSide:
           item.teamSide === "red" || item.teamSide === "blue"
@@ -932,6 +1112,14 @@ const parseImportedEditorState = (
                 data.hideOtherElementsInStage ?? data.hideAllOtherElementsInStage
               )
             : undefined,
+        stageRemoveParentTag:
+          resolvedKind === "text"
+            ? normalizeStageParentOption(data.removeParentTag)
+            : undefined,
+        successTrackingEnabled:
+          resolvedKind === "text"
+            ? normalizeStageParentOption(data.trackSuccess)
+            : undefined,
         tag: resolvedKind === "text" ? tag : "",
         teamSide: toTeamSide(data.teamSide),
       };
@@ -971,6 +1159,8 @@ const parseImportedEditorState = (
         stageHideOtherElementsInStage: normalizeStageParentOption(
           data.hideOtherElementsInStage ?? data.hideAllOtherElementsInStage
         ),
+        stageRemoveParentTag: normalizeStageParentOption(data.removeParentTag),
+        successTrackingEnabled: normalizeStageParentOption(data.trackSuccess),
         tag,
         teamSide: toTeamSide(data.teamSide),
       };
@@ -1003,6 +1193,40 @@ const parseImportedEditorState = (
         buttonSliderIncreaseDirection: normalizeButtonSliderIncreaseDirection(
           data.increaseDirection
         ),
+        teamSide: toTeamSide(data.teamSide),
+      };
+    }
+
+    if (isRecord(entry.slider)) {
+      const data = entry.slider;
+      const width = scaleWidth(data.width, SLIDER_SIZE.width);
+      const height = scaleHeight(data.height, SLIDER_SIZE.height);
+      const centerItemX = scaleX(data.x);
+      const centerItemY = scaleY(data.y);
+      const tag = readTag(data.tag);
+      if (tag) {
+        if (!tagToIds.has(tag)) tagToIds.set(tag, []);
+        tagToIds.get(tag)!.push(id);
+      }
+      return {
+        id,
+        kind: "slider",
+        x: centerItemX - width / 2,
+        y: centerItemY - height / 2,
+        width,
+        height,
+        label: typeof data.label === "string" ? data.label : "Slider",
+        tag,
+        sliderMax:
+          typeof data.max === "number" && Number.isFinite(data.max)
+            ? Math.max(1, data.max)
+            : 100,
+        sliderMid:
+          typeof data.mid === "number" && Number.isFinite(data.mid)
+            ? Math.max(0, data.mid)
+            : 50,
+        sliderLeftText: typeof data.leftText === "string" ? data.leftText : "Low",
+        sliderRightText: typeof data.rightText === "string" ? data.rightText : "High",
         teamSide: toTeamSide(data.teamSide),
       };
     }
@@ -1443,6 +1667,38 @@ function PaletteButtonSliderButton({ onPalettePointerDown }: PaletteButtonProps)
       <span className="flex flex-col items-start leading-tight">
         <span className="text-sm font-semibold">Button Slider</span>
         <span className="text-xs text-white/55">Drag to increment faster</span>
+      </span>
+    </Button>
+  );
+}
+
+function PaletteSliderButton({ onPalettePointerDown }: PaletteButtonProps) {
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+    id: "palette-slider",
+    data: { type: "palette", assetKind: "slider" } satisfies DragData,
+  });
+
+  const style: React.CSSProperties = {
+    opacity: isDragging ? 0 : 1,
+  };
+
+  return (
+    <Button
+      ref={setNodeRef}
+      style={style}
+      variant="outline"
+      className="mx-auto h-[58px] w-[calc(100%-8px)] justify-start gap-3 rounded-xl border-white/10 bg-slate-900/70 px-3 text-left text-white transition-all duration-150 hover:border-white/20 hover:bg-slate-800/80"
+      onPointerDownCapture={(event) => onPalettePointerDown("slider", event)}
+      {...attributes}
+      {...listeners}
+      type="button"
+    >
+      <span className="flex h-8 w-8 items-center justify-center rounded-md bg-sky-500/20 text-sky-200">
+        <span className="text-[10px] font-semibold">SL</span>
+      </span>
+      <span className="flex flex-col items-start leading-tight">
+        <span className="text-sm font-semibold">Slider</span>
+        <span className="text-xs text-white/55">Drag thumb to set value</span>
       </span>
     </Button>
   );
@@ -1970,12 +2226,16 @@ function CanvasButton({
   onPreviewButtonSliderDragStart,
   onPreviewButtonSliderDragMove,
   onPreviewButtonSliderDragEnd,
+  onPreviewSuccessToggle,
+  onPreviewSuccessSelect,
+  onSuccessContextAdjust,
   onPreviewStageToggle,
   onStageContextMenu,
   hasStages,
   isPreviewPressed,
   previewButtonSliderValue,
   previewButtonSliderDragInfo,
+  previewSuccessOpen,
   isCustomSideLayoutsEnabled,
   visibleTeamSide,
   previewHoldDurationMs,
@@ -1997,12 +2257,16 @@ function CanvasButton({
   ) => void;
   onPreviewButtonSliderDragMove: (itemId: string, clientX: number) => void;
   onPreviewButtonSliderDragEnd: (itemId: string) => void;
+  onPreviewSuccessToggle: (itemId: string) => void;
+  onPreviewSuccessSelect: (itemId: string, value: "success" | "fail") => void;
+  onSuccessContextAdjust: (itemId: string) => void;
   onPreviewStageToggle: (itemId: string) => void;
   onStageContextMenu: (itemId: string) => void;
   hasStages: boolean;
   isPreviewPressed: boolean;
   previewButtonSliderValue?: number;
   previewButtonSliderDragInfo?: ButtonSliderDragInfo;
+  previewSuccessOpen: boolean;
   isCustomSideLayoutsEnabled: boolean;
   visibleTeamSide: TeamSide;
   previewHoldDurationMs?: number;
@@ -2145,6 +2409,10 @@ function CanvasButton({
           return;
         }
         if (item.kind === "icon" || item.kind === "text") {
+          if (item.successTrackingEnabled) {
+            onPreviewSuccessToggle(item.id);
+            return;
+          }
           if (normalizeButtonPressMode(item.buttonPressMode) === "hold") {
             return;
           }
@@ -2169,6 +2437,13 @@ function CanvasButton({
           onSwapSides();
           return;
         }
+        if (
+          (item.kind === "text" || item.kind === "icon") &&
+          item.successTrackingEnabled
+        ) {
+          onSuccessContextAdjust(item.id);
+          return;
+        }
         if (!hasStages) return;
         onStageContextMenu(item.id);
       }}
@@ -2187,7 +2462,35 @@ function CanvasButton({
             : undefined
       }
     >
-      {isHoldTimerVisible ? (
+      {previewSuccessOpen ? (
+        <span
+          className="absolute inset-0 grid grid-cols-2 overflow-hidden rounded-md"
+          style={{
+            transform: `translate(${item.successPopoverOffsetX ?? 0}px, ${item.successPopoverOffsetY ?? 0}px)`,
+          }}
+        >
+          <button
+            type="button"
+            className="flex items-center justify-center bg-emerald-600/90 text-white"
+            onClick={(event) => {
+              event.stopPropagation();
+              onPreviewSuccessSelect(item.id, "success");
+            }}
+          >
+            <Check className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            className="flex items-center justify-center bg-rose-600/90 text-white"
+            onClick={(event) => {
+              event.stopPropagation();
+              onPreviewSuccessSelect(item.id, "fail");
+            }}
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </span>
+      ) : isHoldTimerVisible ? (
         <span className="truncate tabular-nums">{holdTimerLabel}</span>
       ) : isPreviewMode && item.kind === "button-slider" && hasButtonSliderValue ? (
         <span className="truncate tabular-nums">{previewButtonSliderValue ?? 0}</span>
@@ -2274,6 +2577,22 @@ function CanvasButton({
           <ChevronDown className="h-3 w-3" />
         </span>
       ) : null}
+      {item.successTrackingEnabled ? (
+        <span className="pointer-events-none absolute -left-1 -top-1 inline-flex h-4 w-4 items-center justify-center rounded-full bg-emerald-900 text-emerald-200">
+          <Check className="h-2.5 w-2.5" />
+        </span>
+      ) : null}
+      {item.autoTeleopScope && !isPreviewMode ? (
+        <span
+          className={`pointer-events-none absolute -right-1 -top-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[9px] font-bold ${
+            item.autoTeleopScope === "auto"
+              ? "bg-amber-500/90 text-black"
+              : "bg-cyan-500/90 text-black"
+          }`}
+        >
+          {item.autoTeleopScope === "auto" ? "A" : "T"}
+        </span>
+      ) : null}
       {!isPreviewMode ? (
         <span
           role="presentation"
@@ -2334,7 +2653,7 @@ function CanvasMirrorLine({
     willChange: "transform",
   };
 
-  return React.useMemo(() => (
+  return (
     <div
       ref={setNodeRef}
       style={style}
@@ -2385,7 +2704,7 @@ function CanvasMirrorLine({
         </>
       ) : null}
     </div>
-  ), [item, style, isPreviewMode, attributes, listeners, onSelect, onHandleStart, width, height, relativeStartX, relativeStartY, relativeEndX, relativeEndY, isSnapped]);
+  );
 }
 
 function CanvasCover({
@@ -2696,6 +3015,17 @@ function CanvasInput({
           }}
         />
       )}
+      {item.autoTeleopScope && !isPreviewMode ? (
+        <span
+          className={`pointer-events-none absolute -top-1 -right-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[9px] font-bold ${
+            item.autoTeleopScope === "auto"
+              ? "bg-amber-500/90 text-black"
+              : "bg-cyan-500/90 text-black"
+          }`}
+        >
+          {item.autoTeleopScope === "auto" ? "A" : "T"}
+        </span>
+      ) : null}
       {!isPreviewMode ? (
         <span
           role="presentation"
@@ -2831,6 +3161,17 @@ function CanvasTeamSelect({
           <ChevronDown className="h-3 w-3" />
         </span>
       ) : null}
+      {item.autoTeleopScope && !isPreviewMode ? (
+        <span
+          className={`pointer-events-none absolute -top-1 left-0 inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[9px] font-bold ${
+            item.autoTeleopScope === "auto"
+              ? "bg-amber-500/90 text-black"
+              : "bg-cyan-500/90 text-black"
+          }`}
+        >
+          {item.autoTeleopScope === "auto" ? "A" : "T"}
+        </span>
+      ) : null}
       {!isPreviewMode ? (
         <span
           role="presentation"
@@ -2942,6 +3283,17 @@ function CanvasMatchSelect({
           +
         </Button>
       </div>
+      {item.autoTeleopScope && !isPreviewMode ? (
+        <span
+          className={`pointer-events-none absolute -top-1 -right-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[9px] font-bold ${
+            item.autoTeleopScope === "auto"
+              ? "bg-amber-500/90 text-black"
+              : "bg-cyan-500/90 text-black"
+          }`}
+        >
+          {item.autoTeleopScope === "auto" ? "A" : "T"}
+        </span>
+      ) : null}
       {!isPreviewMode ? (
         <span
           role="presentation"
@@ -3008,6 +3360,109 @@ function CanvasLog({
           {logText || "Submit in preview to display input values."}
         </pre>
       </div>
+      {!isPreviewMode ? (
+        <span
+          role="presentation"
+          onPointerDown={(event) => onResizeStart(event, item)}
+          className="absolute bottom-1 right-1 hidden h-3 w-3 cursor-se-resize rounded-sm border border-white/60 bg-white/80 group-hover:block"
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function CanvasSlider({
+  item,
+  onResizeStart,
+  onSelect,
+  previewValue,
+  onPreviewValueChange,
+  snapOffset,
+  isPreviewMode,
+}: {
+  item: CanvasItem;
+  onResizeStart: (event: React.PointerEvent, item: CanvasItem) => void;
+  onSelect: (itemId: string, options?: { append?: boolean }) => void;
+  previewValue: number;
+  onPreviewValueChange: (itemId: string, value: number) => void;
+  snapOffset?: { x: number; y: number };
+  isPreviewMode?: boolean;
+}) {
+  const { attributes, listeners, setNodeRef, transform } = useDraggable({
+    id: item.id,
+    disabled: Boolean(isPreviewMode),
+    data: { type: "canvas", itemId: item.id } satisfies DragData,
+  });
+
+  const max = Math.max(1, item.sliderMax ?? 100);
+  const value = Math.max(0, Math.min(max, previewValue));
+  const percent = max > 0 ? (value / max) * 100 : 0;
+
+  const style: React.CSSProperties = {
+    transform: toDragTransform(true, transform, snapOffset),
+    left: item.x,
+    top: item.y,
+    width: item.width,
+    height: item.height,
+    transition: isPreviewMode ? undefined : "none",
+    willChange: "transform",
+  };
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className={`group absolute rounded-md border border-white/15 bg-slate-900/90 p-2 ${
+        isPreviewMode ? "transition-all duration-150 ease-out" : "!transition-none"
+      }`}
+      onPointerDownCapture={(event) => {
+        if (!isPreviewMode) onSelect(item.id, { append: event.button === 2 });
+      }}
+      onContextMenu={(event) => {
+        if (isPreviewMode) return;
+        event.preventDefault();
+        onSelect(item.id, { append: true });
+      }}
+      {...attributes}
+      {...listeners}
+      data-canvas-item="true"
+    >
+      <div className="relative flex h-full w-full flex-col justify-end gap-1 pt-4">
+        <div className="pointer-events-none absolute left-0 top-0 max-w-full truncate text-[10px] font-medium text-white/85">
+          {item.label || "Slider"}
+        </div>
+        <div
+          className="pointer-events-none absolute top-0 -translate-x-1/2 rounded bg-slate-950/95 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-white"
+          style={{ left: `${percent}%` }}
+        >
+          {value}
+        </div>
+        <Slider
+          value={[value]}
+          max={max}
+          step={1}
+          className="w-full"
+          onValueChange={(next) => {
+            if (!isPreviewMode) return;
+            onPreviewValueChange(item.id, next[0] ?? 0);
+          }}
+        />
+        <div className="flex items-center justify-between text-[10px] text-white/70">
+          <span>{item.sliderLeftText ?? "Low"}</span>
+          <span>{item.sliderRightText ?? "High"}</span>
+        </div>
+      </div>
+      {item.autoTeleopScope && !isPreviewMode ? (
+        <span
+          className={`pointer-events-none absolute -top-1 -right-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[9px] font-bold ${
+            item.autoTeleopScope === "auto"
+              ? "bg-amber-500/90 text-black"
+              : "bg-cyan-500/90 text-black"
+          }`}
+        >
+          {item.autoTeleopScope === "auto" ? "A" : "T"}
+        </span>
+      ) : null}
       {!isPreviewMode ? (
         <span
           role="presentation"
@@ -3169,6 +3624,17 @@ function CanvasToggle({
           </Label>
         ) : null}
       </div>
+      {item.autoTeleopScope && !isPreviewMode ? (
+        <span
+          className={`pointer-events-none absolute -top-1 -right-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[9px] font-bold ${
+            item.autoTeleopScope === "auto"
+              ? "bg-amber-500/90 text-black"
+              : "bg-cyan-500/90 text-black"
+          }`}
+        >
+          {item.autoTeleopScope === "auto" ? "A" : "T"}
+        </span>
+      ) : null}
       {!isPreviewMode ? (
         <span
           role="presentation"
@@ -3185,6 +3651,8 @@ function CanvasAutoToggle({
   onResizeStart,
   onSelect,
   onToggle,
+  onContextSwapVisibility,
+  visibilityMode,
   countdownSeconds,
   snapOffset,
   isPreviewMode,
@@ -3194,6 +3662,8 @@ function CanvasAutoToggle({
   onResizeStart: (event: React.PointerEvent, item: CanvasItem) => void;
   onSelect: (itemId: string, options?: { append?: boolean }) => void;
   onToggle: (itemId: string) => void;
+  onContextSwapVisibility: () => void;
+  visibilityMode?: AutoTeleopScope | null;
   countdownSeconds?: number;
   snapOffset?: { x: number; y: number };
   isPreviewMode?: boolean;
@@ -3216,12 +3686,13 @@ function CanvasAutoToggle({
   };
 
   const mode = item.autoToggleMode ?? "auto";
+  const displayMode = !isPreviewMode && visibilityMode ? visibilityMode : mode;
   const controlScale = getWidgetScale(item, AUTO_TOGGLE_SIZE, 0.2, 2.1);
   const textSize = Math.max(6, Math.round(12 * controlScale));
   const groupGap = Math.max(0, Math.round(4 * controlScale));
   const groupPadding = Math.max(0, Math.round(4 * controlScale));
   const autoLabel =
-    mode === "auto" && typeof countdownSeconds === "number"
+    displayMode === "auto" && mode === "auto" && typeof countdownSeconds === "number"
       ? `${Math.max(0, countdownSeconds)}s`
       : "Auto";
   const orderedModes = isSwapMirrored
@@ -3242,6 +3713,7 @@ function CanvasAutoToggle({
         if (isPreviewMode) return;
         event.preventDefault();
         onSelect(item.id, { append: true });
+        onContextSwapVisibility();
       }}
       onClick={() => {
         if (isPreviewMode) {
@@ -3254,7 +3726,7 @@ function CanvasAutoToggle({
     >
       <ToggleGroup
         type="single"
-        value={mode}
+        value={displayMode}
         className="grid h-full w-full grid-cols-2 rounded-md border border-white/20 bg-slate-900/90"
         style={{ gap: groupGap, padding: groupPadding }}
       >
@@ -3271,6 +3743,17 @@ function CanvasAutoToggle({
           </ToggleGroupItem>
         ))}
       </ToggleGroup>
+      {item.autoTeleopScope && !isPreviewMode ? (
+        <span
+          className={`pointer-events-none absolute -top-1 -right-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[9px] font-bold ${
+            item.autoTeleopScope === "auto"
+              ? "bg-amber-500/90 text-black"
+              : "bg-cyan-500/90 text-black"
+          }`}
+        >
+          {item.autoTeleopScope === "auto" ? "A" : "T"}
+        </span>
+      ) : null}
       {!isPreviewMode ? (
         <span
           role="presentation"
@@ -3315,6 +3798,7 @@ const MemoCanvasButton = React.memo(
     prev.onStageContextMenu === next.onStageContextMenu &&
     prev.isPreviewPressed === next.isPreviewPressed &&
     prev.previewButtonSliderValue === next.previewButtonSliderValue &&
+    prev.previewSuccessOpen === next.previewSuccessOpen &&
     areButtonSliderDragInfosEqual(
       prev.previewButtonSliderDragInfo,
       next.previewButtonSliderDragInfo
@@ -3382,6 +3866,14 @@ const MemoCanvasLog = React.memo(
     prev.isPreviewMode === next.isPreviewMode &&
     areSnapOffsetsEqual(prev.snapOffset, next.snapOffset)
 );
+const MemoCanvasSlider = React.memo(
+  CanvasSlider,
+  (prev, next) =>
+    prev.item === next.item &&
+    prev.previewValue === next.previewValue &&
+    prev.isPreviewMode === next.isPreviewMode &&
+    areSnapOffsetsEqual(prev.snapOffset, next.snapOffset)
+);
 const MemoCanvasToggle = React.memo(
   CanvasToggle,
   (prev, next) =>
@@ -3394,6 +3886,7 @@ const MemoCanvasAutoToggle = React.memo(
   CanvasAutoToggle,
   (prev, next) =>
     prev.item === next.item &&
+    prev.onContextSwapVisibility === next.onContextSwapVisibility &&
     prev.isSwapMirrored === next.isSwapMirrored &&
     prev.countdownSeconds === next.countdownSeconds &&
     prev.isPreviewMode === next.isPreviewMode &&
@@ -3447,6 +3940,11 @@ export default function EditorPage() {
   const [aspectHeightDraft, setAspectHeightDraft] = React.useState("9");
   const [eventKey, setEventKey] = React.useState("");
   const [eventKeyDraft, setEventKeyDraft] = React.useState("");
+  const [scoutType, setScoutType] = React.useState<ScoutType>("match");
+  const [postMatchQuestions, setPostMatchQuestions] = React.useState<PostMatchQuestion[]>(
+    []
+  );
+  const [backgroundLocation, setBackgroundLocation] = React.useState<string | null>(null);
   const [isAlignmentAssistEnabled, setIsAlignmentAssistEnabled] =
     React.useState(true);
   const [isAssetsPanelHidden, setIsAssetsPanelHidden] = React.useState(false);
@@ -3489,6 +3987,18 @@ export default function EditorPage() {
   const [previewButtonSliderValues, setPreviewButtonSliderValues] = React.useState<
     Record<string, number>
   >({});
+  const [previewSliderValues, setPreviewSliderValues] = React.useState<
+    Record<string, number>
+  >({});
+  const [autoTeleopScopedEditMode, setAutoTeleopScopedEditMode] = React.useState<
+    AutoTeleopScope | null
+  >(null);
+  const [autoTeleopVisibilityMode, setAutoTeleopVisibilityMode] = React.useState<
+    AutoTeleopScope | null
+  >(null);
+  const [previewSuccessOpenItemId, setPreviewSuccessOpenItemId] = React.useState<string | null>(
+    null
+  );
   const [previewButtonSliderDragById, setPreviewButtonSliderDragById] = React.useState<
     Record<string, ButtonSliderDragInfo>
   >({});
@@ -3526,7 +4036,6 @@ export default function EditorPage() {
   const tagInputRef = React.useRef<HTMLInputElement | null>(null);
   const tutorialHelpButtonRef = React.useRef<HTMLButtonElement | null>(null);
   const [backgroundImage, setBackgroundImage] = React.useState<string | null>(null);
-  const backgroundInputRef = React.useRef<HTMLInputElement | null>(null);
   const [isUserMenuOpen, setIsUserMenuOpen] = React.useState(false);
   const [avatarLoadFailed, setAvatarLoadFailed] = React.useState(false);
   const userMenuRef = React.useRef<HTMLDivElement | null>(null);
@@ -3539,6 +4048,10 @@ export default function EditorPage() {
   const [exportJson, setExportJson] = React.useState("");
   const [isUploadDialogOpen, setIsUploadDialogOpen] = React.useState(false);
   const [isImportDialogOpen, setIsImportDialogOpen] = React.useState(false);
+  const [isBackgroundPickerOpen, setIsBackgroundPickerOpen] = React.useState(false);
+  const [backgroundPresets, setBackgroundPresets] = React.useState<FieldBackgroundOption[]>(
+    [NO_BACKGROUND_OPTION]
+  );
   const [isResetDialogOpen, setIsResetDialogOpen] = React.useState(false);
   const [isDisableCustomSideDialogOpen, setIsDisableCustomSideDialogOpen] =
     React.useState(false);
@@ -3566,6 +4079,7 @@ export default function EditorPage() {
     contentHash: string | null;
     isDraft: boolean | null;
     isPublic: boolean;
+    scoutType?: ScoutType;
   } | null>(null);
   const [isInteractingWithCanvas, setIsInteractingWithCanvas] =
     React.useState(false);
@@ -3715,13 +4229,84 @@ export default function EditorPage() {
 
   const currentVisibleTeamSide = isPreviewMode ? previewTeamSide : editorTeamSide;
 
+  const activeAutoTeleopMode = React.useMemo<AutoTeleopScope>(() => {
+    const toggle = items.find((item) => item.kind === "auto-toggle");
+    return toggle?.autoToggleMode === "teleop" ? "teleop" : "auto";
+  }, [items]);
+
+  const selectedPresetBackground = React.useMemo(
+    () =>
+      backgroundPresets.find(
+        (entry) => entry.key === (backgroundLocation ?? "none")
+      ) ?? NO_BACKGROUND_OPTION,
+    [backgroundLocation, backgroundPresets]
+  );
+
+  React.useEffect(() => {
+    let cancelled = false;
+
+    const loadFieldBackgrounds = async () => {
+      try {
+        const response = await fetch("/api/field-backgrounds");
+        if (!response.ok) return;
+        const body = (await response.json()) as {
+          backgrounds?: Array<{ key: string; name: string; imageUrl: string }>;
+        };
+        if (!Array.isArray(body.backgrounds) || cancelled) return;
+
+        const normalized = body.backgrounds
+          .filter((entry) =>
+            typeof entry?.key === "string" &&
+            typeof entry?.name === "string" &&
+            typeof entry?.imageUrl === "string"
+          )
+          .map((entry) => ({
+            key: entry.key,
+            name: entry.name,
+            imageUrl: entry.imageUrl,
+          }));
+
+        setBackgroundPresets([NO_BACKGROUND_OPTION, ...normalized]);
+      } catch {
+        if (!cancelled) {
+          setBackgroundPresets([NO_BACKGROUND_OPTION]);
+        }
+      }
+    };
+
+    void loadFieldBackgrounds();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const effectiveAutoTeleopVisibilityMode: AutoTeleopScope | null =
+    isPreviewMode ? activeAutoTeleopMode : autoTeleopVisibilityMode;
+
   const sideScopedItems = React.useMemo(() => {
-    if (!isCustomSideLayoutsEnabled) return items;
-    return items.filter((item) => {
+    const sideFiltered = isCustomSideLayoutsEnabled
+      ? items.filter((item) => {
+          if (item.kind === "mirror") return true;
+          return item.teamSide === currentVisibleTeamSide;
+        })
+      : items;
+
+    if (!effectiveAutoTeleopVisibilityMode) {
+      return sideFiltered;
+    }
+
+    return sideFiltered.filter((item) => {
       if (item.kind === "mirror") return true;
-      return item.teamSide === currentVisibleTeamSide;
+      if (!item.autoTeleopScope) return true;
+      return item.autoTeleopScope === effectiveAutoTeleopVisibilityMode;
     });
-  }, [currentVisibleTeamSide, isCustomSideLayoutsEnabled, items]);
+  }, [
+    currentVisibleTeamSide,
+    effectiveAutoTeleopVisibilityMode,
+    isCustomSideLayoutsEnabled,
+    items,
+  ]);
 
   const startPositionItem = React.useMemo(
     () => items.find((item) => item.kind === "start-position") ?? null,
@@ -3736,6 +4321,11 @@ export default function EditorPage() {
       assetSearchQuery.length === 0 ||
       keywords.some((keyword) => keyword.toLowerCase().includes(assetSearchQuery)),
     [assetSearchQuery]
+  );
+
+  const isAssetAllowedForScoutType = React.useCallback(
+    (kind: AssetKind) => SCOUT_TYPE_ALLOWED_ASSETS[scoutType].includes(kind),
+    [scoutType]
   );
 
   const clearAutoToggleTimer = React.useCallback((itemId: string) => {
@@ -4004,6 +4594,9 @@ export default function EditorPage() {
 
   const handleCanvasItemSelect = React.useCallback(
     (itemId: string, options?: { append?: boolean }) => {
+      if (autoTeleopScopedEditMode) {
+        setAutoTeleopScopedEditMode(null);
+      }
       const append = Boolean(options?.append);
       const targetItem = items.find((item) => item.id === itemId);
 
@@ -4038,7 +4631,7 @@ export default function EditorPage() {
       setSelectedItemIds([itemId]);
       setSelectedItemId(itemId);
     },
-    [items, selectedItemIds]
+    [autoTeleopScopedEditMode, items, selectedItemIds]
   );
 
   const visibleItemsRef = React.useRef<CanvasItem[]>(visibleItems);
@@ -4263,6 +4856,9 @@ export default function EditorPage() {
       aspectWidth,
       aspectHeight,
       backgroundImage,
+      backgroundLocation,
+      scoutType,
+      postMatchQuestions,
       eventKey,
       useCustomSideLayouts: isCustomSideLayoutsEnabled,
       editorTeamSide,
@@ -4272,11 +4868,14 @@ export default function EditorPage() {
     aspectHeight,
     aspectWidth,
     backgroundImage,
+    backgroundLocation,
     editorTeamSide,
     eventKey,
     isCustomSideLayoutsEnabled,
     items,
+    postMatchQuestions,
     previewTeamSide,
+    scoutType,
   ]);
 
   const selectedItem = React.useMemo(
@@ -4841,6 +5440,24 @@ export default function EditorPage() {
     [selectedItemId]
   );
 
+  const handleSelectedStageRemoveParentTagChange = React.useCallback(
+    (value: boolean) => {
+      if (!selectedItemId) return;
+      setItems((prev) =>
+        prev.map((item) =>
+          item.id === selectedItemId && isStageableRootItem(item)
+            ? {
+                ...item,
+                stageRemoveParentTag: value,
+                tag: value ? "" : item.tag,
+              }
+            : item
+        )
+      );
+    },
+    [selectedItemId]
+  );
+
   const handleToggleItem = React.useCallback((itemId: string) => {
     setItems((prev) =>
       prev.map((item) =>
@@ -4955,6 +5572,14 @@ export default function EditorPage() {
     [clearAutoToggleTimer, items]
   );
 
+  const handleAutoTeleopVisibilitySwap = React.useCallback(() => {
+    setAutoTeleopVisibilityMode((current) => {
+      if (current === "auto") return "teleop";
+      if (current === "teleop") return "auto";
+      return activeAutoTeleopMode === "auto" ? "teleop" : "auto";
+    });
+  }, [activeAutoTeleopMode]);
+
   const handlePreviewStartPositionTap = React.useCallback(
     (item: CanvasItem, xRatio: number, yRatio: number) => {
       const scopedKey = getScopedPreviewKey(item, item.id);
@@ -5020,6 +5645,14 @@ export default function EditorPage() {
       );
     },
     [selectedItemId]
+  );
+
+  const handleEnterAutoTeleopScopedEditMode = React.useCallback(
+    (scope: AutoTeleopScope) => {
+      setAutoTeleopScopedEditMode(scope);
+      setAutoTeleopVisibilityMode(null);
+    },
+    []
   );
 
   const enterStagingForItemId = React.useCallback((itemId: string) => {
@@ -5264,6 +5897,47 @@ export default function EditorPage() {
     [stopPreviewHoldForItem]
   );
 
+  const handlePreviewSuccessToggle = React.useCallback((itemId: string) => {
+    setPreviewSuccessOpenItemId((current) => (current === itemId ? null : itemId));
+  }, []);
+
+  const handlePreviewSuccessSelect = React.useCallback(
+    (itemId: string, value: "success" | "fail") => {
+      void value;
+      setPreviewSuccessOpenItemId((current) => (current === itemId ? null : current));
+    },
+    []
+  );
+
+  const handleSuccessContextAdjust = React.useCallback((itemId: string) => {
+    const positions = [
+      { x: 0, y: 0 },
+      { x: 0, y: -48 },
+      { x: 0, y: 48 },
+      { x: -48, y: 0 },
+      { x: 48, y: 0 },
+    ];
+
+    setItems((prev) =>
+      prev.map((item) => {
+        if (item.id !== itemId || (item.kind !== "text" && item.kind !== "icon")) {
+          return item;
+        }
+        const currentX = item.successPopoverOffsetX ?? 0;
+        const currentY = item.successPopoverOffsetY ?? 0;
+        const currentIndex = positions.findIndex(
+          (entry) => entry.x === currentX && entry.y === currentY
+        );
+        const next = positions[(currentIndex + 1) % positions.length] ?? positions[0];
+        return {
+          ...item,
+          successPopoverOffsetX: next.x,
+          successPopoverOffsetY: next.y,
+        };
+      })
+    );
+  }, []);
+
   const handlePreviewInputChange = React.useCallback(
     (item: CanvasItem, value: string) => {
       const mode = normalizeInputValueMode(item.inputValueMode);
@@ -5306,6 +5980,13 @@ export default function EditorPage() {
     [getScopedPreviewKey]
   );
 
+  const handlePreviewSliderChange = React.useCallback((itemId: string, value: number) => {
+    setPreviewSliderValues((prev) => ({
+      ...prev,
+      [itemId]: Math.max(0, Math.round(value)),
+    }));
+  }, []);
+
   const applyEditorSnapshot = React.useCallback(
     (snapshot: EditorSnapshot) => {
       isApplyingHistoryRef.current = true;
@@ -5313,6 +5994,9 @@ export default function EditorPage() {
       setAspectWidth(snapshot.aspectWidth);
       setAspectHeight(snapshot.aspectHeight);
       setBackgroundImage(snapshot.backgroundImage);
+      setBackgroundLocation(snapshot.backgroundLocation);
+      setScoutType(snapshot.scoutType);
+      setPostMatchQuestions(snapshot.postMatchQuestions);
       setEventKey(snapshot.eventKey);
       setEventKeyDraft(snapshot.eventKey);
       setIsCustomSideLayoutsEnabled(snapshot.useCustomSideLayouts);
@@ -5362,8 +6046,10 @@ export default function EditorPage() {
         setPreviewTeamSelectValues({});
         setPreviewMatchSelectValues({});
         setPreviewButtonSliderValues({});
+        setPreviewSliderValues({});
         setPreviewStartPositions({});
         setHiddenPreviewStartPositionIds({});
+        setPreviewSuccessOpenItemId(null);
         setPreviewLogText("");
         return;
       }
@@ -5383,7 +6069,9 @@ export default function EditorPage() {
               entry.kind === "input" ||
               entry.kind === "team-select" ||
               entry.kind === "match-select" ||
-              entry.kind === "start-position"
+              entry.kind === "start-position" ||
+              entry.kind === "slider" ||
+              entry.kind === "toggle"
           )
           .reduce<Record<string, string>>((accumulator, entry) => {
             const inputKey =
@@ -5393,6 +6081,10 @@ export default function EditorPage() {
                   ? entry.id
                 : entry.kind === "start-position"
                   ? entry.id
+                : entry.kind === "slider"
+                  ? normalizeTag(entry.tag ?? "") || entry.id
+                : entry.kind === "toggle"
+                  ? normalizeTag(entry.tag ?? "") || entry.id
                 : normalizeTag(entry.tag ?? "") || entry.id;
             const scopedInputKey = getScopedPreviewKey(entry, inputKey);
             const outputKey =
@@ -5402,6 +6094,10 @@ export default function EditorPage() {
                   ? "Match Select"
                 : entry.kind === "start-position"
                   ? entry.label || "Start Position"
+                : entry.kind === "slider"
+                  ? normalizeTag(entry.tag ?? "") || entry.label || entry.id
+                : entry.kind === "toggle"
+                  ? normalizeTag(entry.tag ?? "") || entry.label || entry.id
                 : normalizeTag(entry.tag ?? "") || entry.label || entry.id;
             accumulator[outputKey] =
               entry.kind === "team-select"
@@ -5419,6 +6115,10 @@ export default function EditorPage() {
                         previewStartPositions[scopedInputKey].yRatio * 100
                       )}%`
                     : "Not marked"
+                : entry.kind === "slider"
+                  ? String(previewSliderValues[entry.id] ?? Math.max(0, Math.min(entry.sliderMax ?? 100, entry.sliderMid ?? 50)))
+                : entry.kind === "toggle"
+                  ? String(Boolean(entry.toggleOn))
                 : previewInputValues[scopedInputKey] ?? "";
             return accumulator;
           }, {});
@@ -5430,6 +6130,7 @@ export default function EditorPage() {
       clearAllPreviewButtonSliderLoops,
       items,
       previewInputValues,
+      previewSliderValues,
       getScopedPreviewKey,
       previewMatchSelectValues,
       previewStartPositions,
@@ -5867,7 +6568,10 @@ export default function EditorPage() {
     setIsInputDialogOpen(false);
   }, [inputEditingId, inputLabelDraft, inputPlaceholderDraft, inputTagDraft]);
 
-  const buildExportPayload = React.useCallback(() => {
+  const buildExportPayload = React.useCallback((options?: {
+    validateTags?: boolean;
+    showValidationErrors?: boolean;
+  }) => {
     const canvasElement = canvasRef.current;
     if (!canvasElement) return null;
 
@@ -5918,7 +6622,7 @@ export default function EditorPage() {
     };
 
     const getExportTagVariants = (item: CanvasItem, rawTag: string | undefined) => {
-      const baseTag = normalizeTag(rawTag ?? "");
+      const baseTag = item.stageRemoveParentTag ? "" : normalizeTag(rawTag ?? "");
       if (!baseTag) return [baseTag];
 
       const linkedTeamSelectStageRootId = resolveTeamSelectStageRootId(item);
@@ -5928,19 +6632,28 @@ export default function EditorPage() {
     };
 
     const taggedItems = items.filter((item) =>
-      ["text", "icon", "movement", "input", "toggle", "button-slider"].includes(
+      ["text", "icon", "movement", "input", "toggle", "button-slider", "slider"].includes(
         item.kind
       )
     );
-    const tags = taggedItems.map((item) => normalizeTag(item.tag ?? ""));
+    const tags = taggedItems.map((item) =>
+      item.stageRemoveParentTag ? "" : normalizeTag(item.tag ?? "")
+    );
 
-    if (tags.some((tag) => tag.length === 0)) {
-      toast.error("Make sure to set all tags!");
+    const shouldValidateTags = options?.validateTags ?? true;
+    const shouldShowValidationErrors = options?.showValidationErrors ?? true;
+
+    if (shouldValidateTags && tags.some((tag) => tag.length === 0)) {
+      if (shouldShowValidationErrors) {
+        toast.error("Make sure to set all tags!");
+      }
       return null;
     }
 
-    if (tags.some((tag) => /\s/.test(tag))) {
-      toast.error("Tags cannot contain spaces.");
+    if (shouldValidateTags && tags.some((tag) => /\s/.test(tag))) {
+      if (shouldShowValidationErrors) {
+        toast.error("Tags cannot contain spaces.");
+      }
       return null;
     }
 
@@ -5975,7 +6688,9 @@ export default function EditorPage() {
             button: {
               tag,
               teamSide: item.teamSide,
+              autoTeleopScope: item.autoTeleopScope,
               pressMode: normalizeButtonPressMode(item.buttonPressMode),
+              trackSuccess: item.successTrackingEnabled === true,
               increment: item.increment ?? 1,
               x: scaleX(centerItemX),
               y: scaleY(centerItemY),
@@ -5983,6 +6698,7 @@ export default function EditorPage() {
               hideAfterSelection: item.stageHideAfterSelection === true,
               blurBackgroundOnClick: item.stageBlurBackgroundOnClick === true,
               hideOtherElementsInStage: item.stageHideOtherElementsInStage === true,
+              removeParentTag: item.stageRemoveParentTag === true,
               stageParentTag,
               hasStageChildren,
               width: scaleWidth(item.width),
@@ -6009,7 +6725,9 @@ export default function EditorPage() {
             "icon-button": {
               tag,
               teamSide: item.teamSide,
+              autoTeleopScope: item.autoTeleopScope,
               pressMode: normalizeButtonPressMode(item.buttonPressMode),
+              trackSuccess: item.successTrackingEnabled === true,
               increment: item.increment ?? 1,
               x: scaleX(centerItemX),
               y: scaleY(centerItemY),
@@ -6019,6 +6737,7 @@ export default function EditorPage() {
               hideAfterSelection: item.stageHideAfterSelection === true,
               blurBackgroundOnClick: item.stageBlurBackgroundOnClick === true,
               hideOtherElementsInStage: item.stageHideOtherElementsInStage === true,
+              removeParentTag: item.stageRemoveParentTag === true,
               stageParentTag,
               hasStageChildren,
               width: scaleWidth(item.width),
@@ -6030,6 +6749,7 @@ export default function EditorPage() {
             "movement-button": {
               tag,
               teamSide: item.teamSide,
+              autoTeleopScope: item.autoTeleopScope,
               x: scaleX(centerItemX),
               y: scaleY(centerItemY),
               direction: normalizeMovementDirection(
@@ -6038,6 +6758,7 @@ export default function EditorPage() {
               hideAfterSelection: item.stageHideAfterSelection === true,
               blurBackgroundOnClick: item.stageBlurBackgroundOnClick === true,
               hideOtherElementsInStage: item.stageHideOtherElementsInStage === true,
+              removeParentTag: item.stageRemoveParentTag === true,
               stageParentTag,
               hasStageChildren,
               width: scaleWidth(item.width),
@@ -6049,6 +6770,7 @@ export default function EditorPage() {
             "text-input": {
               tag,
               teamSide: item.teamSide,
+              autoTeleopScope: item.autoTeleopScope,
               x: scaleX(centerItemX),
               y: scaleY(centerItemY),
               label: item.label,
@@ -6064,6 +6786,7 @@ export default function EditorPage() {
           return [{
             "team-select": {
               teamSide: item.teamSide,
+              autoTeleopScope: item.autoTeleopScope,
               x: scaleX(centerItemX),
               y: scaleY(centerItemY),
               label: "Drop Down",
@@ -6081,6 +6804,7 @@ export default function EditorPage() {
             "match-select": {
               tag,
               teamSide: item.teamSide,
+              autoTeleopScope: item.autoTeleopScope,
               x: scaleX(centerItemX),
               y: scaleY(centerItemY),
               label: item.label || "Match Select",
@@ -6097,6 +6821,7 @@ export default function EditorPage() {
             "toggle-switch": {
               tag,
               teamSide: item.teamSide,
+              autoTeleopScope: item.autoTeleopScope,
               x: scaleX(centerItemX),
               y: scaleY(centerItemY),
               label: item.label,
@@ -6114,6 +6839,7 @@ export default function EditorPage() {
             "button-slider": {
               tag,
               teamSide: item.teamSide,
+              autoTeleopScope: item.autoTeleopScope,
               x: scaleX(centerItemX),
               y: scaleY(centerItemY),
               text: item.label,
@@ -6128,10 +6854,29 @@ export default function EditorPage() {
               height: scaleHeight(item.height),
             },
           }));
+        case "slider":
+          return tagVariants.map((tag) => ({
+            slider: {
+              tag,
+              teamSide: item.teamSide,
+              autoTeleopScope: item.autoTeleopScope,
+              x: scaleX(centerItemX),
+              y: scaleY(centerItemY),
+              label: item.label,
+              max: Math.max(1, item.sliderMax ?? 100),
+              mid: Math.max(0, item.sliderMid ?? 50),
+              leftText: item.sliderLeftText ?? "Low",
+              rightText: item.sliderRightText ?? "High",
+              stageParentTag,
+              width: scaleWidth(item.width),
+              height: scaleHeight(item.height),
+            },
+          }));
         case "auto-toggle":
           return [{
             "auto-toggle": {
               teamSide: item.teamSide,
+              autoTeleopScope: item.autoTeleopScope,
               x: scaleX(centerItemX),
               y: scaleY(centerItemY),
               label: item.label,
@@ -6250,6 +6995,9 @@ export default function EditorPage() {
         aspectWidth,
         aspectHeight,
         backgroundImage,
+        backgroundLocation,
+        scoutType,
+        postMatchQuestions,
         eventKey,
         coordinateSpace: NORMALIZED_COORDINATE_SPACE,
         useCustomSideLayouts: isCustomSideLayoutsEnabled,
@@ -6260,6 +7008,7 @@ export default function EditorPage() {
       background: {
         backendPointer: backgroundPointer,
         fallbackImage: backgroundImage,
+        backgroundLocation,
       },
     };
 
@@ -6269,6 +7018,7 @@ export default function EditorPage() {
     };
   }, [
     backgroundImage,
+    backgroundLocation,
     aspectHeight,
     aspectWidth,
     editorTeamSide,
@@ -6277,7 +7027,9 @@ export default function EditorPage() {
     isPreviewMode,
     items,
     latestUploadId,
+    postMatchQuestions,
     previewTeamSide,
+    scoutType,
   ]);
 
   const handleExport = React.useCallback(() => {
@@ -6285,14 +7037,6 @@ export default function EditorPage() {
     if (!result) return;
     setExportJson(JSON.stringify(result.payload, null, 2));
     setIsExportDialogOpen(true);
-  }, [buildExportPayload]);
-
-  const handleUploadPreview = React.useCallback(() => {
-    const result = buildExportPayload();
-    if (!result) return;
-    setUploadPayload(result.payload);
-    setUploadJson(result.json);
-    setIsUploadDialogOpen(true);
   }, [buildExportPayload]);
 
   const handleUploadConfig = React.useCallback(async () => {
@@ -6336,6 +7080,9 @@ export default function EditorPage() {
         aspectWidth,
         aspectHeight,
         backgroundImage,
+        backgroundLocation,
+        scoutType,
+        postMatchQuestions,
         eventKey,
         coordinateSpace: NORMALIZED_COORDINATE_SPACE,
         useCustomSideLayouts: isCustomSideLayoutsEnabled,
@@ -6349,6 +7096,7 @@ export default function EditorPage() {
           payload: uploadPayload,
           editorState,
           backgroundImage,
+          backgroundLocation,
           uploadId: latestUploadId,
           isDraft: false,
         }),
@@ -6364,20 +7112,23 @@ export default function EditorPage() {
 
       toast.success("Config uploaded.");
       setIsUploadDialogOpen(false);
-    } catch (error) {
+    } catch {
       toast.error("Upload failed. Please try again.");
     }
   }, [
     aspectHeight,
     aspectWidth,
     backgroundImage,
+    backgroundLocation,
     editorTeamSide,
     eventKey,
     isPreviewMode,
     isCustomSideLayoutsEnabled,
     items,
     latestUploadId,
+    postMatchQuestions,
     previewTeamSide,
+    scoutType,
     uploadPayload,
   ]);
 
@@ -6389,6 +7140,9 @@ export default function EditorPage() {
       setAspectWidthDraft(nextState.aspectWidth || "16");
       setAspectHeightDraft(nextState.aspectHeight || "9");
       setBackgroundImage(nextState.backgroundImage ?? null);
+      setBackgroundLocation(nextState.backgroundLocation ?? null);
+      setScoutType(normalizeScoutType(nextState.scoutType));
+      setPostMatchQuestions(nextState.postMatchQuestions ?? []);
       setEventKey(nextState.eventKey ?? "");
       setEventKeyDraft(nextState.eventKey ?? "");
       setIsCustomSideLayoutsEnabled(Boolean(nextState.useCustomSideLayouts));
@@ -6489,23 +7243,6 @@ export default function EditorPage() {
     width: fieldWidth,
     height: FIELD_HEIGHT,
   });
-
-  const applyImageAspectRatio = React.useCallback((src: string) => {
-    const img = new Image();
-    img.onload = () => {
-      const width = img.naturalWidth;
-      const height = img.naturalHeight;
-      if (!width || !height) return;
-      const divisor = gcd(width, height);
-      const normalizedWidth = Math.round(width / divisor);
-      const normalizedHeight = Math.round(height / divisor);
-      setAspectWidth(String(normalizedWidth));
-      setAspectHeight(String(normalizedHeight));
-      setAspectWidthDraft(String(normalizedWidth));
-      setAspectHeightDraft(String(normalizedHeight));
-    };
-    img.src = src;
-  }, []);
 
   React.useEffect(() => {
     const node = stageWrapRef.current;
@@ -6614,22 +7351,6 @@ export default function EditorPage() {
     isCustomSideLayoutsEnabled,
   ]);
 
-  const handleBackgroundUpload = React.useCallback(
-    (event: React.ChangeEvent<HTMLInputElement>) => {
-      const file = event.target.files?.[0];
-      if (!file) return;
-      const reader = new FileReader();
-      reader.onload = () => {
-        if (typeof reader.result === "string") {
-          setBackgroundImage(reader.result);
-          applyImageAspectRatio(reader.result);
-        }
-      };
-      reader.readAsDataURL(file);
-    },
-    [applyImageAspectRatio]
-  );
-
   const buildEditorState = React.useCallback((): SerializedEditorState => {
     const canvasElement = canvasRef.current;
     const canvasWidth =
@@ -6655,6 +7376,9 @@ export default function EditorPage() {
       aspectWidth,
       aspectHeight,
       backgroundImage,
+      backgroundLocation,
+      scoutType,
+      postMatchQuestions,
       eventKey,
       coordinateSpace: NORMALIZED_COORDINATE_SPACE,
       useCustomSideLayouts: isCustomSideLayoutsEnabled,
@@ -6665,13 +7389,16 @@ export default function EditorPage() {
     aspectHeight,
     aspectWidth,
     backgroundImage,
+    backgroundLocation,
     editorTeamSide,
     eventKey,
     fieldWidth,
     isPreviewMode,
     isCustomSideLayoutsEnabled,
     items,
+    postMatchQuestions,
     previewTeamSide,
+    scoutType,
   ]);
 
   const buildDraftPayload = React.useCallback(() => {
@@ -6683,10 +7410,57 @@ export default function EditorPage() {
 
   const buildProjectPayload = React.useCallback(() => {
     const editorState = buildEditorState();
+    const exportPayload = buildExportPayload({
+      validateTags: false,
+      showValidationErrors: false,
+    });
     return {
       editorState,
+      payload: exportPayload?.payload ?? [],
     };
-  }, [buildEditorState]);
+  }, [buildEditorState, buildExportPayload]);
+
+  const validateProjectCompletion = React.useCallback(() => {
+    const hasSubmit = items.some((item) => item.kind === "submit");
+    const hasAutoToggle = items.some((item) => item.kind === "auto-toggle");
+    const hasTeamSelect = items.some((item) => item.kind === "team-select");
+    const hasMatchSelect = items.some((item) => item.kind === "match-select");
+    const hasTaggedButton = items.some(
+      (item) =>
+        (item.kind === "text" || item.kind === "icon") &&
+        normalizeTag(item.tag ?? "").length > 0
+    );
+
+    if (!hasSubmit || !hasAutoToggle || !hasTeamSelect || !hasMatchSelect || !hasTaggedButton) {
+      toast.error(
+        "Required assets missing: submit, auto/teleop toggle, team select, match select, and at least one tagged button."
+      );
+      return false;
+    }
+
+    const requiresTagKinds: AssetKind[] = [
+      "text",
+      "icon",
+      "movement",
+      "input",
+      "toggle",
+      "button-slider",
+      "slider",
+    ];
+    const missingTag = items.find(
+      (item) =>
+        requiresTagKinds.includes(item.kind) &&
+        !item.stageRemoveParentTag &&
+        normalizeTag(item.tag ?? "").length === 0
+    );
+
+    if (missingTag) {
+      toast.error("All assets that require tags must have a tag before completion.");
+      return false;
+    }
+
+    return true;
+  }, [items]);
 
   const handleCompleteProject = React.useCallback(async () => {
     const uploadId = requestedUploadId || latestUploadId || "";
@@ -6696,6 +7470,9 @@ export default function EditorPage() {
     }
 
     const nextIsDraft = isProjectCompleted;
+    if (!nextIsDraft && !validateProjectCompletion()) {
+      return;
+    }
     const payload = buildProjectPayload();
 
     try {
@@ -6706,6 +7483,7 @@ export default function EditorPage() {
           payload,
           editorState: payload.editorState,
           backgroundImage,
+          backgroundLocation,
           uploadId,
           isDraft: nextIsDraft,
         }),
@@ -6738,10 +7516,12 @@ export default function EditorPage() {
     }
   }, [
     backgroundImage,
+    backgroundLocation,
     buildProjectPayload,
     isProjectCompleted,
     latestUploadId,
     requestedUploadId,
+    validateProjectCompletion,
   ]);
 
   const persistDraft = React.useCallback(async () => {
@@ -6757,6 +7537,7 @@ export default function EditorPage() {
           payload,
           editorState: payload.editorState,
           backgroundImage,
+          backgroundLocation,
           isDraft: true,
         }),
       });
@@ -6772,11 +7553,12 @@ export default function EditorPage() {
     } catch {
       setAutosaveState("error");
     }
-  }, [backgroundImage, buildDraftPayload, sessionData?.user?.id]);
+  }, [backgroundImage, backgroundLocation, buildDraftPayload, sessionData?.user?.id]);
 
   const persistProjectConfig = React.useCallback(async () => {
     if (!sessionData?.user?.id || !requestedUploadId) return;
     const payload = buildProjectPayload();
+    const autosaveIsDraft = projectMeta?.isDraft !== false;
 
     setAutosaveState("saving");
 
@@ -6788,8 +7570,9 @@ export default function EditorPage() {
           payload,
           editorState: payload.editorState,
           backgroundImage,
+          backgroundLocation,
           uploadId: requestedUploadId,
-          isDraft: true,
+          isDraft: autosaveIsDraft,
         }),
       });
 
@@ -6809,7 +7592,14 @@ export default function EditorPage() {
     } catch {
       setAutosaveState("error");
     }
-  }, [backgroundImage, buildProjectPayload, requestedUploadId, sessionData?.user?.id]);
+  }, [
+    backgroundImage,
+    backgroundLocation,
+    buildProjectPayload,
+    projectMeta?.isDraft,
+    requestedUploadId,
+    sessionData?.user?.id,
+  ]);
 
   React.useEffect(() => {
     if (isInteractingWithCanvas) {
@@ -6982,8 +7772,11 @@ export default function EditorPage() {
             setAspectWidthDraft("16");
             setAspectHeightDraft("9");
             setBackgroundImage(null);
+            setBackgroundLocation(null);
             setEventKey("");
             setEventKeyDraft("");
+            setScoutType("match");
+            setPostMatchQuestions([]);
             setIsCustomSideLayoutsEnabled(false);
             setEditorTeamSide("red");
             setPreviewTeamSide("red");
@@ -7017,6 +7810,7 @@ export default function EditorPage() {
               payload?: unknown;
               backgroundImage?: string | null;
               background_image?: string | null;
+              background_location?: string | null;
               updatedAt?: string;
               uploadId?: string;
               upload_id?: string;
@@ -7044,6 +7838,13 @@ export default function EditorPage() {
               setAspectWidthDraft(nextState.aspectWidth || "16");
               setAspectHeightDraft(nextState.aspectHeight || "9");
               setBackgroundImage(resolvedBackgroundImage ?? nextState.backgroundImage ?? null);
+              setBackgroundLocation(
+                typeof selectedResult.config?.background_location === "string"
+                  ? selectedResult.config.background_location
+                  : nextState.backgroundLocation ?? null
+              );
+              setScoutType(normalizeScoutType(nextState.scoutType));
+              setPostMatchQuestions(nextState.postMatchQuestions ?? []);
               setEventKey(nextState.eventKey ?? "");
               setEventKeyDraft(nextState.eventKey ?? "");
               setIsCustomSideLayoutsEnabled(Boolean(nextState.useCustomSideLayouts));
@@ -7081,6 +7882,7 @@ export default function EditorPage() {
             payload?: unknown;
             backgroundImage?: string | null;
             background_image?: string | null;
+            background_location?: string | null;
             updatedAt?: string;
             uploadId?: string;
             upload_id?: string;
@@ -7102,6 +7904,9 @@ export default function EditorPage() {
           setAspectWidth(restored.aspectWidth);
           setAspectHeight(restored.aspectHeight);
           setBackgroundImage(resolvedBackgroundImage ?? restored.backgroundImage);
+          setBackgroundLocation(restored.backgroundLocation ?? null);
+          setScoutType(normalizeScoutType(restored.scoutType));
+          setPostMatchQuestions(restored.postMatchQuestions ?? []);
           setEventKey(restored.eventKey ?? "");
           setEventKeyDraft(restored.eventKey ?? "");
           setIsCustomSideLayoutsEnabled(Boolean(restored.useCustomSideLayouts));
@@ -7164,6 +7969,7 @@ export default function EditorPage() {
             contentHash?: string | null;
             isDraft?: boolean;
             isPublic?: boolean;
+            scoutType?: ScoutType;
           };
         };
 
@@ -7180,6 +7986,7 @@ export default function EditorPage() {
                     ? result.project.isDraft
                     : null,
                 isPublic: Boolean(result.project?.isPublic ?? false),
+                scoutType: normalizeScoutType(result.project?.scoutType),
               }
             : null
         );
@@ -7196,6 +8003,11 @@ export default function EditorPage() {
       cancelled = true;
     };
   }, [latestUploadId, requestedUploadId, sessionData?.user?.id]);
+
+  React.useEffect(() => {
+    if (!projectMeta?.scoutType) return;
+    setScoutType(normalizeScoutType(projectMeta.scoutType));
+  }, [projectMeta?.scoutType]);
 
   const handleProjectVisibilityToggle = React.useCallback(async () => {
     const uploadId = requestedUploadId || latestUploadId || "";
@@ -7253,6 +8065,7 @@ export default function EditorPage() {
     aspectHeight,
     aspectWidth,
     backgroundImage,
+    backgroundLocation,
     isInteractingWithCanvas,
     items,
     persistDraft,
@@ -7269,6 +8082,9 @@ export default function EditorPage() {
 
       const payload = requestedUploadId ? buildProjectPayload() : buildDraftPayload();
       if (!payload) return;
+      const autosaveIsDraft = requestedUploadId
+        ? projectMeta?.isDraft !== false
+        : true;
 
       const body = JSON.stringify(
         requestedUploadId
@@ -7276,13 +8092,15 @@ export default function EditorPage() {
               payload,
               editorState: payload.editorState,
               backgroundImage,
+              backgroundLocation,
               uploadId: requestedUploadId,
-              isDraft: true,
+              isDraft: autosaveIsDraft,
             }
           : {
               payload,
               editorState: payload.editorState,
               backgroundImage,
+              backgroundLocation,
               isDraft: true,
             }
       );
@@ -7316,8 +8134,10 @@ export default function EditorPage() {
     };
   }, [
     backgroundImage,
+    backgroundLocation,
     buildDraftPayload,
     buildProjectPayload,
+    projectMeta?.isDraft,
     requestedUploadId,
     sessionData?.user?.id,
   ]);
@@ -8141,6 +8961,11 @@ export default function EditorPage() {
             ? crypto.randomUUID()
             : `button-${Date.now()}`;
         const kind = data.assetKind ?? "text";
+        if (!isAssetAllowedForScoutType(kind)) {
+          toast.error("This asset is not allowed for this scouting type.");
+          resetDragState();
+          return;
+        }
         const size = getAssetSize(kind);
         const isNewMirror = kind === "mirror";
         const mirrorStartX = canvasRect.width / 2;
@@ -8178,6 +9003,10 @@ export default function EditorPage() {
             increment: kind === "text" || kind === "icon" ? 1 : undefined,
             buttonSliderIncreaseDirection:
               kind === "button-slider" ? "right" : undefined,
+            sliderMax: kind === "slider" ? 100 : undefined,
+            sliderMid: kind === "slider" ? 50 : undefined,
+            sliderLeftText: kind === "slider" ? "Low" : undefined,
+            sliderRightText: kind === "slider" ? "High" : undefined,
             startX: kind === "mirror" ? mirrorStartX : undefined,
             startY: kind === "mirror" ? mirrorStartY : undefined,
             endX: kind === "mirror" ? mirrorEndX : undefined,
@@ -8199,6 +9028,7 @@ export default function EditorPage() {
             autoToggleMode: kind === "auto-toggle" ? "auto" : undefined,
             autoToggleDurationSeconds: kind === "auto-toggle" ? 15 : undefined,
             autoToggleTeleopDurationSeconds: kind === "auto-toggle" ? 135 : undefined,
+            autoTeleopScope: autoTeleopScopedEditMode ?? undefined,
             teamSide:
               isCustomSideLayoutsEnabled && kind !== "mirror"
                 ? editorTeamSide
@@ -8206,6 +9036,16 @@ export default function EditorPage() {
             swapRedSide: kind === "swap" ? "left" : undefined,
             swapActiveSide: kind === "swap" ? "left" : undefined,
             stageParentId: stagingParentId ?? undefined,
+            stageRemoveParentTag:
+              kind === "text" || kind === "icon" || kind === "movement"
+                ? false
+                : undefined,
+            successTrackingEnabled:
+              kind === "text" || kind === "icon" ? false : undefined,
+            successPopoverOffsetX:
+              kind === "text" || kind === "icon" ? 0 : undefined,
+            successPopoverOffsetY:
+              kind === "text" || kind === "icon" ? 0 : undefined,
             coverVisible: kind === "cover" ? true : undefined,
             startPositionVisible: kind === "start-position" ? true : undefined,
             },
@@ -8225,6 +9065,8 @@ export default function EditorPage() {
       palettePointerOffset.y,
       isCustomSideLayoutsEnabled,
       editorTeamSide,
+      isAssetAllowedForScoutType,
+      autoTeleopScopedEditMode,
       stagingParentId,
     ]
   );
@@ -8244,14 +9086,17 @@ export default function EditorPage() {
     setPreviewTeamSelectValues({});
     setPreviewMatchSelectValues({});
     setPreviewButtonSliderValues({});
+    setPreviewSliderValues({});
     setPreviewStartPositions({});
     setHiddenPreviewStartPositionIds({});
+    setPreviewSuccessOpenItemId(null);
     previewHoldStartByIdRef.current = {};
     clearPreviewHoldInterval();
     setPreviewHoldDurationsById({});
     setPreviewLogText("");
     setItems([]);
     setBackgroundImage(null);
+    setBackgroundLocation(null);
     setAspectWidth("16");
     setAspectHeight("9");
     setAspectWidthDraft("16");
@@ -8315,13 +9160,16 @@ export default function EditorPage() {
       if (!isInsideCanvas) return;
       const canvasItem = target.closest('[data-canvas-item="true"]') as HTMLElement | null;
       if (canvasItem) return;
+      if (autoTeleopScopedEditMode) {
+        setAutoTeleopScopedEditMode(null);
+      }
       setSelectedItemIds([]);
       setSelectedItemId(null);
     };
 
     window.addEventListener("pointerdown", handlePointerDown);
     return () => window.removeEventListener("pointerdown", handlePointerDown);
-  }, [isPreviewMode]);
+  }, [autoTeleopScopedEditMode, isPreviewMode]);
 
   React.useEffect(() => {
     if (!selectedItemId) return;
@@ -8693,6 +9541,7 @@ export default function EditorPage() {
                   setIsPreviewMode((current) => {
                     const next = !current;
                     if (next) {
+                      setAutoTeleopVisibilityMode(null);
                       clearAllPreviewButtonSliderLoops();
                       setIsPreviewSwapMirrored(false);
                       setPreviewBaseStageSize({
@@ -8714,10 +9563,13 @@ export default function EditorPage() {
                       setPreviewTeamSelectValues({});
                       setPreviewMatchSelectValues({});
                       setPreviewButtonSliderValues({});
+                      setPreviewSliderValues({});
                       setPreviewStartPositions({});
                       setHiddenPreviewStartPositionIds({});
+                      setPreviewSuccessOpenItemId(null);
                       setPreviewLogText("");
                     } else {
+                      setAutoTeleopVisibilityMode(null);
                       clearAllPreviewButtonSliderLoops();
                       setIsPreviewSwapMirrored(false);
                       setPreviewBaseStageSize(null);
@@ -8730,8 +9582,10 @@ export default function EditorPage() {
                       setPreviewTeamSelectValues({});
                       setPreviewMatchSelectValues({});
                       setPreviewButtonSliderValues({});
+                      setPreviewSliderValues({});
                       setPreviewStartPositions({});
                       setHiddenPreviewStartPositionIds({});
+                      setPreviewSuccessOpenItemId(null);
                       setPreviewLogText("");
                     }
                     return next;
@@ -8890,15 +9744,18 @@ export default function EditorPage() {
                   isEditorReadOnly ? "pointer-events-none opacity-50" : ""
                 }`}
               >
-                {matchesAssetSearch(["button", "text"]) ? (
+                {isAssetAllowedForScoutType("text") && matchesAssetSearch(["button", "text"]) ? (
                   <PaletteButton onPalettePointerDown={handlePalettePointerDown} />
                 ) : null}
-                {matchesAssetSearch(["button slider", "slider", "counter", "increment"]) ? (
+                {isAssetAllowedForScoutType("button-slider") && matchesAssetSearch(["button slider", "slider", "counter", "increment"]) ? (
                   <PaletteButtonSliderButton
                     onPalettePointerDown={handlePalettePointerDown}
                   />
                 ) : null}
-                {matchesAssetSearch(["undo"]) ? (
+                {isAssetAllowedForScoutType("slider") && matchesAssetSearch(["slider", "range", "shadcn"]) ? (
+                  <PaletteSliderButton onPalettePointerDown={handlePalettePointerDown} />
+                ) : null}
+                {isAssetAllowedForScoutType("undo") && matchesAssetSearch(["undo"]) ? (
                   <PaletteActionButton
                     kind="undo"
                     title="Undo"
@@ -8907,7 +9764,7 @@ export default function EditorPage() {
                     onPalettePointerDown={handlePalettePointerDown}
                   />
                 ) : null}
-                {matchesAssetSearch(["redo"]) ? (
+                {isAssetAllowedForScoutType("redo") && matchesAssetSearch(["redo"]) ? (
                   <PaletteActionButton
                     kind="redo"
                     title="Redo"
@@ -8916,7 +9773,7 @@ export default function EditorPage() {
                     onPalettePointerDown={handlePalettePointerDown}
                   />
                 ) : null}
-                {matchesAssetSearch(["submit", "send"]) ? (
+                {isAssetAllowedForScoutType("submit") && matchesAssetSearch(["submit", "send"]) ? (
                   <PaletteActionButton
                     kind="submit"
                     title="Submit"
@@ -8925,7 +9782,7 @@ export default function EditorPage() {
                     onPalettePointerDown={handlePalettePointerDown}
                   />
                 ) : null}
-                {matchesAssetSearch(["reset", "clear"]) ? (
+                {isAssetAllowedForScoutType("reset") && matchesAssetSearch(["reset", "clear"]) ? (
                   <PaletteActionButton
                     kind="reset"
                     title="Reset"
@@ -8934,41 +9791,41 @@ export default function EditorPage() {
                     onPalettePointerDown={handlePalettePointerDown}
                   />
                 ) : null}
-                {matchesAssetSearch(["icon", "bot"]) ? (
+                {isAssetAllowedForScoutType("icon") && matchesAssetSearch(["icon", "bot"]) ? (
                   <PaletteIconButton onPalettePointerDown={handlePalettePointerDown} />
                 ) : null}
-                {matchesAssetSearch(["mirror", "line"]) ? (
+                {isAssetAllowedForScoutType("mirror") && matchesAssetSearch(["mirror", "line"]) ? (
                   <PaletteMirrorButton
                     onPalettePointerDown={handlePalettePointerDown}
                     disabled={isCustomSideLayoutsEnabled}
                   />
                 ) : null}
-                {matchesAssetSearch(["input", "text field"]) ? (
+                {isAssetAllowedForScoutType("input") && matchesAssetSearch(["input", "text field"]) ? (
                   <PaletteInputButton onPalettePointerDown={handlePalettePointerDown} />
                 ) : null}
-                {matchesAssetSearch(["drop down", "dropdown", "team", "select", "radio"]) ? (
+                {isAssetAllowedForScoutType("team-select") && matchesAssetSearch(["drop down", "dropdown", "team", "select", "radio"]) ? (
                   <PaletteTeamSelectButton
                     onPalettePointerDown={handlePalettePointerDown}
                   />
                 ) : null}
-                {matchesAssetSearch(["match", "increment", "plus", "minus", "select"]) ? (
+                {isAssetAllowedForScoutType("match-select") && matchesAssetSearch(["match", "increment", "plus", "minus", "select"]) ? (
                   <PaletteMatchSelectButton
                     onPalettePointerDown={handlePalettePointerDown}
                   />
                 ) : null}
-                {matchesAssetSearch(["log", "output"]) ? (
+                {isAssetAllowedForScoutType("log") && matchesAssetSearch(["log", "output"]) ? (
                   <PaletteLogButton onPalettePointerDown={handlePalettePointerDown} />
                 ) : null}
-                {matchesAssetSearch(["toggle", "switch"]) ? (
+                {isAssetAllowedForScoutType("toggle") && matchesAssetSearch(["toggle", "switch"]) ? (
                   <PaletteToggleButton onPalettePointerDown={handlePalettePointerDown} />
                 ) : null}
-                {matchesAssetSearch(["auto", "teleop", "toggle"]) ? (
+                {isAssetAllowedForScoutType("auto-toggle") && matchesAssetSearch(["auto", "teleop", "toggle"]) ? (
                   <PaletteAutoToggleButton onPalettePointerDown={handlePalettePointerDown} />
                 ) : null}
-                {matchesAssetSearch(["cover", "overlay"]) ? (
+                {isAssetAllowedForScoutType("cover") && matchesAssetSearch(["cover", "overlay"]) ? (
                   <PaletteCoverButton onPalettePointerDown={handlePalettePointerDown} />
                 ) : null}
-                {matchesAssetSearch(["start", "position", "spawn", "tap"]) ? (
+                {isAssetAllowedForScoutType("start-position") && matchesAssetSearch(["start", "position", "spawn", "tap"]) ? (
                   <PaletteStartPositionButton
                     onPalettePointerDown={handlePalettePointerDown}
                     hasAsset={hasStartPositionAsset}
@@ -8976,10 +9833,10 @@ export default function EditorPage() {
                     onToggleVisibility={handleStartPositionVisibilityToggle}
                   />
                 ) : null}
-                {matchesAssetSearch(["swap", "side", "layout"]) ? (
+                {isAssetAllowedForScoutType("swap") && matchesAssetSearch(["swap", "side", "layout"]) ? (
                   <PaletteSwapButton onPalettePointerDown={handlePalettePointerDown} />
                 ) : null}
-                {matchesAssetSearch(["movement", "arrow", "left", "right", "direction"]) ? (
+                {isAssetAllowedForScoutType("movement") && matchesAssetSearch(["movement", "arrow", "left", "right", "direction"]) ? (
                   <PaletteMovementButton onPalettePointerDown={handlePalettePointerDown} />
                 ) : null}
               </div>
@@ -9196,6 +10053,23 @@ export default function EditorPage() {
                         snapOffset={snapOffset}
                         isPreviewMode={isEditorReadOnly}
                       />
+                    ) : item.kind === "slider" ? (
+                      <MemoCanvasSlider
+                        key={item.id}
+                        item={item}
+                        onResizeStart={handleResizeStart}
+                        onSelect={handleCanvasItemSelect}
+                        previewValue={
+                          previewSliderValues[item.id] ??
+                          Math.max(
+                            0,
+                            Math.min(item.sliderMax ?? 100, item.sliderMid ?? 50)
+                          )
+                        }
+                        onPreviewValueChange={handlePreviewSliderChange}
+                        snapOffset={snapOffset}
+                        isPreviewMode={isEditorReadOnly}
+                      />
                     ) : item.kind === "log" ? (
                       <MemoCanvasLog
                         key={item.id}
@@ -9224,6 +10098,8 @@ export default function EditorPage() {
                         onResizeStart={handleResizeStart}
                         onSelect={handleCanvasItemSelect}
                         onToggle={handleAutoToggleItem}
+                        onContextSwapVisibility={handleAutoTeleopVisibilitySwap}
+                        visibilityMode={effectiveAutoTeleopVisibilityMode}
                         countdownSeconds={autoToggleCountdowns[item.id]}
                         snapOffset={snapOffset}
                         isSwapMirrored={isSwapMirrored}
@@ -9244,12 +10120,16 @@ export default function EditorPage() {
                         onPreviewButtonSliderDragStart={handlePreviewButtonSliderDragStart}
                         onPreviewButtonSliderDragMove={handlePreviewButtonSliderDragMove}
                         onPreviewButtonSliderDragEnd={handlePreviewButtonSliderDragEnd}
+                        onPreviewSuccessToggle={handlePreviewSuccessToggle}
+                        onPreviewSuccessSelect={handlePreviewSuccessSelect}
+                        onSuccessContextAdjust={handleSuccessContextAdjust}
                         onPreviewStageToggle={handlePreviewStageToggle}
                         onStageContextMenu={handleStageContextMenu}
                         hasStages={stageRootIds.has(item.id)}
                         isPreviewPressed={previewPressedItemId === item.id}
                         previewButtonSliderValue={previewButtonSliderValues[item.id]}
                         previewButtonSliderDragInfo={previewButtonSliderDragById[item.id]}
+                        previewSuccessOpen={previewSuccessOpenItemId === item.id}
                         previewHoldDurationMs={previewHoldDurationsById[item.id]}
                         isCustomSideLayoutsEnabled={isCustomSideLayoutsEnabled}
                         visibleTeamSide={currentVisibleTeamSide}
@@ -9346,19 +10226,25 @@ export default function EditorPage() {
                   </ToggleGroup>
                 </div>
 
-                <div className="grid gap-2">
-                  <Label htmlFor="icon-tag-side" className="text-sm text-white/80">
-                    Tag
-                  </Label>
-                  <Input
-                    ref={tagInputRef}
-                    id="icon-tag-side"
-                    value={selectedItem.tag ?? ""}
-                    onChange={(event) => handleSelectedTagChange(event.target.value)}
-                    placeholder="Optional tag"
-                    className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
-                  />
-                </div>
+                {!selectedItem.stageRemoveParentTag ? (
+                  <div className="grid gap-2">
+                    <Label htmlFor="icon-tag-side" className="text-sm text-white/80">
+                      Tag
+                    </Label>
+                    <Input
+                      ref={tagInputRef}
+                      id="icon-tag-side"
+                      value={selectedItem.tag ?? ""}
+                      onChange={(event) => handleSelectedTagChange(event.target.value)}
+                      placeholder="Optional tag"
+                      className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
+                    />
+                  </div>
+                ) : (
+                  <div className="rounded-md border border-white/10 bg-slate-900/80 px-3 py-2 text-xs text-white/65">
+                    Parent tag is removed for this staged element.
+                  </div>
+                )}
 
                 <div className="grid gap-2">
                   <Label className="text-sm text-white/80">Button colors</Label>
@@ -9485,6 +10371,87 @@ export default function EditorPage() {
                   </div>
                 ) : null}
 
+                <div className="flex items-center justify-between gap-3 rounded-md border border-white/10 bg-slate-900/70 px-3 py-3">
+                  <div className="grid gap-0.5">
+                    <Label className="text-xs text-white/80">Track success</Label>
+                    <p className="text-[11px] text-white/60">
+                      In preview, click opens check/X chooser in-place.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={selectedItem.successTrackingEnabled === true}
+                    onCheckedChange={(value) => {
+                      if (!selectedItemId) return;
+                      setItems((prev) =>
+                        prev.map((item) =>
+                          item.id === selectedItemId && item.kind === "icon"
+                            ? { ...item, successTrackingEnabled: value }
+                            : item
+                        )
+                      );
+                    }}
+                    aria-label="Track success"
+                  />
+                </div>
+                {selectedItem.successTrackingEnabled ? (
+                  <div className="grid grid-cols-2 gap-2 rounded-md border border-white/10 bg-slate-900/70 px-3 py-3">
+                    <div className="grid gap-1">
+                      <Label htmlFor="icon-success-offset-x" className="text-xs text-white/80">
+                        Success X offset
+                      </Label>
+                      <Input
+                        id="icon-success-offset-x"
+                        type="number"
+                        value={selectedItem.successPopoverOffsetX ?? 0}
+                        onChange={(event) => {
+                          if (!selectedItemId) return;
+                          const next = Number(event.target.value);
+                          setItems((prev) =>
+                            prev.map((item) =>
+                              item.id === selectedItemId && item.kind === "icon"
+                                ? {
+                                    ...item,
+                                    successPopoverOffsetX: Number.isFinite(next)
+                                      ? Math.round(next)
+                                      : 0,
+                                  }
+                                : item
+                            )
+                          );
+                        }}
+                        className="h-9 border-white/10 bg-slate-950/80 text-white"
+                      />
+                    </div>
+                    <div className="grid gap-1">
+                      <Label htmlFor="icon-success-offset-y" className="text-xs text-white/80">
+                        Success Y offset
+                      </Label>
+                      <Input
+                        id="icon-success-offset-y"
+                        type="number"
+                        value={selectedItem.successPopoverOffsetY ?? 0}
+                        onChange={(event) => {
+                          if (!selectedItemId) return;
+                          const next = Number(event.target.value);
+                          setItems((prev) =>
+                            prev.map((item) =>
+                              item.id === selectedItemId && item.kind === "icon"
+                                ? {
+                                    ...item,
+                                    successPopoverOffsetY: Number.isFinite(next)
+                                      ? Math.round(next)
+                                      : 0,
+                                  }
+                                : item
+                            )
+                          );
+                        }}
+                        className="h-9 border-white/10 bg-slate-950/80 text-white"
+                      />
+                    </div>
+                  </div>
+                ) : null}
+
                 <div className="grid gap-2">
                   <Label className="text-sm text-white/80">Staging</Label>
                   <Button
@@ -9540,6 +10507,19 @@ export default function EditorPage() {
                           checked={selectedItem?.stageHideOtherElementsInStage ?? false}
                           onCheckedChange={handleSelectedStageHideOtherElementsInStageChange}
                           aria-label="Hide other elements in stage"
+                        />
+                      </div>
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="grid gap-0.5">
+                          <Label className="text-xs text-white/80">Remove parent tag</Label>
+                          <p className="text-[11px] text-white/60">
+                            Clears the staged parent tag so only staged child tags are exported.
+                          </p>
+                        </div>
+                        <Switch
+                          checked={selectedItem?.stageRemoveParentTag ?? false}
+                          onCheckedChange={handleSelectedStageRemoveParentTagChange}
+                          aria-label="Remove parent tag"
                         />
                       </div>
                     </div>
@@ -9799,6 +10779,41 @@ export default function EditorPage() {
                     className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
                   />
                 </div>
+                <div className="grid gap-2">
+                  <Label className="text-sm text-white/80">Scoped element placement</Label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className={`h-9 border-white/10 bg-slate-900 text-white hover:bg-slate-800 ${
+                        autoTeleopScopedEditMode === "auto" ? "ring-1 ring-blue-400/70" : ""
+                      }`}
+                      onClick={() => handleEnterAutoTeleopScopedEditMode("auto")}
+                    >
+                      Auto
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className={`h-9 border-white/10 bg-slate-900 text-white hover:bg-slate-800 ${
+                        autoTeleopScopedEditMode === "teleop" ? "ring-1 ring-blue-400/70" : ""
+                      }`}
+                      onClick={() => handleEnterAutoTeleopScopedEditMode("teleop")}
+                    >
+                      Teleop
+                    </Button>
+                  </div>
+                  {autoTeleopScopedEditMode ? (
+                    <p className="text-xs text-white/60">
+                      Currently placing {autoTeleopScopedEditMode}-scoped assets. Click another item or the field background to exit.
+                    </p>
+                  ) : null}
+                  {autoTeleopVisibilityMode ? (
+                    <p className="text-xs text-white/60">
+                      Right-click on auto toggle swaps visibility. Showing: {autoTeleopVisibilityMode} scoped assets.
+                    </p>
+                  ) : null}
+                </div>
               </div>
             ) : selectedItem?.kind === "input" ? (
               <div className="grid gap-4">
@@ -9992,6 +11007,19 @@ export default function EditorPage() {
                             aria-label="Hide other elements in stage"
                           />
                         </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="grid gap-0.5">
+                            <Label className="text-xs text-white/80">Remove parent tag</Label>
+                            <p className="text-[11px] text-white/60">
+                              Clears the staged parent tag so only child tags are exported.
+                            </p>
+                          </div>
+                          <Switch
+                            checked={selectedItem?.stageRemoveParentTag ?? false}
+                            onCheckedChange={handleSelectedStageRemoveParentTagChange}
+                            aria-label="Remove parent tag"
+                          />
+                        </div>
                       </div>
                     ) : null}
                   </div>
@@ -10008,19 +11036,6 @@ export default function EditorPage() {
                     value={selectedItem.label}
                     onChange={(event) => handleSelectedLabelChange(event.target.value)}
                     placeholder="Match Select"
-                    className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
-                  />
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="match-select-tag" className="text-sm text-white/80">
-                    Tag
-                  </Label>
-                  <Input
-                    ref={tagInputRef}
-                    id="match-select-tag"
-                    value={selectedItem.tag ?? ""}
-                    onChange={(event) => handleSelectedTagChange(event.target.value)}
-                    placeholder="Enter tag"
                     className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
                   />
                 </div>
@@ -10051,6 +11066,119 @@ export default function EditorPage() {
                     }}
                     className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
                   />
+                </div>
+              </div>
+            ) : selectedItem?.kind === "slider" ? (
+              <div className="grid gap-4">
+                <div className="grid gap-2">
+                  <Label htmlFor="slider-label" className="text-sm text-white/80">
+                    Slider label
+                  </Label>
+                  <Input
+                    id="slider-label"
+                    value={selectedItem.label}
+                    onChange={(event) => handleSelectedLabelChange(event.target.value)}
+                    placeholder="Slider"
+                    className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="slider-tag" className="text-sm text-white/80">
+                    Tag
+                  </Label>
+                  <Input
+                    id="slider-tag"
+                    value={selectedItem.tag ?? ""}
+                    onChange={(event) => handleSelectedTagChange(event.target.value)}
+                    placeholder="sliderTag"
+                    className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="grid gap-2">
+                    <Label htmlFor="slider-max" className="text-sm text-white/80">
+                      Max
+                    </Label>
+                    <Input
+                      id="slider-max"
+                      type="number"
+                      min={1}
+                      value={selectedItem.sliderMax ?? 100}
+                      onChange={(event) => {
+                        const next = Math.max(1, Number(event.target.value) || 100);
+                        setItems((prev) =>
+                          prev.map((item) =>
+                            item.id === selectedItem.id && item.kind === "slider"
+                              ? { ...item, sliderMax: next }
+                              : item
+                          )
+                        );
+                      }}
+                      className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="slider-mid" className="text-sm text-white/80">
+                      Mid
+                    </Label>
+                    <Input
+                      id="slider-mid"
+                      type="number"
+                      min={0}
+                      value={selectedItem.sliderMid ?? 50}
+                      onChange={(event) => {
+                        const next = Math.max(0, Number(event.target.value) || 0);
+                        setItems((prev) =>
+                          prev.map((item) =>
+                            item.id === selectedItem.id && item.kind === "slider"
+                              ? { ...item, sliderMid: next }
+                              : item
+                          )
+                        );
+                      }}
+                      className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
+                    />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="grid gap-2">
+                    <Label htmlFor="slider-left-text" className="text-sm text-white/80">
+                      Left text
+                    </Label>
+                    <Input
+                      id="slider-left-text"
+                      value={selectedItem.sliderLeftText ?? "Low"}
+                      onChange={(event) =>
+                        setItems((prev) =>
+                          prev.map((item) =>
+                            item.id === selectedItem.id && item.kind === "slider"
+                              ? { ...item, sliderLeftText: event.target.value }
+                              : item
+                          )
+                        )
+                      }
+                      className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="slider-right-text" className="text-sm text-white/80">
+                      Right text
+                    </Label>
+                    <Input
+                      id="slider-right-text"
+                      value={selectedItem.sliderRightText ?? "High"}
+                      onChange={(event) =>
+                        setItems((prev) =>
+                          prev.map((item) =>
+                            item.id === selectedItem.id && item.kind === "slider"
+                              ? { ...item, sliderRightText: event.target.value }
+                              : item
+                          )
+                        )
+                      }
+                      className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
+                    />
+                  </div>
                 </div>
               </div>
             ) : selectedItem?.kind === "button-slider" ? (
@@ -10383,27 +11511,33 @@ export default function EditorPage() {
                     </div>
                   </>
                 ) : null}
-                <div className="grid gap-2">
-                  <Label htmlFor="button-tag" className="text-sm text-white/80">
-                    Tag
-                  </Label>
-                  <Input
-                    ref={tagInputRef}
-                    id="button-tag"
-                    value={
-                      selectedItem?.kind === "text" || selectedItem?.kind === "movement"
-                        ? (selectedItem.tag ?? "")
-                        : ""
-                    }
-                    onChange={(event) => handleSelectedTagChange(event.target.value)}
-                    placeholder="Enter tag"
-                    disabled={
-                      selectedItem?.kind !== "text" &&
-                      selectedItem?.kind !== "movement"
-                    }
-                    className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35 disabled:opacity-50"
-                  />
-                </div>
+                {!selectedItem?.stageRemoveParentTag ? (
+                  <div className="grid gap-2">
+                    <Label htmlFor="button-tag" className="text-sm text-white/80">
+                      Tag
+                    </Label>
+                    <Input
+                      ref={tagInputRef}
+                      id="button-tag"
+                      value={
+                        selectedItem?.kind === "text" || selectedItem?.kind === "movement"
+                          ? (selectedItem.tag ?? "")
+                          : ""
+                      }
+                      onChange={(event) => handleSelectedTagChange(event.target.value)}
+                      placeholder="Enter tag"
+                      disabled={
+                        selectedItem?.kind !== "text" &&
+                        selectedItem?.kind !== "movement"
+                      }
+                      className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35 disabled:opacity-50"
+                    />
+                  </div>
+                ) : (
+                  <div className="rounded-md border border-white/10 bg-slate-900/80 px-3 py-2 text-xs text-white/65">
+                    Parent tag is removed for this staged element.
+                  </div>
+                )}
                 {selectedItem?.kind === "text" && !selectedHasStagedChildren ? (
                   <div className="grid gap-2">
                     <Label htmlFor="button-increment" className="text-sm text-white/80">
@@ -10423,6 +11557,88 @@ export default function EditorPage() {
                       disabled={selectedItem?.kind !== "text"}
                       className="h-11 border-white/10 bg-slate-900/80 text-white placeholder:text-white/35 disabled:opacity-50"
                     />
+                  </div>
+                ) : null}
+                {selectedItem?.kind === "text" ? (
+                  <div className="flex items-center justify-between gap-3 rounded-md border border-white/10 bg-slate-900/70 px-3 py-3">
+                    <div className="grid gap-0.5">
+                      <Label className="text-xs text-white/80">Track success</Label>
+                      <p className="text-[11px] text-white/60">
+                        In preview, click opens check/X chooser in-place.
+                      </p>
+                    </div>
+                    <Switch
+                      checked={selectedItem.successTrackingEnabled === true}
+                      onCheckedChange={(value) => {
+                        if (!selectedItemId) return;
+                        setItems((prev) =>
+                          prev.map((item) =>
+                            item.id === selectedItemId && item.kind === "text"
+                              ? { ...item, successTrackingEnabled: value }
+                              : item
+                          )
+                        );
+                      }}
+                      aria-label="Track success"
+                    />
+                  </div>
+                ) : null}
+                {selectedItem?.kind === "text" && selectedItem.successTrackingEnabled ? (
+                  <div className="grid grid-cols-2 gap-2 rounded-md border border-white/10 bg-slate-900/70 px-3 py-3">
+                    <div className="grid gap-1">
+                      <Label htmlFor="text-success-offset-x" className="text-xs text-white/80">
+                        Success X offset
+                      </Label>
+                      <Input
+                        id="text-success-offset-x"
+                        type="number"
+                        value={selectedItem.successPopoverOffsetX ?? 0}
+                        onChange={(event) => {
+                          if (!selectedItemId) return;
+                          const next = Number(event.target.value);
+                          setItems((prev) =>
+                            prev.map((item) =>
+                              item.id === selectedItemId && item.kind === "text"
+                                ? {
+                                    ...item,
+                                    successPopoverOffsetX: Number.isFinite(next)
+                                      ? Math.round(next)
+                                      : 0,
+                                  }
+                                : item
+                            )
+                          );
+                        }}
+                        className="h-9 border-white/10 bg-slate-950/80 text-white"
+                      />
+                    </div>
+                    <div className="grid gap-1">
+                      <Label htmlFor="text-success-offset-y" className="text-xs text-white/80">
+                        Success Y offset
+                      </Label>
+                      <Input
+                        id="text-success-offset-y"
+                        type="number"
+                        value={selectedItem.successPopoverOffsetY ?? 0}
+                        onChange={(event) => {
+                          if (!selectedItemId) return;
+                          const next = Number(event.target.value);
+                          setItems((prev) =>
+                            prev.map((item) =>
+                              item.id === selectedItemId && item.kind === "text"
+                                ? {
+                                    ...item,
+                                    successPopoverOffsetY: Number.isFinite(next)
+                                      ? Math.round(next)
+                                      : 0,
+                                  }
+                                : item
+                            )
+                          );
+                        }}
+                        className="h-9 border-white/10 bg-slate-950/80 text-white"
+                      />
+                    </div>
                   </div>
                 ) : null}
 
@@ -10481,6 +11697,19 @@ export default function EditorPage() {
                           checked={selectedItem?.stageHideOtherElementsInStage ?? false}
                           onCheckedChange={handleSelectedStageHideOtherElementsInStageChange}
                           aria-label="Hide other elements in stage"
+                        />
+                      </div>
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="grid gap-0.5">
+                          <Label className="text-xs text-white/80">Remove parent tag</Label>
+                          <p className="text-[11px] text-white/60">
+                            Clears the staged parent tag so only staged child tags are exported.
+                          </p>
+                        </div>
+                        <Switch
+                          checked={selectedItem?.stageRemoveParentTag ?? false}
+                          onCheckedChange={handleSelectedStageRemoveParentTagChange}
+                          aria-label="Remove parent tag"
                         />
                       </div>
                     </div>
@@ -10719,6 +11948,14 @@ export default function EditorPage() {
                   <div className="flex items-center justify-center rounded-sm border border-white/20 text-white">1</div>
                   <div className="flex items-center justify-center rounded-sm border border-white/20 text-white">+</div>
                 </div>
+              ) : activeKind === "slider" ? (
+                <div className="flex h-full w-full flex-col justify-end gap-1 rounded-md border border-white/20 bg-slate-900/90 p-2">
+                  <Slider value={[50]} max={100} step={1} className="w-full" />
+                  <div className="flex items-center justify-between text-[10px] text-white/70">
+                    <span>Low</span>
+                    <span>High</span>
+                  </div>
+                </div>
               ) : activeKind === "log" ? (
                 <div className="h-full w-full rounded-md border border-white/15 bg-slate-900/90 p-2">
                   <div className="mb-1 text-xs text-white/80">Log</div>
@@ -10935,30 +12172,32 @@ export default function EditorPage() {
               </div>
             </div>
             <div className="mt-4 grid gap-2">
-              <Label htmlFor="background-upload" className="text-white/85">Background image</Label>
-              <input
-                ref={backgroundInputRef}
-                id="background-upload"
-                type="file"
-                accept="image/*"
-                className="hidden"
-                onChange={handleBackgroundUpload}
-              />
-              <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  className="border border-white/10 bg-slate-900 text-white hover:bg-slate-800 disabled:bg-slate-900 disabled:text-white/50"
-                  onClick={() => backgroundInputRef.current?.click()}
-                >
-                  Upload image
-                </Button>
-                <Button
-                  className="border border-white/10 bg-slate-900 text-white hover:bg-slate-800 disabled:bg-slate-900 disabled:text-white/50"
-                  onClick={() => setBackgroundImage(null)}
-                  disabled={!backgroundImage}
-                >
-                  Remove image
-                </Button>
+              <Label className="text-white/85">Select image</Label>
+              <div className="flex items-center gap-2 rounded-md border border-white/10 bg-slate-900/80 px-3 py-2 text-sm text-white/80">
+                <span className="truncate">{selectedPresetBackground?.name ?? "None"}</span>
               </div>
+              <Button
+                type="button"
+                variant="outline"
+                className="border-white/10 bg-slate-900 text-white hover:bg-slate-800"
+                onClick={() => setIsBackgroundPickerOpen(true)}
+              >
+                Choose from predefined backgrounds
+              </Button>
+            </div>
+            <div className="mt-3">
+              <Button
+                type="button"
+                className="border border-white/10 bg-slate-900 text-white hover:bg-slate-800 disabled:bg-slate-900 disabled:text-white/50"
+                onClick={() =>
+                  router.push(
+                    `/post-match${(requestedUploadId || latestUploadId) ? `?uploadId=${encodeURIComponent(requestedUploadId || latestUploadId || "")}` : ""}`
+                  )
+                }
+                disabled={!(requestedUploadId || latestUploadId)}
+              >
+                Add post match questions
+              </Button>
             </div>
             <div className="mt-4 flex items-center justify-between rounded-md border border-white/10 px-3 py-2">
               <div className="grid gap-0.5">
@@ -11065,6 +12304,70 @@ export default function EditorPage() {
               </Button>
               <Button className="bg-blue-600 text-white hover:bg-blue-500" onClick={handleSaveAspectRatio}>
                 Apply
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={isBackgroundPickerOpen}
+          onOpenChange={(open) => setIsBackgroundPickerOpen(open)}
+        >
+          <DialogContent className="border-white/10 bg-slate-950 text-white sm:max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>Predefined field backgrounds</DialogTitle>
+              <DialogDescription className="text-white/60">
+                Pick a predefined image to use for this project.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="grid gap-3 sm:grid-cols-2">
+              {backgroundPresets.map((entry) => {
+                const isSelected =
+                  (backgroundLocation ?? "none") === entry.key ||
+                  (!backgroundLocation && entry.key === "none");
+                return (
+                  <button
+                    key={entry.key}
+                    type="button"
+                    className={`rounded-lg border p-2 text-left transition-colors ${
+                      isSelected
+                        ? "border-blue-400/70 bg-blue-500/10"
+                        : "border-white/10 bg-slate-900/70 hover:bg-slate-800/80"
+                    }`}
+                    onClick={() => {
+                      if (entry.key === "none") {
+                        setBackgroundLocation(null);
+                        setBackgroundImage(null);
+                      } else {
+                        setBackgroundLocation(entry.key);
+                        setBackgroundImage(entry.imageUrl || null);
+                      }
+                      setIsBackgroundPickerOpen(false);
+                    }}
+                  >
+                    <div className="mb-2 text-sm font-medium text-white">{entry.name}</div>
+                    {entry.imageUrl ? (
+                      <img
+                        src={entry.imageUrl}
+                        alt={entry.name}
+                        className="h-24 w-full rounded-md border border-white/10 object-cover"
+                      />
+                    ) : (
+                      <div className="flex h-24 w-full items-center justify-center rounded-md border border-dashed border-white/20 text-xs text-white/50">
+                        No background image
+                      </div>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                className="border-white/10 bg-slate-900 text-white hover:bg-slate-800"
+                onClick={() => setIsBackgroundPickerOpen(false)}
+              >
+                Close
               </Button>
             </DialogFooter>
           </DialogContent>

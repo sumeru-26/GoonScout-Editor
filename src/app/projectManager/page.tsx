@@ -31,6 +31,7 @@ type Project = {
   uploadId: string;
   name: string;
   status: ProjectStatus;
+  scoutType?: "match" | "qualitative" | "pit";
   updatedAt: string;
   configUpdatedAt?: string;
   stageCount: number;
@@ -91,6 +92,9 @@ export default function ProjectManagerPage() {
   >(null);
   const [createProjectName, setCreateProjectName] = React.useState("Untitled Project");
   const [createProjectIsPublic, setCreateProjectIsPublic] = React.useState(false);
+  const [createProjectScoutType, setCreateProjectScoutType] = React.useState<
+    "match" | "qualitative" | "pit"
+  >("match");
   const [uploadMode, setUploadMode] = React.useState<"file" | "hash">("file");
   const [uploadProjectName, setUploadProjectName] = React.useState("Imported Project");
   const [uploadProjectIsPublic, setUploadProjectIsPublic] = React.useState(false);
@@ -231,7 +235,11 @@ export default function ProjectManagerPage() {
       const response = await fetch("/api/projects", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: projectName, isPublic: createProjectIsPublic }),
+        body: JSON.stringify({
+          name: projectName,
+          isPublic: createProjectIsPublic,
+          scoutType: createProjectScoutType,
+        }),
       });
 
       if (!response.ok) {
@@ -260,11 +268,12 @@ export default function ProjectManagerPage() {
     } finally {
       setIsCreating(false);
     }
-  }, [createProjectIsPublic, createProjectName, router]);
+  }, [createProjectIsPublic, createProjectName, createProjectScoutType, router]);
 
   const openCreateProjectDialog = React.useCallback(() => {
     setCreateProjectName("Untitled Project");
     setCreateProjectIsPublic(false);
+    setCreateProjectScoutType("match");
     setIsCreateDialogOpen(true);
   }, []);
 
@@ -847,6 +856,31 @@ export default function ProjectManagerPage() {
                 void handleCreateProject();
               }}
             />
+            <div className="grid gap-2 rounded-md border border-white/10 px-3 py-3">
+              <span className="text-sm text-white/85">Scouting Type</span>
+              <div className="grid grid-cols-3 gap-2">
+                {([
+                  ["match", "Match"],
+                  ["qualitative", "Qualitative"],
+                  ["pit", "Pit"],
+                ] as const).map(([value, label]) => (
+                  <Button
+                    key={value}
+                    type="button"
+                    variant="outline"
+                    className={`h-9 border-white/20 bg-slate-900/70 text-xs text-white hover:bg-slate-800 ${
+                      createProjectScoutType === value ? "ring-1 ring-blue-400/70" : ""
+                    }`}
+                    onClick={() => setCreateProjectScoutType(value)}
+                  >
+                    {label}
+                  </Button>
+                ))}
+              </div>
+              <span className="text-xs text-white/55">
+                Match: all assets. Qualitative: team select, match select, submit, reset, text field, cover. Pit: qualitative + toggles.
+              </span>
+            </div>
             <div className="mt-1 flex items-center justify-between rounded-md border border-white/10 px-3 py-2">
               <div className="grid gap-0.5">
                 <span className="text-sm text-white/85">Public project</span>
