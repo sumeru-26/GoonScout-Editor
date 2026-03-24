@@ -15,6 +15,7 @@ type ProjectMetadataRow = {
   upload_id: string;
   name: string;
   status: ProjectStatus;
+  scout_type: "match" | "qualitative" | "pit";
   updated_at: Date;
   content_hash: string;
   is_draft: boolean;
@@ -53,10 +54,37 @@ const ensureProjectsTable = async () => {
   await sql`
     drop index if exists public.project_manager_entries_user_id_key
   `.execute(db);
+
+  await sql`
+    alter table public.project_manager_entries
+    add column if not exists scout_type text not null default 'match'
+  `.execute(db);
+
+  await sql`
+    do $$
+    begin
+      begin
+        alter table public.project_manager_entries
+        add constraint project_manager_entries_scout_type_chk
+        check (scout_type in ('match', 'qualitative', 'pit'));
+      exception
+        when duplicate_object then
+          null;
+      end;
+    end
+    $$
+  `.execute(db);
 };
 
 const normalizeStatus = (value: unknown): ProjectStatus | null => {
   if (value === "active" || value === "archive" || value === "trash") {
+    return value;
+  }
+  return null;
+};
+
+const normalizeScoutType = (value: unknown): "match" | "qualitative" | "pit" | null => {
+  if (value === "match" || value === "qualitative" || value === "pit") {
     return value;
   }
   return null;
@@ -95,6 +123,7 @@ export async function GET(_: Request, context: RouteContext) {
         p.upload_id,
         p.name,
         p.status,
+        p.scout_type,
         p.updated_at,
         f.content_hash::text as content_hash,
         f.is_draft,
@@ -118,6 +147,7 @@ export async function GET(_: Request, context: RouteContext) {
           uploadId: row.upload_id,
           name: row.name,
           status: row.status,
+          scoutType: row.scout_type,
           updatedAt: row.updated_at,
           contentHash: row.content_hash,
           isDraft: row.is_draft,
@@ -152,6 +182,7 @@ export async function PATCH(request: Request, context: RouteContext) {
       name?: string;
       status?: string;
       isPublic?: boolean;
+      scoutType?: string;
     };
 
     const nextStatus = normalizeStatus(body.status);
@@ -161,8 +192,9 @@ export async function PATCH(request: Request, context: RouteContext) {
         : null;
     const hasIsPublicUpdate = typeof body.isPublic === "boolean";
     const nextIsPublic = hasIsPublicUpdate ? Boolean(body.isPublic) : null;
+    const nextScoutType = normalizeScoutType(body.scoutType);
 
-    if (!nextStatus && !nextName && !hasIsPublicUpdate) {
+    if (!nextStatus && !nextName && !hasIsPublicUpdate && !nextScoutType) {
       return NextResponse.json({ error: "No valid updates provided." }, { status: 400 });
     }
 
@@ -183,6 +215,7 @@ export async function PATCH(request: Request, context: RouteContext) {
       upload_id: string;
       name: string;
       status: string;
+      scout_type: "match" | "qualitative" | "pit";
       updated_at: Date;
       is_public: boolean;
     }>`
@@ -190,6 +223,7 @@ export async function PATCH(request: Request, context: RouteContext) {
       set
         name = coalesce(${nextName}, p.name),
         status = coalesce(${nextStatus}, p.status),
+        scout_type = coalesce(${nextScoutType}, p.scout_type),
         updated_at = now()
       from public.field_configs f
       where p.upload_id = ${normalizedUploadId}::uuid
@@ -233,6 +267,7 @@ export async function PATCH(request: Request, context: RouteContext) {
           uploadId: row.upload_id,
           name: row.name,
           status: row.status,
+          scoutType: row.scout_type,
           updatedAt: row.updated_at,
           isPublic: metadata?.is_public ?? row.is_public,
         },

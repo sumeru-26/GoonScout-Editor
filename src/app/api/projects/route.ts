@@ -12,17 +12,23 @@ type ProjectRow = {
   upload_id: string;
   name: string;
   status: ProjectStatus;
+  scout_type: "match" | "qualitative" | "pit";
   updated_at: Date;
   config_updated_at: Date;
   payload: unknown;
   background_image: string | null;
+  background_location: string | null;
   is_public?: boolean;
 };
 
 const buildShareCode8 = () =>
   `${Math.floor(Math.random() * 90_000_000) + 10_000_000}`;
 
-const createProjectConfigWithRetry = async (input: { userId: string; isPublic: boolean }) => {
+const createProjectConfigWithRetry = async (input: {
+  userId: string;
+  isPublic: boolean;
+  scoutType: "match" | "qualitative" | "pit";
+}) => {
   const maxAttempts = 5;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -32,6 +38,7 @@ const createProjectConfigWithRetry = async (input: { userId: string; isPublic: b
         updated_at: Date;
         payload: unknown;
         background_image: string | null;
+        background_location: string | null;
       }>`
         insert into public.field_configs (
           id,
@@ -39,6 +46,7 @@ const createProjectConfigWithRetry = async (input: { userId: string; isPublic: b
           user_id,
           payload,
           background_image,
+          background_location,
           content_hash,
           is_draft,
           is_public
@@ -47,13 +55,25 @@ const createProjectConfigWithRetry = async (input: { userId: string; isPublic: b
           ${randomUUID()}::uuid,
           ${randomUUID()}::uuid,
           ${input.userId},
-          ${JSON.stringify([])}::jsonb,
+          ${JSON.stringify({
+            editorState: {
+              items: [],
+              aspectWidth: "16",
+              aspectHeight: "9",
+              backgroundImage: null,
+              backgroundLocation: null,
+              postMatchQuestions: [],
+              scoutType: input.scoutType,
+            },
+            payload: [],
+          })}::jsonb,
+          null,
           null,
           ${buildShareCode8()},
           true,
           ${input.isPublic}
         )
-        returning upload_id, updated_at, payload, background_image
+        returning upload_id, updated_at, payload, background_image, background_location
       `.execute(db);
 
       const config = createdConfig.rows[0];
@@ -114,6 +134,26 @@ const ensureProjectsTable = async () => {
   await sql`
     drop index if exists public.project_manager_entries_user_id_key
   `.execute(db);
+
+  await sql`
+    alter table public.project_manager_entries
+    add column if not exists scout_type text not null default 'match'
+  `.execute(db);
+
+  await sql`
+    do $$
+    begin
+      begin
+        alter table public.project_manager_entries
+        add constraint project_manager_entries_scout_type_chk
+        check (scout_type in ('match', 'qualitative', 'pit'));
+      exception
+        when duplicate_object then
+          null;
+      end;
+    end
+    $$
+  `.execute(db);
 };
 
 const ensureMultipleDraftsAllowed = async () => {
@@ -127,6 +167,14 @@ const ensureMultipleDraftsAllowed = async () => {
   `.execute(db);
 };
 
+const ensureFieldConfigColumns = async () => {
+  await sql`
+    alter table public.field_configs
+    add column if not exists background_location text,
+    add column if not exists field_mapping jsonb
+  `.execute(db);
+};
+
 const ensureProjectEntriesForUser = async (userId: string) => {
   await sql`
     insert into public.project_manager_entries (upload_id, user_id, name, status)
@@ -134,7 +182,7 @@ const ensureProjectEntriesForUser = async (userId: string) => {
       f.upload_id,
       f.user_id,
       concat('Project ', right(f.content_hash, 4)),
-      'active'
+        'active'
     from public.field_configs f
     where f.user_id = ${userId}
       and not exists (
@@ -193,6 +241,7 @@ export async function GET(request: Request) {
 
     await ensureProjectsTable();
     await ensureMultipleDraftsAllowed();
+    await ensureFieldConfigColumns();
     await ensureProjectEntriesForUser(userId);
 
     const url = new URL(request.url);
@@ -207,10 +256,12 @@ export async function GET(request: Request) {
           p.upload_id,
           p.name,
           p.status,
+          p.scout_type,
           p.updated_at,
           f.updated_at as config_updated_at,
           f.payload,
           f.background_image,
+          f.background_location,
           f.is_public
         from public.project_manager_entries p
         join public.field_configs f on f.upload_id = p.upload_id
@@ -237,10 +288,12 @@ export async function GET(request: Request) {
           p.upload_id,
           p.name,
           p.status,
+          p.scout_type,
           p.updated_at,
           f.updated_at as config_updated_at,
           f.payload,
           f.background_image,
+          f.background_location,
           false as is_public
         from public.project_manager_entries p
         join public.field_configs f on f.upload_id = p.upload_id
@@ -255,10 +308,12 @@ export async function GET(request: Request) {
       uploadId: row.upload_id,
       name: row.name,
       status: row.status,
+      scoutType: row.scout_type,
       updatedAt: row.updated_at,
       configUpdatedAt: row.config_updated_at,
       stageCount: inferStageCount(row.payload),
       backgroundImage: row.background_image,
+      backgroundLocation: row.background_location,
       isPublic: row.is_public,
     }));
 
@@ -278,10 +333,12 @@ export async function POST(request: Request) {
     }
 
     await ensureProjectsTable();
+    await ensureFieldConfigColumns();
 
     const body = (await request.json().catch(() => ({}))) as {
       name?: string;
       isPublic?: boolean;
+      scoutType?: "match" | "qualitative" | "pit";
     };
 
     const projectName =
@@ -290,12 +347,16 @@ export async function POST(request: Request) {
         : "Untitled Project";
 
     const isPublic = Boolean(body.isPublic ?? false);
+    const scoutType: "match" | "qualitative" | "pit" =
+      body.scoutType === "qualitative" || body.scoutType === "pit"
+        ? body.scoutType
+        : "match";
 
-    const config = await createProjectConfigWithRetry({ userId, isPublic });
+    const config = await createProjectConfigWithRetry({ userId, isPublic, scoutType });
 
     await sql`
-      insert into public.project_manager_entries (upload_id, user_id, name, status)
-      values (${config.upload_id}::uuid, ${userId}, ${projectName}, 'active')
+      insert into public.project_manager_entries (upload_id, user_id, name, status, scout_type)
+      values (${config.upload_id}::uuid, ${userId}, ${projectName}, 'active', ${scoutType})
     `.execute(db);
 
     return NextResponse.json(
@@ -304,9 +365,11 @@ export async function POST(request: Request) {
           uploadId: config.upload_id,
           name: projectName,
           status: "active",
+          scoutType,
           updatedAt: config.updated_at,
           stageCount: inferStageCount(config.payload),
           backgroundImage: config.background_image,
+          backgroundLocation: config.background_location,
           isPublic,
         },
       },
