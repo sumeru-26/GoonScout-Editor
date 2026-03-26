@@ -487,6 +487,7 @@ type PersistedEditorState = {
   scoutType?: ScoutType;
   postMatchQuestions?: PostMatchQuestion[];
   eventKey?: string;
+  enableEventTimeTracking?: boolean;
   coordinateSpace?: string;
   useCustomSideLayouts?: boolean;
   editorTeamSide?: TeamSide;
@@ -511,6 +512,7 @@ type EditorSnapshot = {
   scoutType: ScoutType;
   postMatchQuestions: PostMatchQuestion[];
   eventKey: string;
+  enableEventTimeTracking: boolean;
   useCustomSideLayouts: boolean;
   editorTeamSide: TeamSide;
   previewTeamSide: TeamSide;
@@ -541,6 +543,13 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
 const normalizeTag = (value: string) => value.replace(/\s+/g, "").trim();
+const createDisabledStageTag = () => {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  const suffix = Array.from({ length: 5 }, () =>
+    alphabet[Math.floor(Math.random() * alphabet.length)]
+  ).join("");
+  return `TagDis-${suffix}`;
+};
 const NORMALIZED_COORDINATE_SPACE = "normalized-v1" as const;
 
 const clampNormalized = (value: number) => Math.max(-100, Math.min(100, value));
@@ -889,6 +898,7 @@ const parsePersistedEditorState = (
         }))
     : [];
   const eventKey = typeof source.eventKey === "string" ? source.eventKey : "";
+  const enableEventTimeTracking = Boolean(source.enableEventTimeTracking ?? false);
   const useCustomSideLayouts = Boolean(source.useCustomSideLayouts ?? false);
   const editorTeamSide: TeamSide =
     source.editorTeamSide === "blue" ? "blue" : "red";
@@ -932,6 +942,7 @@ const parsePersistedEditorState = (
     scoutType,
     postMatchQuestions,
     eventKey,
+    enableEventTimeTracking,
     coordinateSpace:
       typeof source.coordinateSpace === "string" ? source.coordinateSpace : undefined,
     useCustomSideLayouts,
@@ -1558,6 +1569,7 @@ const parseImportedEditorState = (
     aspectHeight: "9",
     backgroundImage: fallbackImage,
     eventKey: typeof source?.eventKey === "string" ? source.eventKey : "",
+    enableEventTimeTracking: Boolean(source?.enableEventTimeTracking ?? false),
     useCustomSideLayouts,
     editorTeamSide,
     previewTeamSide,
@@ -3940,6 +3952,9 @@ export default function EditorPage() {
   const [aspectHeightDraft, setAspectHeightDraft] = React.useState("9");
   const [eventKey, setEventKey] = React.useState("");
   const [eventKeyDraft, setEventKeyDraft] = React.useState("");
+  const [enableEventTimeTracking, setEnableEventTimeTracking] = React.useState(false);
+  const [enableEventTimeTrackingDraft, setEnableEventTimeTrackingDraft] =
+    React.useState(false);
   const [scoutType, setScoutType] = React.useState<ScoutType>("match");
   const [postMatchQuestions, setPostMatchQuestions] = React.useState<PostMatchQuestion[]>(
     []
@@ -4860,6 +4875,7 @@ export default function EditorPage() {
       scoutType,
       postMatchQuestions,
       eventKey,
+      enableEventTimeTracking,
       useCustomSideLayouts: isCustomSideLayoutsEnabled,
       editorTeamSide,
       previewTeamSide,
@@ -4870,6 +4886,7 @@ export default function EditorPage() {
     backgroundImage,
     backgroundLocation,
     editorTeamSide,
+    enableEventTimeTracking,
     eventKey,
     isCustomSideLayoutsEnabled,
     items,
@@ -5999,6 +6016,8 @@ export default function EditorPage() {
       setPostMatchQuestions(snapshot.postMatchQuestions);
       setEventKey(snapshot.eventKey);
       setEventKeyDraft(snapshot.eventKey);
+      setEnableEventTimeTracking(snapshot.enableEventTimeTracking);
+      setEnableEventTimeTrackingDraft(snapshot.enableEventTimeTracking);
       setIsCustomSideLayoutsEnabled(snapshot.useCustomSideLayouts);
       setEditorTeamSide(snapshot.editorTeamSide);
       setPreviewTeamSide(snapshot.previewTeamSide);
@@ -6598,8 +6617,22 @@ export default function EditorPage() {
         ? previewBaseStageSizeRef.current.height
         : canvasHeight;
 
+    const disabledStageTagById = new Map<string, string>();
+    const getExportTagForItem = (item: CanvasItem) => {
+      if (!item.stageRemoveParentTag) {
+        return normalizeTag(item.tag ?? "");
+      }
+
+      const existing = disabledStageTagById.get(item.id);
+      if (existing) return existing;
+
+      const generated = createDisabledStageTag();
+      disabledStageTagById.set(item.id, generated);
+      return generated;
+    };
+
     const tagById = new Map(
-      items.map((item) => [item.id, normalizeTag(item.tag ?? "")] as const)
+      items.map((item) => [item.id, getExportTagForItem(item)] as const)
     );
     const itemById = new Map(items.map((item) => [item.id, item] as const));
     const stagedParentIds = new Set(
@@ -6621,8 +6654,8 @@ export default function EditorPage() {
       return null;
     };
 
-    const getExportTagVariants = (item: CanvasItem, rawTag: string | undefined) => {
-      const baseTag = item.stageRemoveParentTag ? "" : normalizeTag(rawTag ?? "");
+    const getExportTagVariants = (item: CanvasItem) => {
+      const baseTag = getExportTagForItem(item);
       if (!baseTag) return [baseTag];
 
       const linkedTeamSelectStageRootId = resolveTeamSelectStageRootId(item);
@@ -6636,9 +6669,7 @@ export default function EditorPage() {
         item.kind
       )
     );
-    const tags = taggedItems.map((item) =>
-      item.stageRemoveParentTag ? "" : normalizeTag(item.tag ?? "")
-    );
+    const tags = taggedItems.map((item) => getExportTagForItem(item));
 
     const shouldValidateTags = options?.validateTags ?? true;
     const shouldShowValidationErrors = options?.showValidationErrors ?? true;
@@ -6679,7 +6710,7 @@ export default function EditorPage() {
         ? tagById.get(item.stageParentId) ?? ""
         : "";
       const hasStageChildren = stagedParentIds.has(item.id);
-      const tagVariants = getExportTagVariants(item, item.tag);
+      const tagVariants = getExportTagVariants(item);
 
       const entries = (() => {
         switch (item.kind) {
@@ -7145,6 +7176,8 @@ export default function EditorPage() {
       setPostMatchQuestions(nextState.postMatchQuestions ?? []);
       setEventKey(nextState.eventKey ?? "");
       setEventKeyDraft(nextState.eventKey ?? "");
+      setEnableEventTimeTracking(Boolean(nextState.enableEventTimeTracking));
+      setEnableEventTimeTrackingDraft(Boolean(nextState.enableEventTimeTracking));
       setIsCustomSideLayoutsEnabled(Boolean(nextState.useCustomSideLayouts));
       setEditorTeamSide(nextState.editorTeamSide ?? "red");
       setPreviewTeamSide(nextState.previewTeamSide ?? "red");
@@ -7272,8 +7305,14 @@ export default function EditorPage() {
     setAspectWidth(String(width));
     setAspectHeight(String(height));
     setEventKey(eventKeyDraft.trim());
+    setEnableEventTimeTracking(enableEventTimeTrackingDraft);
     setIsAspectDialogOpen(false);
-  }, [aspectHeightDraft, aspectWidthDraft, eventKeyDraft]);
+  }, [
+    aspectHeightDraft,
+    aspectWidthDraft,
+    enableEventTimeTrackingDraft,
+    eventKeyDraft,
+  ]);
 
   const disableCustomSideLayoutsKeeping = React.useCallback(
     (sideToKeep: TeamSide) => {
@@ -7380,6 +7419,7 @@ export default function EditorPage() {
       scoutType,
       postMatchQuestions,
       eventKey,
+      enableEventTimeTracking,
       coordinateSpace: NORMALIZED_COORDINATE_SPACE,
       useCustomSideLayouts: isCustomSideLayoutsEnabled,
       editorTeamSide,
@@ -7390,6 +7430,7 @@ export default function EditorPage() {
     aspectWidth,
     backgroundImage,
     backgroundLocation,
+    enableEventTimeTracking,
     editorTeamSide,
     eventKey,
     fieldWidth,
@@ -7775,6 +7816,8 @@ export default function EditorPage() {
             setBackgroundLocation(null);
             setEventKey("");
             setEventKeyDraft("");
+            setEnableEventTimeTracking(false);
+            setEnableEventTimeTrackingDraft(false);
             setScoutType("match");
             setPostMatchQuestions([]);
             setIsCustomSideLayoutsEnabled(false);
@@ -7847,6 +7890,8 @@ export default function EditorPage() {
               setPostMatchQuestions(nextState.postMatchQuestions ?? []);
               setEventKey(nextState.eventKey ?? "");
               setEventKeyDraft(nextState.eventKey ?? "");
+              setEnableEventTimeTracking(Boolean(nextState.enableEventTimeTracking));
+              setEnableEventTimeTrackingDraft(Boolean(nextState.enableEventTimeTracking));
               setIsCustomSideLayoutsEnabled(Boolean(nextState.useCustomSideLayouts));
               setEditorTeamSide(nextState.editorTeamSide ?? "red");
               setPreviewTeamSide(nextState.previewTeamSide ?? "red");
@@ -7909,6 +7954,8 @@ export default function EditorPage() {
           setPostMatchQuestions(restored.postMatchQuestions ?? []);
           setEventKey(restored.eventKey ?? "");
           setEventKeyDraft(restored.eventKey ?? "");
+          setEnableEventTimeTracking(Boolean(restored.enableEventTimeTracking));
+          setEnableEventTimeTrackingDraft(Boolean(restored.enableEventTimeTracking));
           setIsCustomSideLayoutsEnabled(Boolean(restored.useCustomSideLayouts));
           setEditorTeamSide(restored.editorTeamSide ?? "red");
           setPreviewTeamSide(restored.previewTeamSide ?? "red");
@@ -9103,6 +9150,8 @@ export default function EditorPage() {
     setAspectHeightDraft("9");
     setEventKey("");
     setEventKeyDraft("");
+    setEnableEventTimeTracking(false);
+    setEnableEventTimeTrackingDraft(false);
     setIsCustomSideLayoutsEnabled(false);
     setEditorTeamSide("red");
     setPreviewTeamSide("red");
@@ -11728,6 +11777,7 @@ export default function EditorPage() {
                   setAspectWidthDraft(aspectWidth);
                   setAspectHeightDraft(aspectHeight);
                   setEventKeyDraft(eventKey);
+                  setEnableEventTimeTrackingDraft(enableEventTimeTracking);
                   setIsAspectDialogOpen(true);
                 }}
               >
@@ -12169,6 +12219,37 @@ export default function EditorPage() {
                   placeholder="2026DiddyEvent"
                   className="border-white/10 bg-slate-900/80 text-white placeholder:text-white/35"
                 />
+              </div>
+              <div className="sm:col-span-2 flex items-center justify-between rounded-md border border-white/10 px-3 py-2">
+                <div className="grid gap-0.5">
+                  <Label htmlFor="event-time-tracking-toggle">Enable event time tracking</Label>
+                  <p className="text-xs text-white/60">
+                    Stores an event-time-tracking flag in saved payloads.
+                  </p>
+                </div>
+                <button
+                  id="event-time-tracking-toggle"
+                  type="button"
+                  role="switch"
+                  aria-checked={enableEventTimeTrackingDraft}
+                  aria-label="Toggle event time tracking"
+                  onClick={() =>
+                    setEnableEventTimeTrackingDraft((current) => !current)
+                  }
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full border transition-colors ${
+                    enableEventTimeTrackingDraft
+                      ? "border-white/60 bg-white/80"
+                      : "border-white/30 bg-white/10"
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-black transition-transform ${
+                      enableEventTimeTrackingDraft
+                        ? "translate-x-6"
+                        : "translate-x-1"
+                    }`}
+                  />
+                </button>
               </div>
             </div>
             <div className="mt-4 grid gap-2">

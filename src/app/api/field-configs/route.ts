@@ -71,15 +71,17 @@ const normalizePayloadArray = (payload: unknown): Array<Record<string, unknown>>
 
 type FieldMappingEntry = {
   value: string;
-  bucket: "text" | "meta" | null;
+  bucket: "text" | "meta" | "success" | null;
 };
 
 const buildFieldMappingShape = (entries: FieldMappingEntry[]) => {
   const mapping: Record<string, string> = {};
   const textIndices: number[] = [];
   const metaIndices: number[] = [];
+  const successIndices: number[] = [];
   const textIndexSet = new Set<number>();
   const metaIndexSet = new Set<number>();
+  const successIndexSet = new Set<number>();
   const indexByValue = new Map<string, number>();
 
   for (const entry of entries) {
@@ -102,12 +104,18 @@ const buildFieldMappingShape = (entries: FieldMappingEntry[]) => {
       metaIndexSet.add(index);
       metaIndices.push(index);
     }
+
+    if (entry.bucket === "success" && !successIndexSet.has(index)) {
+      successIndexSet.add(index);
+      successIndices.push(index);
+    }
   }
 
   return {
     mapping,
     text: textIndices,
     meta: metaIndices,
+    success: successIndices,
   };
 };
 
@@ -123,6 +131,8 @@ const buildFieldMappingEntriesFromEditorState = (editorState: unknown) => {
     const kind = typeof rawItem.kind === "string" ? rawItem.kind : "";
     const tag = normalizeTag(rawItem.tag);
     if (!tag) continue;
+    const successTrackingEnabled =
+      rawItem.successTrackingEnabled === true || rawItem.trackSuccess === true;
 
     if (kind === "toggle" || kind === "slider") {
       entries.push({ value: tag, bucket: "meta" });
@@ -134,8 +144,11 @@ const buildFieldMappingEntriesFromEditorState = (editorState: unknown) => {
       continue;
     }
 
-    entries.push({ value: `auto.${tag}`, bucket: null });
-    entries.push({ value: `teleop.${tag}`, bucket: null });
+    const actionBucket: FieldMappingEntry["bucket"] = successTrackingEnabled
+      ? "success"
+      : null;
+    entries.push({ value: `auto.${tag}`, bucket: actionBucket });
+    entries.push({ value: `teleop.${tag}`, bucket: actionBucket });
   }
 
   return entries;
@@ -146,6 +159,13 @@ const buildFieldMappingEntriesFromPayload = (payload: unknown) => {
   const entries: FieldMappingEntry[] = [];
 
   source.forEach((entry) => {
+    const button = isObjectRecord(entry.button)
+      ? (entry.button as Record<string, unknown>)
+      : null;
+    const iconButton = isObjectRecord(entry["icon-button"])
+      ? (entry["icon-button"] as Record<string, unknown>)
+      : null;
+
     const toggle = isObjectRecord(entry["toggle-switch"])
       ? (entry["toggle-switch"] as Record<string, unknown>)
       : null;
@@ -174,10 +194,8 @@ const buildFieldMappingEntriesFromPayload = (payload: unknown) => {
     }
 
     const readTag =
-      (isObjectRecord(entry.button) ? normalizeTag((entry.button as Record<string, unknown>).tag) : "") ||
-      (isObjectRecord(entry["icon-button"])
-        ? normalizeTag((entry["icon-button"] as Record<string, unknown>).tag)
-        : "") ||
+      (button ? normalizeTag(button.tag) : "") ||
+      (iconButton ? normalizeTag(iconButton.tag) : "") ||
       (isObjectRecord(entry["movement-button"])
         ? normalizeTag((entry["movement-button"] as Record<string, unknown>).tag)
         : "") ||
@@ -188,9 +206,15 @@ const buildFieldMappingEntriesFromPayload = (payload: unknown) => {
         ? normalizeTag((entry["button-slider"] as Record<string, unknown>).tag)
         : "");
 
+    const successTrackingEnabled =
+      (button?.trackSuccess === true) || (iconButton?.trackSuccess === true);
+
     if (readTag) {
-      entries.push({ value: `auto.${readTag}`, bucket: null });
-      entries.push({ value: `teleop.${readTag}`, bucket: null });
+      const actionBucket: FieldMappingEntry["bucket"] = successTrackingEnabled
+        ? "success"
+        : null;
+      entries.push({ value: `auto.${readTag}`, bucket: actionBucket });
+      entries.push({ value: `teleop.${readTag}`, bucket: actionBucket });
     }
   });
 
