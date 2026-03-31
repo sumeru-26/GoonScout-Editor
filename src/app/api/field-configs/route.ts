@@ -55,6 +55,35 @@ const buildShareCode8 = () =>
 const normalizeTag = (value: unknown) =>
   typeof value === "string" ? value.replace(/\s+/g, "").trim() : "";
 
+const TEAM_SELECT_TEAM_VARIANTS = ["b1", "b2", "b3", "r1", "r2", "r3"] as const;
+const TEAM_SELECT_GENERAL_VARIANT = "general";
+const TEAM_SELECT_SUFFIX_PATTERN = /-(b[1-3]|r[1-3]|general)$/i;
+
+const hasTeamSelectVariantSuffix = (tag: string) => TEAM_SELECT_SUFFIX_PATTERN.test(tag);
+
+const resolveTeamSelectTagVariants = (input: {
+  baseTag: string;
+  isLinkedTeamStage: boolean;
+  includeGeneralComments: boolean;
+  scope: "team" | "general";
+}) => {
+  const baseTag = normalizeTag(input.baseTag);
+  if (!baseTag) return [] as string[];
+
+  if (!input.isLinkedTeamStage || hasTeamSelectVariantSuffix(baseTag)) {
+    return [baseTag];
+  }
+
+  if (input.scope === "general") {
+    if (!input.includeGeneralComments) {
+      return [baseTag];
+    }
+    return [`${baseTag}-${TEAM_SELECT_GENERAL_VARIANT}`];
+  }
+
+  return TEAM_SELECT_TEAM_VARIANTS.map((variant) => `${baseTag}-${variant}`);
+};
+
 const normalizePayloadArray = (payload: unknown): Array<Record<string, unknown>> => {
   if (Array.isArray(payload)) {
     return payload.filter((entry): entry is Record<string, unknown> => isObjectRecord(entry));
@@ -125,30 +154,85 @@ const buildFieldMappingEntriesFromEditorState = (editorState: unknown) => {
   }
 
   const entries: FieldMappingEntry[] = [];
+  const items = editorState.items.filter((entry): entry is Record<string, unknown> =>
+    isObjectRecord(entry)
+  );
+  const itemsById = new Map<string, Record<string, unknown>>();
+  const linkedTeamSelectIds = new Set<string>();
+  const linkedTeamSelectIncludesGeneral = new Map<string, boolean>();
 
-  for (const rawItem of editorState.items) {
-    if (!isObjectRecord(rawItem)) continue;
+  for (const item of items) {
+    const itemId = typeof item.id === "string" ? item.id : "";
+    if (itemId) {
+      itemsById.set(itemId, item);
+    }
+
+    if (item.kind !== "team-select" || item.teamSelectLinkToStage !== true || !itemId) {
+      continue;
+    }
+
+    linkedTeamSelectIds.add(itemId);
+    linkedTeamSelectIncludesGeneral.set(itemId, item.teamSelectIncludeGeneralComments === true);
+  }
+
+  const findLinkedTeamSelectRootId = (item: Record<string, unknown>) => {
+    let parentId = typeof item.stageParentId === "string" ? item.stageParentId : "";
+    const visited = new Set<string>();
+
+    while (parentId && !visited.has(parentId)) {
+      visited.add(parentId);
+
+      if (linkedTeamSelectIds.has(parentId)) {
+        return parentId;
+      }
+
+      const parent = itemsById.get(parentId);
+      if (!parent) break;
+      parentId = typeof parent.stageParentId === "string" ? parent.stageParentId : "";
+    }
+
+    return "";
+  };
+
+  for (const rawItem of items) {
     const kind = typeof rawItem.kind === "string" ? rawItem.kind : "";
     const tag = normalizeTag(rawItem.tag);
     if (!tag) continue;
+
+    const linkedTeamSelectRootId = findLinkedTeamSelectRootId(rawItem);
+    const teamStageScope = rawItem.teamStageScope === "general" ? "general" : "team";
+    const tagVariants = resolveTeamSelectTagVariants({
+      baseTag: tag,
+      isLinkedTeamStage: Boolean(linkedTeamSelectRootId),
+      includeGeneralComments:
+        linkedTeamSelectIncludesGeneral.get(linkedTeamSelectRootId) === true,
+      scope: teamStageScope,
+    });
+
     const successTrackingEnabled =
       rawItem.successTrackingEnabled === true || rawItem.trackSuccess === true;
 
     if (kind === "toggle" || kind === "slider") {
-      entries.push({ value: tag, bucket: "meta" });
+      for (const variantTag of tagVariants) {
+        entries.push({ value: variantTag, bucket: "meta" });
+      }
       continue;
     }
 
     if (kind === "input" || kind === "text") {
-      entries.push({ value: tag, bucket: "text" });
+      for (const variantTag of tagVariants) {
+        entries.push({ value: variantTag, bucket: "text" });
+      }
       continue;
     }
 
     const actionBucket: FieldMappingEntry["bucket"] = successTrackingEnabled
       ? "success"
       : null;
-    entries.push({ value: `auto.${tag}`, bucket: actionBucket });
-    entries.push({ value: `teleop.${tag}`, bucket: actionBucket });
+    for (const variantTag of tagVariants) {
+      entries.push({ value: `auto.${variantTag}`, bucket: actionBucket });
+      entries.push({ value: `teleop.${variantTag}`, bucket: actionBucket });
+    }
   }
 
   return entries;
@@ -157,6 +241,22 @@ const buildFieldMappingEntriesFromEditorState = (editorState: unknown) => {
 const buildFieldMappingEntriesFromPayload = (payload: unknown) => {
   const source = normalizePayloadArray(payload);
   const entries: FieldMappingEntry[] = [];
+  const linkedTeamSelectByTag = new Map<string, { includeGeneralComments: boolean }>();
+
+  source.forEach((entry) => {
+    const teamSelect = isObjectRecord(entry["team-select"])
+      ? (entry["team-select"] as Record<string, unknown>)
+      : null;
+    if (!teamSelect) return;
+
+    const isLinked = teamSelect.linkEachTeamToStage === true;
+    const teamSelectTag = normalizeTag(teamSelect.tag);
+    if (!isLinked || !teamSelectTag) return;
+
+    linkedTeamSelectByTag.set(teamSelectTag, {
+      includeGeneralComments: teamSelect.addGeneralComments === true,
+    });
+  });
 
   source.forEach((entry) => {
     const button = isObjectRecord(entry.button)
@@ -171,7 +271,18 @@ const buildFieldMappingEntriesFromPayload = (payload: unknown) => {
       : null;
     if (toggle) {
       const tag = normalizeTag(toggle.tag);
-      if (tag) entries.push({ value: tag, bucket: "meta" });
+      const stageParentTag = normalizeTag(toggle.stageParentTag);
+      const linkedTeamSelect = linkedTeamSelectByTag.get(stageParentTag);
+      const scope = toggle.teamStageScope === "general" ? "general" : "team";
+      const variants = resolveTeamSelectTagVariants({
+        baseTag: tag,
+        isLinkedTeamStage: Boolean(linkedTeamSelect),
+        includeGeneralComments: linkedTeamSelect?.includeGeneralComments === true,
+        scope,
+      });
+      for (const variantTag of variants) {
+        entries.push({ value: variantTag, bucket: "meta" });
+      }
       return;
     }
 
@@ -180,7 +291,18 @@ const buildFieldMappingEntriesFromPayload = (payload: unknown) => {
       : null;
     if (textInput) {
       const tag = normalizeTag(textInput.tag);
-      if (tag) entries.push({ value: tag, bucket: "text" });
+      const stageParentTag = normalizeTag(textInput.stageParentTag);
+      const linkedTeamSelect = linkedTeamSelectByTag.get(stageParentTag);
+      const scope = textInput.teamStageScope === "general" ? "general" : "team";
+      const variants = resolveTeamSelectTagVariants({
+        baseTag: tag,
+        isLinkedTeamStage: Boolean(linkedTeamSelect),
+        includeGeneralComments: linkedTeamSelect?.includeGeneralComments === true,
+        scope,
+      });
+      for (const variantTag of variants) {
+        entries.push({ value: variantTag, bucket: "text" });
+      }
       return;
     }
 
@@ -189,9 +311,33 @@ const buildFieldMappingEntriesFromPayload = (payload: unknown) => {
       : null;
     if (slider) {
       const tag = normalizeTag(slider.tag);
-      if (tag) entries.push({ value: tag, bucket: "meta" });
+      const stageParentTag = normalizeTag(slider.stageParentTag);
+      const linkedTeamSelect = linkedTeamSelectByTag.get(stageParentTag);
+      const scope = slider.teamStageScope === "general" ? "general" : "team";
+      const variants = resolveTeamSelectTagVariants({
+        baseTag: tag,
+        isLinkedTeamStage: Boolean(linkedTeamSelect),
+        includeGeneralComments: linkedTeamSelect?.includeGeneralComments === true,
+        scope,
+      });
+      for (const variantTag of variants) {
+        entries.push({ value: variantTag, bucket: "meta" });
+      }
       return;
     }
+
+    const actionElement =
+      button ??
+      iconButton ??
+      (isObjectRecord(entry["movement-button"])
+        ? (entry["movement-button"] as Record<string, unknown>)
+        : null) ??
+      (isObjectRecord(entry["match-select"])
+        ? (entry["match-select"] as Record<string, unknown>)
+        : null) ??
+      (isObjectRecord(entry["button-slider"])
+        ? (entry["button-slider"] as Record<string, unknown>)
+        : null);
 
     const readTag =
       (button ? normalizeTag(button.tag) : "") ||
@@ -210,11 +356,22 @@ const buildFieldMappingEntriesFromPayload = (payload: unknown) => {
       (button?.trackSuccess === true) || (iconButton?.trackSuccess === true);
 
     if (readTag) {
+      const stageParentTag = actionElement ? normalizeTag(actionElement.stageParentTag) : "";
+      const linkedTeamSelect = linkedTeamSelectByTag.get(stageParentTag);
+      const scope = actionElement?.teamStageScope === "general" ? "general" : "team";
+      const variants = resolveTeamSelectTagVariants({
+        baseTag: readTag,
+        isLinkedTeamStage: Boolean(linkedTeamSelect),
+        includeGeneralComments: linkedTeamSelect?.includeGeneralComments === true,
+        scope,
+      });
       const actionBucket: FieldMappingEntry["bucket"] = successTrackingEnabled
         ? "success"
         : null;
-      entries.push({ value: `auto.${readTag}`, bucket: actionBucket });
-      entries.push({ value: `teleop.${readTag}`, bucket: actionBucket });
+      for (const variantTag of variants) {
+        entries.push({ value: `auto.${variantTag}`, bucket: actionBucket });
+        entries.push({ value: `teleop.${variantTag}`, bucket: actionBucket });
+      }
     }
   });
 

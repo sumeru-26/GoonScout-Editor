@@ -230,7 +230,7 @@ export async function PATCH(request: Request, context: RouteContext) {
         and f.upload_id = p.upload_id
         and p.user_id = ${userId}
         and f.user_id = ${userId}
-      returning p.upload_id, p.name, p.status, p.updated_at, f.is_public
+      returning p.upload_id, p.name, p.status, p.scout_type, p.updated_at, f.is_public
     `.execute(db);
 
     if (hasIsPublicUpdate) {

@@ -111,6 +111,12 @@ const TEAM_SELECT_OPTIONS = [
     chipClassName: "border-red-400/50 bg-red-500/20 text-red-100",
   },
 ] as const;
+const TEAM_SELECT_GENERAL_OPTION = {
+  value: "general",
+  label: "General",
+  chipClassName: "border-slate-400/50 bg-slate-500/20 text-slate-100",
+} as const;
+const TEAM_SELECTOR_STAGE_PARENT_TAG = "TeamSelector";
 type FieldBackgroundOption = {
   key: string;
   name: string;
@@ -187,6 +193,7 @@ type InputValueMode = "text" | "numbers" | "both";
 type ToggleStyle = "switch" | "box";
 type ScoutType = "match" | "qualitative" | "pit";
 type AutoTeleopScope = "auto" | "teleop";
+type TeamStageScope = "teams" | "general";
 
 type PostMatchQuestionType =
   | "text"
@@ -230,6 +237,7 @@ type CanvasItem = {
   teamSelectValue?: string;
   teamSelectLinkToStage?: boolean;
   teamSelectAlwaysShowStagedElements?: boolean;
+  teamSelectIncludeGeneralComments?: boolean;
   matchSelectValue?: number;
   toggleOn?: boolean;
   toggleStyle?: ToggleStyle;
@@ -254,6 +262,7 @@ type CanvasItem = {
   swapRedSide?: "left" | "right";
   swapActiveSide?: "left" | "right";
   stageParentId?: string;
+  teamStageScope?: TeamStageScope;
   stageHideAfterSelection?: boolean;
   stageBlurBackgroundOnClick?: boolean;
   stageHideOtherElementsInStage?: boolean;
@@ -342,6 +351,13 @@ const getDefaultLabelForKind = (kind: AssetKind) =>
 
 const getTeamSelectOption = (value: string) =>
   TEAM_SELECT_OPTIONS.find((option) => option.value === value);
+
+const getTeamSelectOptionsForItem = (
+  item: Pick<CanvasItem, "teamSelectIncludeGeneralComments">
+) =>
+  item.teamSelectIncludeGeneralComments
+    ? [...TEAM_SELECT_OPTIONS, TEAM_SELECT_GENERAL_OPTION]
+    : TEAM_SELECT_OPTIONS;
 
 const getDefaultTeamSelectOptionValue = () => TEAM_SELECT_OPTIONS[0].value;
 
@@ -696,6 +712,10 @@ const fromPersistedItem = (
         resolvedKind === "team-select"
           ? normalizeStageParentOption(value.teamSelectAlwaysShowStagedElements)
           : undefined,
+      teamSelectIncludeGeneralComments:
+        resolvedKind === "team-select"
+          ? normalizeStageParentOption(value.teamSelectIncludeGeneralComments)
+          : undefined,
       inputIsTextArea:
         resolvedKind === "input"
           ? normalizeStageParentOption(value.inputIsTextArea)
@@ -762,6 +782,7 @@ const fromPersistedItem = (
         value.autoTeleopScope === "auto" || value.autoTeleopScope === "teleop"
           ? value.autoTeleopScope
           : undefined,
+      teamStageScope: value.teamStageScope === "general" ? "general" : undefined,
       movementDirection:
         resolvedKind === "movement"
           ? normalizeMovementDirection(value.movementDirection ?? value.label)
@@ -1324,6 +1345,9 @@ const parseImportedEditorState = (
         teamSelectLinkToStage: normalizeStageParentOption(data.linkEachTeamToStage),
         teamSelectAlwaysShowStagedElements: normalizeStageParentOption(
           data.showStageWithoutSelection
+        ),
+        teamSelectIncludeGeneralComments: normalizeStageParentOption(
+          data.addGeneralComments
         ),
         tag,
         teamSide: toTeamSide(data.teamSide),
@@ -3080,8 +3104,19 @@ function CanvasTeamSelect({
   const controlScale = getWidgetScale(item, TEAM_SELECT_SIZE, 0.2, 2.2);
   const triggerFontSize = Math.max(7, Math.round(14 * controlScale));
   const triggerIconSize = Math.max(8, Math.round(16 * controlScale));
-  const selectedValue = previewValue || getDefaultTeamSelectOptionValue();
-  const selectedOption = getTeamSelectOption(selectedValue);
+  const dropdownOptions = getTeamSelectOptionsForItem(item);
+  const selectedValue = dropdownOptions.some((option) => option.value === previewValue)
+    ? previewValue
+    : getDefaultTeamSelectOptionValue();
+  const selectedOption =
+    dropdownOptions.find((option) => option.value === selectedValue) ??
+    getTeamSelectOption(getDefaultTeamSelectOptionValue());
+  const triggerClassName =
+    selectedOption?.value === TEAM_SELECT_GENERAL_OPTION.value
+      ? "border-slate-400/40 !bg-slate-800/75 hover:!bg-slate-700/80"
+      : selectedOption?.value.startsWith("b")
+        ? "border-blue-400/35 !bg-blue-950/55 hover:!bg-blue-900/60"
+        : "border-red-400/35 !bg-red-950/55 hover:!bg-red-900/60";
 
   const style: React.CSSProperties = {
     transform: toDragTransform(true, transform, snapOffset),
@@ -3128,11 +3163,7 @@ function CanvasTeamSelect({
             type="button"
             variant="outline"
             size="xs"
-            className={`!h-full min-h-0 w-full justify-between rounded-md border px-1 text-white disabled:opacity-100 ${
-              selectedOption?.value.startsWith("b")
-                ? "border-blue-400/35 !bg-blue-950/55 hover:!bg-blue-900/60"
-                : "border-red-400/35 !bg-red-950/55 hover:!bg-red-900/60"
-            }`}
+            className={`!h-full min-h-0 w-full justify-between rounded-md border px-1 text-white disabled:opacity-100 ${triggerClassName}`}
             style={{ fontSize: triggerFontSize }}
             disabled={!isPreviewMode}
           >
@@ -3155,7 +3186,7 @@ function CanvasTeamSelect({
             }}
             className="grid gap-2"
           >
-            {TEAM_SELECT_OPTIONS.map((option) => (
+            {dropdownOptions.map((option) => (
               <Label
                 key={option.value}
                 htmlFor={`${item.id}-${option.value}`}
@@ -4486,6 +4517,30 @@ export default function EditorPage() {
   }, [items]);
 
   const visibleItems = React.useMemo(() => {
+    const shouldIncludeLinkedTeamStageItem = (
+      stageItem: CanvasItem,
+      stageRoot: CanvasItem | undefined
+    ) => {
+      if (
+        !stageRoot ||
+        stageRoot.kind !== "team-select" ||
+        stageRoot.teamSelectLinkToStage !== true
+      ) {
+        return true;
+      }
+
+      const selectedValue =
+        previewTeamSelectValues[stageRoot.id] === TEAM_SELECT_GENERAL_OPTION.value &&
+        stageRoot.teamSelectIncludeGeneralComments === true
+          ? TEAM_SELECT_GENERAL_OPTION.value
+          : getDefaultTeamSelectOptionValue();
+      const stageScope = stageItem.teamStageScope === "general" ? "general" : "teams";
+
+      return selectedValue === TEAM_SELECT_GENERAL_OPTION.value
+        ? stageScope === "general"
+        : stageScope !== "general";
+    };
+
     if (stagingParentId) {
       const stageRoot = sideScopedItems.find((item) => item.id === stagingParentId);
       const hideStageRoot = Boolean(stageRoot?.stageHideAfterSelection);
@@ -4494,13 +4549,16 @@ export default function EditorPage() {
       if (hideOtherElements) {
         return sideScopedItems.filter(
           (item) =>
-            item.stageParentId === stagingParentId ||
+            (item.stageParentId === stagingParentId &&
+              shouldIncludeLinkedTeamStageItem(item, stageRoot)) ||
             (!hideStageRoot && item.id === stagingParentId)
         );
       }
 
       return sideScopedItems.filter((item) => {
-        if (item.stageParentId === stagingParentId) return true;
+        if (item.stageParentId === stagingParentId) {
+          return shouldIncludeLinkedTeamStageItem(item, stageRoot);
+        }
         if (item.id === stagingParentId) return !hideStageRoot;
         return !item.stageParentId;
       });
@@ -4514,13 +4572,16 @@ export default function EditorPage() {
       if (hideOtherElements) {
         return sideScopedItems.filter(
           (item) =>
-            item.stageParentId === previewStageParentId ||
+            (item.stageParentId === previewStageParentId &&
+              shouldIncludeLinkedTeamStageItem(item, stageRoot)) ||
             (!hideStageRoot && item.id === previewStageParentId)
         );
       }
 
       return sideScopedItems.filter((item) => {
-        if (item.stageParentId === previewStageParentId) return true;
+        if (item.stageParentId === previewStageParentId) {
+          return shouldIncludeLinkedTeamStageItem(item, stageRoot);
+        }
         if (item.id === previewStageParentId) return !hideStageRoot;
         return !item.stageParentId;
       });
@@ -4538,10 +4599,14 @@ export default function EditorPage() {
         .map((item) => item.id)
     );
 
-    const baseItems = sideScopedItems.filter(
-      (item) =>
-        !item.stageParentId || alwaysVisibleTeamStageRootIds.has(item.stageParentId)
-    );
+    const baseItems = sideScopedItems.filter((item) => {
+      if (!item.stageParentId) return true;
+      if (!alwaysVisibleTeamStageRootIds.has(item.stageParentId)) return false;
+      const stageRoot = sideScopedItems.find(
+        (entry) => entry.id === item.stageParentId
+      );
+      return shouldIncludeLinkedTeamStageItem(item, stageRoot);
+    });
 
     if (isEditorReadOnly) {
       return baseItems.filter(
@@ -4554,6 +4619,7 @@ export default function EditorPage() {
     isEditorReadOnly,
     isPreviewMode,
     previewStageParentId,
+    previewTeamSelectValues,
     sideScopedItems,
     stagingParentId,
   ]);
@@ -4920,12 +4986,19 @@ export default function EditorPage() {
     (item: CanvasItem, baseKey: string) => {
       const linkedTeamStageRootId = getLinkedTeamStageRootId(item);
       if (!linkedTeamStageRootId) return baseKey;
+      const linkedTeamStageRoot = items.find(
+        (entry) => entry.id === linkedTeamStageRootId
+      );
       const selectedTeamValue =
-        previewTeamSelectValues[linkedTeamStageRootId] ??
-        getDefaultTeamSelectOptionValue();
+        previewTeamSelectValues[linkedTeamStageRootId] ===
+          TEAM_SELECT_GENERAL_OPTION.value &&
+        linkedTeamStageRoot?.kind === "team-select" &&
+        linkedTeamStageRoot.teamSelectIncludeGeneralComments === true
+          ? TEAM_SELECT_GENERAL_OPTION.value
+          : getDefaultTeamSelectOptionValue();
       return `${baseKey}::${linkedTeamStageRootId}::${selectedTeamValue}`;
     },
-    [getLinkedTeamStageRootId, previewTeamSelectValues]
+    [getLinkedTeamStageRootId, items, previewTeamSelectValues]
   );
 
   const stageRootIds = React.useMemo(() => {
@@ -5406,6 +5479,42 @@ export default function EditorPage() {
     [selectedItemId]
   );
 
+  const handleSelectedTeamSelectIncludeGeneralCommentsChange = React.useCallback(
+    (value: boolean) => {
+      if (!selectedItemId) return;
+      setItems((prev) =>
+        prev.map((item) =>
+          item.id === selectedItemId && item.kind === "team-select"
+            ? {
+                ...item,
+                teamSelectIncludeGeneralComments: value,
+              }
+            : !value &&
+                item.stageParentId === selectedItemId &&
+                item.teamStageScope === "general"
+              ? {
+                  ...item,
+                  teamStageScope: "teams",
+                }
+            : item
+        )
+      );
+
+      if (!value) {
+        setPreviewTeamSelectValues((prev) => {
+          if (prev[selectedItemId] !== TEAM_SELECT_GENERAL_OPTION.value) {
+            return prev;
+          }
+          return {
+            ...prev,
+            [selectedItemId]: getDefaultTeamSelectOptionValue(),
+          };
+        });
+      }
+    },
+    [selectedItemId]
+  );
+
   const handleSelectedStageHideAfterSelectionChange = React.useCallback(
     (value: boolean) => {
       if (!selectedItemId) return;
@@ -5699,6 +5808,22 @@ export default function EditorPage() {
     stepOutOfStaging();
   }, [stepOutOfStaging]);
 
+  const handleSelectedTeamSelectGeneralLayoutClick = React.useCallback(() => {
+    if (!selectedItem || selectedItem.kind !== "team-select") return;
+    const currentValue =
+      previewTeamSelectValues[selectedItem.id] ?? getDefaultTeamSelectOptionValue();
+    const nextValue =
+      currentValue === TEAM_SELECT_GENERAL_OPTION.value
+        ? getDefaultTeamSelectOptionValue()
+        : TEAM_SELECT_GENERAL_OPTION.value;
+
+    setPreviewTeamSelectValues((prev) => ({
+      ...prev,
+      [selectedItem.id]: nextValue,
+    }));
+    enterStagingForItemId(selectedItem.id);
+  }, [enterStagingForItemId, previewTeamSelectValues, selectedItem]);
+
   const handleStageContextMenu = React.useCallback(
     (itemId: string) => {
       const target = items.find((item) => item.id === itemId);
@@ -5971,9 +6096,14 @@ export default function EditorPage() {
   const handlePreviewTeamSelectChange = React.useCallback(
     (item: CanvasItem, value: string) => {
       const key = item.id;
+      const normalizedValue =
+        value === TEAM_SELECT_GENERAL_OPTION.value &&
+        item.teamSelectIncludeGeneralComments !== true
+          ? getDefaultTeamSelectOptionValue()
+          : value;
       setPreviewTeamSelectValues((prev) => ({
         ...prev,
-        [key]: value,
+        [key]: normalizedValue,
       }));
       if (
         item.kind === "team-select" &&
@@ -6661,6 +6791,19 @@ export default function EditorPage() {
       const linkedTeamSelectStageRootId = resolveTeamSelectStageRootId(item);
       if (!linkedTeamSelectStageRootId) return [baseTag];
 
+      const linkedTeamStageRoot = itemById.get(linkedTeamSelectStageRootId);
+      if (
+        !linkedTeamStageRoot ||
+        linkedTeamStageRoot.kind !== "team-select" ||
+        linkedTeamStageRoot.teamSelectLinkToStage !== true
+      ) {
+        return [baseTag];
+      }
+
+      if (item.teamStageScope === "general") {
+        return [`${baseTag}-${TEAM_SELECT_GENERAL_OPTION.value}`];
+      }
+
       return TEAM_SELECT_OPTIONS.map((option) => `${baseTag}-${option.value}`);
     };
 
@@ -6706,9 +6849,18 @@ export default function EditorPage() {
     const payload: Record<string, unknown>[] = items.flatMap((item) => {
       const centerItemX = item.x + item.width / 2;
       const centerItemY = item.y + item.height / 2;
-      const stageParentTag = item.stageParentId
-        ? tagById.get(item.stageParentId) ?? ""
-        : "";
+      const linkedTeamSelectStageRootId = resolveTeamSelectStageRootId(item);
+      const linkedTeamStageRoot = linkedTeamSelectStageRootId
+        ? itemById.get(linkedTeamSelectStageRootId)
+        : undefined;
+      const stageParentTag =
+        linkedTeamStageRoot &&
+        linkedTeamStageRoot.kind === "team-select" &&
+        linkedTeamStageRoot.teamSelectLinkToStage === true
+          ? TEAM_SELECTOR_STAGE_PARENT_TAG
+          : item.stageParentId
+            ? tagById.get(item.stageParentId) ?? ""
+            : "";
       const hasStageChildren = stagedParentIds.has(item.id);
       const tagVariants = getExportTagVariants(item);
 
@@ -6816,6 +6968,10 @@ export default function EditorPage() {
         case "team-select": {
           return [{
             "team-select": {
+              tag:
+                item.teamSelectLinkToStage === true
+                  ? TEAM_SELECTOR_STAGE_PARENT_TAG
+                  : normalizeTag(item.tag ?? "") || undefined,
               teamSide: item.teamSide,
               autoTeleopScope: item.autoTeleopScope,
               x: scaleX(centerItemX),
@@ -6824,6 +6980,8 @@ export default function EditorPage() {
               linkEachTeamToStage: item.teamSelectLinkToStage === true,
               showStageWithoutSelection:
                 item.teamSelectAlwaysShowStagedElements === true,
+              addGeneralComments:
+                item.teamSelectIncludeGeneralComments === true,
               stageParentTag,
               width: scaleWidth(item.width),
               height: scaleHeight(item.height),
@@ -7463,8 +7621,21 @@ export default function EditorPage() {
 
   const validateProjectCompletion = React.useCallback(() => {
     const hasSubmit = items.some((item) => item.kind === "submit");
-    const hasAutoToggle = items.some((item) => item.kind === "auto-toggle");
+    const hasReset = items.some((item) => item.kind === "reset");
     const hasTeamSelect = items.some((item) => item.kind === "team-select");
+
+    if (scoutType === "qualitative" || scoutType === "pit") {
+      if (!hasSubmit || !hasReset || !hasTeamSelect) {
+        toast.error(
+          "Required assets missing: submit, reset, and team select."
+        );
+        return false;
+      }
+
+      return true;
+    }
+
+    const hasAutoToggle = items.some((item) => item.kind === "auto-toggle");
     const hasMatchSelect = items.some((item) => item.kind === "match-select");
     const hasTaggedButton = items.some(
       (item) =>
@@ -7501,7 +7672,7 @@ export default function EditorPage() {
     }
 
     return true;
-  }, [items]);
+  }, [items, scoutType]);
 
   const handleCompleteProject = React.useCallback(async () => {
     const uploadId = requestedUploadId || latestUploadId || "";
@@ -8055,6 +8226,12 @@ export default function EditorPage() {
     if (!projectMeta?.scoutType) return;
     setScoutType(normalizeScoutType(projectMeta.scoutType));
   }, [projectMeta?.scoutType]);
+
+  React.useEffect(() => {
+    if (!requestedUploadId) return;
+    if (projectMeta?.scoutType !== "pit") return;
+    router.replace(`/post-match?uploadId=${encodeURIComponent(requestedUploadId)}&mode=pit`);
+  }, [projectMeta?.scoutType, requestedUploadId, router]);
 
   const handleProjectVisibilityToggle = React.useCallback(async () => {
     const uploadId = requestedUploadId || latestUploadId || "";
@@ -9028,6 +9205,19 @@ export default function EditorPage() {
           const synchronizedMovementDirection = normalizeMovementDirection(
             prev.find((item) => item.kind === "movement")?.movementDirection ?? "left"
           );
+          const activeStageRoot = stagingParentId
+            ? prev.find((item) => item.id === stagingParentId)
+            : null;
+          const nextTeamStageScope: TeamStageScope | undefined =
+            activeStageRoot &&
+            activeStageRoot.kind === "team-select" &&
+            activeStageRoot.teamSelectLinkToStage === true
+              ? activeStageRoot.teamSelectIncludeGeneralComments === true &&
+                previewTeamSelectValues[activeStageRoot.id] ===
+                  TEAM_SELECT_GENERAL_OPTION.value
+                ? "general"
+                : "teams"
+              : undefined;
 
           return [
             ...prev,
@@ -9066,6 +9256,8 @@ export default function EditorPage() {
             teamSelectLinkToStage: kind === "team-select" ? false : undefined,
             teamSelectAlwaysShowStagedElements:
               kind === "team-select" ? false : undefined,
+            teamSelectIncludeGeneralComments:
+              kind === "team-select" ? false : undefined,
             matchSelectValue:
               kind === "match-select" ? MATCH_SELECT_MIN_VALUE : undefined,
             toggleOn: kind === "toggle" ? false : undefined,
@@ -9083,6 +9275,7 @@ export default function EditorPage() {
             swapRedSide: kind === "swap" ? "left" : undefined,
             swapActiveSide: kind === "swap" ? "left" : undefined,
             stageParentId: stagingParentId ?? undefined,
+            teamStageScope: stagingParentId ? nextTeamStageScope : undefined,
             stageRemoveParentTag:
               kind === "text" || kind === "icon" || kind === "movement"
                 ? false
@@ -9115,6 +9308,7 @@ export default function EditorPage() {
       isAssetAllowedForScoutType,
       autoTeleopScopedEditMode,
       stagingParentId,
+      previewTeamSelectValues,
     ]
   );
 
@@ -10965,6 +11159,13 @@ export default function EditorPage() {
                       {option.value}
                     </div>
                   ))}
+                  {selectedItem.teamSelectIncludeGeneralComments === true ? (
+                    <div
+                      className={`rounded-md border px-2 py-1 text-center text-xs font-semibold uppercase tracking-wide ${TEAM_SELECT_GENERAL_OPTION.chipClassName}`}
+                    >
+                      {TEAM_SELECT_GENERAL_OPTION.value}
+                    </div>
+                  ) : null}
                 </div>
                 <div className="flex items-center justify-between gap-3 rounded-md border border-white/10 bg-slate-900/70 px-3 py-3">
                   <div className="grid gap-0.5">
@@ -10981,9 +11182,41 @@ export default function EditorPage() {
                     aria-label="Link team tabs to stage"
                   />
                 </div>
+                {selectedItem.teamSelectLinkToStage && scoutType === "qualitative" ? (
+                  <div className="flex items-center justify-between gap-3 rounded-md border border-white/10 bg-slate-900/70 px-3 py-3">
+                    <div className="grid gap-0.5">
+                      <Label className="text-xs text-white/80">
+                        Add general comments
+                      </Label>
+                      <p className="text-[11px] text-white/60">
+                        Adds a gray General tab with its own stage layout and data bucket.
+                      </p>
+                    </div>
+                    <Switch
+                      checked={selectedItem.teamSelectIncludeGeneralComments === true}
+                      onCheckedChange={handleSelectedTeamSelectIncludeGeneralCommentsChange}
+                      aria-label="Add general comments"
+                    />
+                  </div>
+                ) : null}
                 {selectedItem.teamSelectLinkToStage ? (
                   <div className="grid gap-2">
                     <Label className="text-sm text-white/80">Staging</Label>
+                    {selectedItem.teamSelectIncludeGeneralComments === true && scoutType === "qualitative" ? (
+                      <Button
+                        variant="outline"
+                        type="button"
+                        className="h-10 rounded-lg border-white/15 bg-slate-900/70 text-white hover:bg-slate-800/80"
+                        onClick={handleSelectedTeamSelectGeneralLayoutClick}
+                      >
+                        {stagingParentId === selectedItem.id &&
+                        (previewTeamSelectValues[selectedItem.id] ??
+                          getDefaultTeamSelectOptionValue()) ===
+                          TEAM_SELECT_GENERAL_OPTION.value
+                          ? "Edit team layout"
+                          : "Add general layout"}
+                      </Button>
+                    ) : null}
                     <div className="flex items-center justify-between gap-3 rounded-md border border-white/10 bg-slate-900/70 px-3 py-3">
                       <div className="grid gap-0.5">
                         <Label className="text-xs text-white/80">
@@ -12272,12 +12505,12 @@ export default function EditorPage() {
                 className="border border-white/10 bg-slate-900 text-white hover:bg-slate-800 disabled:bg-slate-900 disabled:text-white/50"
                 onClick={() =>
                   router.push(
-                    `/post-match${(requestedUploadId || latestUploadId) ? `?uploadId=${encodeURIComponent(requestedUploadId || latestUploadId || "")}` : ""}`
+                    `/post-match${(requestedUploadId || latestUploadId) ? `?uploadId=${encodeURIComponent(requestedUploadId || latestUploadId || "")}${scoutType === "pit" ? "&mode=pit" : ""}` : ""}`
                   )
                 }
                 disabled={!(requestedUploadId || latestUploadId)}
               >
-                Add post match questions
+                {scoutType === "pit" ? "Edit pit scouting questions" : "Add post match questions"}
               </Button>
             </div>
             <div className="mt-4 flex items-center justify-between rounded-md border border-white/10 px-3 py-2">

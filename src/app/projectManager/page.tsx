@@ -74,6 +74,32 @@ const formatUpdatedText = (value: string) => {
 const cardGradient =
   "radial-gradient(circle at 20% 20%, rgba(59,130,246,0.16), transparent 42%), radial-gradient(circle at 80% 35%, rgba(30,64,175,0.25), transparent 45%), linear-gradient(180deg, rgba(15,23,42,0.9), rgba(10,15,32,0.95))";
 
+const scoutTypeBadgeMeta: Record<"match" | "qualitative" | "pit", { label: string; className: string }> = {
+  match: {
+    label: "Match Scout",
+    className: "border-blue-400/40 bg-blue-500/15 text-blue-100",
+  },
+  qualitative: {
+    label: "Qual Scout",
+    className: "border-emerald-400/40 bg-emerald-500/15 text-emerald-100",
+  },
+  pit: {
+    label: "Pit Scout",
+    className: "border-amber-400/40 bg-amber-500/15 text-amber-100",
+  },
+};
+
+const getScoutTypeBadge = (value: Project["scoutType"]) =>
+  scoutTypeBadgeMeta[value ?? "match"];
+
+const getProjectOpenRoute = (project: Pick<Project, "uploadId" | "scoutType">) => {
+  const encodedUploadId = encodeURIComponent(project.uploadId);
+  if (project.scoutType === "pit") {
+    return `/post-match?uploadId=${encodedUploadId}&mode=pit`;
+  }
+  return `/editor?uploadId=${encodedUploadId}`;
+};
+
 export default function ProjectManagerPage() {
   const router = useRouter();
   const { data: sessionData, isPending: isSessionPending } = authClient.useSession();
@@ -257,10 +283,17 @@ export default function ProjectManagerPage() {
       if (!uploadId) {
         throw new Error("Create response missing upload id.");
       }
+      const encodedUploadId = encodeURIComponent(uploadId);
 
       toast.success("Project created.");
       setIsCreateDialogOpen(false);
-      router.push(`/editor?uploadId=${uploadId}`);
+
+      if (createProjectScoutType === "pit") {
+        router.push(`/post-match?uploadId=${encodedUploadId}&mode=pit`);
+        return;
+      }
+
+      router.push(`/editor?uploadId=${encodedUploadId}`);
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Failed to create project.";
@@ -714,12 +747,12 @@ export default function ProjectManagerPage() {
                   role="button"
                   tabIndex={0}
                   onClick={() => {
-                    router.push(`/editor?uploadId=${project.uploadId}`);
+                    router.push(getProjectOpenRoute(project));
                   }}
                   onKeyDown={(event) => {
                     if (event.key !== "Enter" && event.key !== " ") return;
                     event.preventDefault();
-                    router.push(`/editor?uploadId=${project.uploadId}`);
+                    router.push(getProjectOpenRoute(project));
                   }}
                 >
                   <div className="h-40 w-full border-b border-white/10 bg-slate-900/70">
@@ -824,6 +857,14 @@ export default function ProjectManagerPage() {
                       </div>
                     </div>
 
+                    <div className="mb-2">
+                      <span
+                        className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${getScoutTypeBadge(project.scoutType).className}`}
+                      >
+                        {getScoutTypeBadge(project.scoutType).label}
+                      </span>
+                    </div>
+
                     <p className="text-base text-white/65">{formatUpdatedText(project.updatedAt)}</p>
                   </div>
                 </article>
@@ -878,7 +919,7 @@ export default function ProjectManagerPage() {
                 ))}
               </div>
               <span className="text-xs text-white/55">
-                Match: all assets. Qualitative: team select, match select, submit, reset, text field, cover. Pit: qualitative + toggles.
+                Match: full validation rules. Qualitative/Pit completion requires submit, reset, and team select. New Pit projects open Pit Scouting questions first.
               </span>
             </div>
             <div className="mt-1 flex items-center justify-between rounded-md border border-white/10 px-3 py-2">
