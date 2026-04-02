@@ -105,8 +105,8 @@ const socialProviders = {
   ...(githubEnabled
     ? {
         github: {
-          clientId: env.GITHUB_CLIENT_ID,
-          clientSecret: env.GITHUB_CLIENT_SECRET,
+          clientId: requireEnv("GITHUB_CLIENT_ID"),
+          clientSecret: requireEnv("GITHUB_CLIENT_SECRET"),
         },
       }
     : {}),

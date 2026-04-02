@@ -26,7 +26,7 @@ export default function LoginPage() {
       callbackURL: "/projectManager",
     });
     if (signInError) {
-      setError(signInError.message);
+      setError(signInError.message ?? "Unable to sign in. Please try again.");
       setIsSubmitting(false);
     }
   };

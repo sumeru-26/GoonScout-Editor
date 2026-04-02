@@ -30,7 +30,7 @@ const QUESTION_TYPES: Array<{ value: QuestionType; label: string }> = [
   { value: "single-select", label: "Single select" },
 ];
 
-export default function PostMatchPage() {
+function PostMatchPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const uploadId = searchParams.get("uploadId")?.trim() ?? "";
@@ -604,5 +604,13 @@ export default function PostMatchPage() {
         </div>
       </main>
     </div>
+  );
+}
+
+export default function PostMatchPage() {
+  return (
+    <React.Suspense fallback={<div className="min-h-screen bg-slate-900 text-white" />}>
+      <PostMatchPageContent />
+    </React.Suspense>
   );
 }

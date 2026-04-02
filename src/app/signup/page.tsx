@@ -26,7 +26,7 @@ export default function SignupPage() {
       callbackURL: "/projectManager",
     });
     if (signInError) {
-      setError(signInError.message);
+      setError(signInError.message ?? "Unable to sign up. Please try again.");
       setIsSubmitting(false);
     }
   };
